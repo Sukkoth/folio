@@ -47,13 +47,37 @@ fn parse_slint_color(hex: &str) -> Option<slint::Color> {
     }
 }
 
+fn parse_hex_to_rgb(hex: &str) -> Option<(f32, f32, f32)> {
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+    if hex.len() == 6 {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        Some((r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0))
+    } else {
+        None
+    }
+}
+
+fn get_highlight_blend_rgb_floats(idx: i32) -> (f32, f32, f32) {
+    let rgb = get_highlight_blend_rgb(idx);
+    (rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0)
+}
+
 fn match_closest_color_index(rgb: (f32, f32, f32)) -> i32 {
     let presets = [
+        // Saturated UI button swatches
         (0, (0.98, 0.80, 0.08)), // Yellow (#facc15)
         (1, (0.29, 0.87, 0.50)), // Green  (#4ade80)
         (2, (0.38, 0.65, 0.98)), // Blue   (#60a5fa)
         (3, (0.96, 0.45, 0.71)), // Pink   (#f472b6)
         (4, (0.98, 0.57, 0.24)), // Orange (#fb923c)
+        // Soft pastel highlight colors
+        (0, (1.00, 0.95, 0.55)), // Pastel Yellow (#fff38c)
+        (1, (0.65, 0.95, 0.82)), // Pastel Green  (#a7f3d0)
+        (2, (0.73, 0.90, 0.99)), // Pastel Blue   (#bae6fd)
+        (3, (0.98, 0.81, 0.91)), // Pastel Pink   (#fbcfe8)
+        (4, (1.00, 0.82, 0.61)), // Pastel Orange (#ffd09b)
     ];
 
     let mut best_idx = 0;
@@ -218,12 +242,23 @@ fn setup_document(
 
     for ea in existing_annots {
         let color_idx = match_closest_color_index(ea.color_rgb);
+        let color_hex = if ea.kind == "highlight" {
+            if STATIC_COLORS.iter().any(|(h, ..)| *h == ea.color_hex) {
+                let [br, bg, bb] = get_highlight_blend_rgb(color_idx);
+                format!("#{br:02x}{bg:02x}{bb:02x}")
+            } else {
+                ea.color_hex
+            }
+        } else {
+            ea.color_hex
+        };
+
         initial_annotations.push(AnnotationRecord {
             id: next_annot_id,
             page: ea.page,
             kind: ea.kind,
             color_index: color_idx,
-            color_hex: ea.color_hex,
+            color_hex,
             snippet: ea.snippet,
             comment: ea.comment,
             line_rects_pt: ea.line_rects_pt,
@@ -377,72 +412,7 @@ fn get_page_highlights(state: &AppState, page: i32) -> Vec<pdf::worker::Highligh
     res
 }
 
-fn adjust_line_rects_for_highlight(
-    rects: &[(f32, f32, f32, f32)],
-) -> Vec<(f32, f32, f32, f32)> {
-    let n = rects.len();
-    if n == 0 {
-        return Vec::new();
-    }
-    if n == 1 {
-        let (rx0, ry0, rx1, ry1) = rects[0];
-        let line_h = (ry1 - ry0).max(1.0);
-        let pad = (line_h * 0.16).clamp(1.2, 2.0);
-        return vec![(rx0, (ry0 - pad).max(0.0), rx1, ry1 + pad)];
-    }
-
-    // Auto-detect: if rects already touch or overlap (e.g. from an app using continuous highlights with no gaps),
-    // we preserve the continuous block (gap = 0). Otherwise, we use Folio's spaced highlight (gap = 2.4pt).
-    let is_already_continuous = (0..n - 1).all(|i| {
-        let y1_curr = rects[i].3;
-        let y0_next = rects[i + 1].1;
-        (y0_next - y1_curr) <= 0.5
-    });
-
-    let gap = if is_already_continuous { 0.0 } else { 2.4 };
-    let mut adjusted_y = Vec::with_capacity(n);
-    for i in 0..n {
-        adjusted_y.push((rects[i].1, rects[i].3));
-    }
-
-    // Between each consecutive pair of lines (i, i+1):
-    for i in 0..(n - 1) {
-        let y1_curr = rects[i].3;
-        let y0_next = rects[i + 1].1;
-        let raw_gap = y0_next - y1_curr;
-
-        // Normal consecutive lines in a text block
-        if raw_gap < 12.0 {
-            let mid = (y1_curr + y0_next) * 0.5;
-            adjusted_y[i].1 = mid - gap * 0.5;
-            adjusted_y[i + 1].0 = mid + gap * 0.5;
-        } else {
-            // Paragraph break
-            let pad = ((rects[i].3 - rects[i].1) * 0.16).clamp(1.2, 2.0);
-            adjusted_y[i].1 = y1_curr + pad;
-            let next_pad = ((rects[i + 1].3 - rects[i + 1].1) * 0.16).clamp(1.2, 2.0);
-            adjusted_y[i + 1].0 = (y0_next - next_pad).max(0.0);
-        }
-    }
-
-    // Top of first line
-    let first_h = (rects[0].3 - rects[0].1).max(1.0);
-    let top_pad = (first_h * 0.16).clamp(1.2, 2.0);
-    adjusted_y[0].0 = (rects[0].1 - top_pad).max(0.0);
-
-    // Bottom of last line
-    let last_h = (rects[n - 1].3 - rects[n - 1].1).max(1.0);
-    let bot_pad = (last_h * 0.16).clamp(1.2, 2.0);
-    adjusted_y[n - 1].1 = rects[n - 1].3 + bot_pad;
-
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let (rx0, _, rx1, _) = rects[i];
-        let (ay0, ay1) = adjusted_y[i];
-        out.push((rx0, ay0, rx1, ay1));
-    }
-    out
-}
+use pdf::adjust_line_rects_for_highlight;
 
 fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
     let mut highlights = Vec::new();
@@ -911,7 +881,12 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
         app.on_create_annotation(move |kind, color_idx| {
-            let (hex, _) = get_color(color_idx);
+            let hex = if kind == "highlight" {
+                let [r, g, b] = get_highlight_blend_rgb(color_idx);
+                format!("#{r:02x}{g:02x}{b:02x}")
+            } else {
+                get_color(color_idx).0
+            };
             let mut need_sync = false;
             let mut target_page = 0;
 
@@ -942,6 +917,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 
             if need_sync {
                 if let Some(ui) = app_weak.upgrade() {
+                    ui.set_is_dirty(true);
                     ui.set_has_selection(false);
                     ui.set_show_popup(false);
                     ui.set_show_note_input(false);
@@ -994,6 +970,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 
             if need_sync {
                 if let Some(ui) = app_weak.upgrade() {
+                    ui.set_is_dirty(true);
                     ui.set_has_selection(false);
                     ui.set_show_popup(false);
                     ui.set_show_note_input(false);
@@ -1030,6 +1007,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             }
             if need_sync {
                 if let Some(ui) = app_weak.upgrade() {
+                    ui.set_is_dirty(true);
                     if let Ok(mut lock) = state_lock.lock() {
                         if let Some(s) = lock.as_mut() {
                             sync_annotations_to_ui(s, &ui);
@@ -1041,6 +1019,99 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        });
+    }
+
+    // Save Document
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_save_document(move || {
+            let (file_path, to_save) = {
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        let to_save: Vec<pdf::SaveAnnotationData> = s
+                            .annotations
+                            .iter()
+                            .map(|a| {
+                                let rgb = if a.kind == "highlight" {
+                                    if !a.is_from_pdf || STATIC_COLORS.iter().any(|(h, ..)| *h == a.color_hex) {
+                                        get_highlight_blend_rgb_floats(a.color_index)
+                                    } else if let Some((r, g, b)) = parse_hex_to_rgb(&a.color_hex) {
+                                        (r, g, b)
+                                    } else {
+                                        get_highlight_blend_rgb_floats(a.color_index)
+                                    }
+                                } else if let Some((r, g, b)) = parse_hex_to_rgb(&a.color_hex) {
+                                    (r, g, b)
+                                } else {
+                                    get_highlight_blend_rgb_floats(a.color_index)
+                                };
+
+                                pdf::SaveAnnotationData {
+                                    page: a.page,
+                                    kind: a.kind.clone(),
+                                    color_rgb: rgb,
+                                    snippet: a.snippet.clone(),
+                                    comment: a.comment.clone(),
+                                    line_rects_pt: a.line_rects_pt.clone(),
+                                }
+                            })
+                            .collect();
+
+                        (s.file_path.clone(), to_save)
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            };
+
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_is_saving(true);
+            }
+
+            let save_result = pdf::save_document_annotations(&file_path, &to_save);
+
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_is_saving(false);
+                match save_result {
+                    Ok(()) => {
+                        ui.set_is_dirty(false);
+                        ui.set_show_saved_badge(true);
+
+                        let ui_weak = app_weak.clone();
+                        slint::Timer::single_shot(
+                            std::time::Duration::from_millis(2000),
+                            move || {
+                                if let Some(ui) = ui_weak.upgrade() {
+                                    ui.set_show_saved_badge(false);
+                                }
+                            },
+                        );
+
+                        if let Ok(mut lock) = state_lock.lock() {
+                            if let Some(s) = lock.as_mut() {
+                                for a in &mut s.annotations {
+                                    a.is_from_pdf = true;
+                                    if a.kind == "highlight" {
+                                        let [br, bg, bb] = get_highlight_blend_rgb(a.color_index);
+                                        a.color_hex = format!("#{br:02x}{bg:02x}{bb:02x}");
+                                    }
+                                }
+                                s.cache.clear();
+                                s.worker.reload_document();
+                            }
+                        }
+
+                        update_view(&ui, &state_lock);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to save PDF: {e}");
                     }
                 }
             }

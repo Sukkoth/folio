@@ -28,8 +28,14 @@ pub struct RenderedPage {
     pub is_preview: bool,
 }
 
+#[derive(Debug, Clone)]
+pub enum WorkerMessage {
+    Render(RenderRequest),
+    Reload,
+}
+
 pub struct PdfWorker {
-    sender: Sender<RenderRequest>,
+    sender: Sender<WorkerMessage>,
     current_generation: Arc<AtomicU64>,
 }
 
@@ -38,7 +44,7 @@ impl PdfWorker {
     where
         F: Fn(RenderedPage) + Send + Sync + 'static,
     {
-        let (sender, receiver): (Sender<RenderRequest>, Receiver<RenderRequest>) =
+        let (sender, receiver): (Sender<WorkerMessage>, Receiver<WorkerMessage>) =
             crossbeam_channel::unbounded();
         let current_generation = Arc::new(AtomicU64::new(0));
         let worker_gen = Arc::clone(&current_generation);
@@ -58,7 +64,11 @@ impl PdfWorker {
     }
 
     pub fn request_render(&self, req: RenderRequest) {
-        let _ = self.sender.send(req);
+        let _ = self.sender.send(WorkerMessage::Render(req));
+    }
+
+    pub fn reload_document(&self) {
+        let _ = self.sender.send(WorkerMessage::Reload);
     }
 
     pub fn set_current_generation(&self, generation: u64) {
@@ -72,11 +82,11 @@ impl PdfWorker {
 
 fn worker_loop(
     file_path: String,
-    receiver: Receiver<RenderRequest>,
+    receiver: Receiver<WorkerMessage>,
     current_generation: Arc<AtomicU64>,
     on_rendered: Arc<dyn Fn(RenderedPage) + Send + Sync + 'static>,
 ) {
-    let doc = match mupdf::Document::open(&file_path) {
+    let mut doc = match mupdf::Document::open(&file_path) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("PDF worker failed to open {file_path}: {e}");
@@ -84,27 +94,36 @@ fn worker_loop(
         }
     };
 
-    while let Ok(req) = receiver.recv() {
-        // Fast-path drop if request generation is already superseded
-        if req.generation < current_generation.load(Ordering::Relaxed) {
-            continue;
-        }
-
-        match render_page(&doc, req.page, req.zoom, &req.highlights) {
-            Ok((rgba, w, h)) => {
-                if req.generation >= current_generation.load(Ordering::Relaxed) {
-                    on_rendered(RenderedPage {
-                        page: req.page,
-                        rgba,
-                        w,
-                        h,
-                        generation: req.generation,
-                        is_preview: req.is_preview,
-                    });
+    while let Ok(msg) = receiver.recv() {
+        match msg {
+            WorkerMessage::Reload => {
+                if let Ok(new_doc) = mupdf::Document::open(&file_path) {
+                    doc = new_doc;
                 }
             }
-            Err(e) => {
-                eprintln!("PDF worker error rendering page {}: {e}", req.page);
+            WorkerMessage::Render(req) => {
+                // Fast-path drop if request generation is already superseded
+                if req.generation < current_generation.load(Ordering::Relaxed) {
+                    continue;
+                }
+
+                match render_page(&doc, req.page, req.zoom, &req.highlights) {
+                    Ok((rgba, w, h)) => {
+                        if req.generation >= current_generation.load(Ordering::Relaxed) {
+                            on_rendered(RenderedPage {
+                                page: req.page,
+                                rgba,
+                                w,
+                                h,
+                                generation: req.generation,
+                                is_preview: req.is_preview,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("PDF worker error rendering page {}: {e}", req.page);
+                    }
+                }
             }
         }
     }

@@ -371,6 +371,75 @@ pub fn compute_text_selection(
     (snippet, line_rects)
 }
 
+/// Adjusts raw line rectangles for highlights with vertical ascender/descender padding
+/// and clean constant spacing (2.4pt) between consecutive lines.
+pub fn adjust_line_rects_for_highlight(
+    rects: &[(f32, f32, f32, f32)],
+) -> Vec<(f32, f32, f32, f32)> {
+    let n = rects.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        let (rx0, ry0, rx1, ry1) = rects[0];
+        let line_h = (ry1 - ry0).max(1.0);
+        let pad = (line_h * 0.16).clamp(1.2, 2.0);
+        return vec![(rx0, (ry0 - pad).max(0.0), rx1, ry1 + pad)];
+    }
+
+    // Auto-detect: if rects already touch or overlap (e.g. from an app using continuous highlights with no gaps),
+    // we preserve the continuous block (gap = 0). Otherwise, we use Folio's spaced highlight (gap = 2.4pt).
+    let is_already_continuous = (0..n - 1).all(|i| {
+        let y1_curr = rects[i].3;
+        let y0_next = rects[i + 1].1;
+        (y0_next - y1_curr) <= 0.5
+    });
+
+    let gap = if is_already_continuous { 0.0 } else { 2.4 };
+    let mut adjusted_y = Vec::with_capacity(n);
+    for i in 0..n {
+        adjusted_y.push((rects[i].1, rects[i].3));
+    }
+
+    // Between each consecutive pair of lines (i, i+1):
+    for i in 0..(n - 1) {
+        let y1_curr = rects[i].3;
+        let y0_next = rects[i + 1].1;
+        let raw_gap = y0_next - y1_curr;
+
+        // Normal consecutive lines in a text block
+        if raw_gap < 12.0 {
+            let mid = (y1_curr + y0_next) * 0.5;
+            adjusted_y[i].1 = mid - gap * 0.5;
+            adjusted_y[i + 1].0 = mid + gap * 0.5;
+        } else {
+            // Paragraph break
+            let pad = ((rects[i].3 - rects[i].1) * 0.16).clamp(1.2, 2.0);
+            adjusted_y[i].1 = y1_curr + pad;
+            let next_pad = ((rects[i + 1].3 - rects[i + 1].1) * 0.16).clamp(1.2, 2.0);
+            adjusted_y[i + 1].0 = (y0_next - next_pad).max(0.0);
+        }
+    }
+
+    // Top of first line
+    let first_h = (rects[0].3 - rects[0].1).max(1.0);
+    let top_pad = (first_h * 0.16).clamp(1.2, 2.0);
+    adjusted_y[0].0 = (rects[0].1 - top_pad).max(0.0);
+
+    // Bottom of last line
+    let last_h = (rects[n - 1].3 - rects[n - 1].1).max(1.0);
+    let bot_pad = (last_h * 0.16).clamp(1.2, 2.0);
+    adjusted_y[n - 1].1 = rects[n - 1].3 + bot_pad;
+
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let (rx0, _, rx1, _) = rects[i];
+        let (ay0, ay1) = adjusted_y[i];
+        out.push((rx0, ay0, rx1, ay1));
+    }
+    out
+}
+
 /// Extracts the underlying text snippet covered by a set of bounding boxes on a page.
 pub fn extract_text_for_rects(
     text_data: &PageTextData,
@@ -532,19 +601,296 @@ pub fn extract_document_annotations(file_path: &str) -> Vec<ExtractedAnnotation>
                 }
             }
 
-            annotations.push(ExtractedAnnotation {
-                page: p,
-                kind: kind.to_string(),
-                color_rgb: (r, g, b),
-                color_hex,
-                snippet,
-                comment,
-                line_rects_pt,
+            let is_dup = annotations.iter().any(|existing: &ExtractedAnnotation| {
+                if existing.page != p || existing.kind != kind {
+                    return false;
+                }
+                if !snippet.is_empty() && existing.snippet == snippet {
+                    return true;
+                }
+                if !line_rects_pt.is_empty() && existing.line_rects_pt.len() == line_rects_pt.len() {
+                    let all_match = existing.line_rects_pt.iter().zip(&line_rects_pt).all(|(r1, r2)| {
+                        (r1.0 - r2.0).abs() < 1.0
+                            && (r1.1 - r2.1).abs() < 1.0
+                            && (r1.2 - r2.2).abs() < 1.0
+                            && (r1.3 - r2.3).abs() < 1.0
+                    });
+                    if all_match {
+                        return true;
+                    }
+                }
+                false
             });
+
+            if !is_dup {
+                annotations.push(ExtractedAnnotation {
+                    page: p,
+                    kind: kind.to_string(),
+                    color_rgb: (r, g, b),
+                    color_hex,
+                    snippet,
+                    comment,
+                    line_rects_pt,
+                });
+            }
         }
     }
 
     annotations
+}
+
+#[derive(Debug, Clone)]
+pub struct SaveAnnotationData {
+    pub page: i32,
+    pub kind: String, // "highlight", "underline", "strikethrough", "note"
+    pub color_rgb: (f32, f32, f32),
+    pub snippet: String,
+    pub comment: String,
+    pub line_rects_pt: Vec<(f32, f32, f32, f32)>,
+}
+
+/// Saves annotations permanently into the PDF file
+pub fn save_document_annotations(
+    file_path: &str,
+    annotations: &[SaveAnnotationData],
+) -> Result<(), String> {
+    let doc = mupdf::pdf::PdfDocument::open(file_path)
+        .map_err(|e| format!("Failed to open PDF document for saving: {e}"))?;
+
+    let page_count = doc
+        .page_count()
+        .map_err(|e| format!("Failed to read PDF page count: {e}"))?;
+
+    for p in 0..page_count {
+        let mut page = match doc.load_pdf_page(p) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        // 1. Remove existing markup annotations from in-memory page structure
+        let existing: Vec<_> = page
+            .annotations()
+            .filter(|a| {
+                matches!(
+                    a.r#type(),
+                    Ok(mupdf::pdf::PdfAnnotationType::Highlight)
+                        | Ok(mupdf::pdf::PdfAnnotationType::Underline)
+                        | Ok(mupdf::pdf::PdfAnnotationType::Squiggly)
+                        | Ok(mupdf::pdf::PdfAnnotationType::StrikeOut)
+                        | Ok(mupdf::pdf::PdfAnnotationType::Text)
+                        | Ok(mupdf::pdf::PdfAnnotationType::FreeText)
+                )
+            })
+            .collect();
+
+        for a in existing {
+            let _ = page.delete_annotation(a);
+        }
+
+        // 2. Clean the page dictionary's Annots array directly.
+        // In MuPDF, direct annotation dictionaries are not removed from the page's Annots array
+        // by pdf_delete_annot because their dictionary lengths differ once loaded.
+        let page_obj = page.object();
+        if let Ok(Some(mut annots_arr)) = page_obj.get_dict("Annots") {
+            let len = annots_arr.len().unwrap_or(0);
+            for i in (0..len).rev() {
+                if let Ok(Some(item)) = annots_arr.get_array(i as i32) {
+                    if let Ok(Some(subtype)) = item.get_dict("Subtype") {
+                        let name_bytes = subtype.as_name().unwrap_or_default();
+                        let name_str = String::from_utf8_lossy(&name_bytes);
+                        if matches!(
+                            name_str.as_ref(),
+                            "Highlight" | "Underline" | "StrikeOut" | "Squiggly" | "Text" | "FreeText"
+                        ) {
+                            let _ = annots_arr.array_delete(i as i32);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Add current annotations for this page
+        for a in annotations.iter().filter(|a| a.page == p) {
+            let color = mupdf::color::AnnotationColor::Rgb {
+                red: a.color_rgb.0,
+                green: a.color_rgb.1,
+                blue: a.color_rgb.2,
+            };
+
+            let quads: Vec<mupdf::Quad> = a
+                .line_rects_pt
+                .iter()
+                .filter_map(|&(x0, y0, x1, y1)| {
+                    let rx0 = x0.min(x1);
+                    let ry0 = y0.min(y1);
+                    let rx1 = x0.max(x1);
+                    let ry1 = y0.max(y1);
+                    if (rx1 - rx0) > 0.5 && (ry1 - ry0) > 0.5 {
+                        Some(mupdf::Rect::new(rx0, ry0, rx1, ry1).quad())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            match a.kind.as_str() {
+                "highlight" => {
+                    let adjusted_rects = adjust_line_rects_for_highlight(&a.line_rects_pt);
+                    let quads: Vec<mupdf::Quad> = adjusted_rects
+                        .iter()
+                        .filter_map(|&(x0, y0, x1, y1)| {
+                            let rx0 = x0.min(x1);
+                            let ry0 = y0.min(y1);
+                            let rx1 = x0.max(x1);
+                            let ry1 = y0.max(y1);
+                            if (rx1 - rx0) > 0.5 && (ry1 - ry0) > 0.5 {
+                                Some(mupdf::Rect::new(rx0, ry0, rx1, ry1).quad())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    if !quads.is_empty() {
+                        if let Ok(mut annot) = page.add_highlight_annotation(quads) {
+                            let _ = annot.set_color(color);
+                            if !a.snippet.is_empty() {
+                                let _ = annot.set_contents(&a.snippet);
+                            }
+                            let _ = annot.update();
+                            set_crisp_rectangular_highlight_appearance(&mut annot, a.color_rgb);
+                        }
+                    }
+                }
+                "underline" => {
+                    if !quads.is_empty() {
+                        if let Ok(mut annot) = page.add_underline_annotation(quads) {
+                            let _ = annot.set_color(color);
+                            if !a.snippet.is_empty() {
+                                let _ = annot.set_contents(&a.snippet);
+                            }
+                            let _ = annot.update();
+                        }
+                    }
+                }
+                "strikethrough" => {
+                    if !quads.is_empty() {
+                        if let Ok(mut annot) = page.add_strikeout_annotation(quads) {
+                            let _ = annot.set_color(color);
+                            if !a.snippet.is_empty() {
+                                let _ = annot.set_contents(&a.snippet);
+                            }
+                            let _ = annot.update();
+                        }
+                    }
+                }
+                "note" => {
+                    let (rx0, ry0, _, _) = a
+                        .line_rects_pt
+                        .first()
+                        .copied()
+                        .unwrap_or((50.0, 50.0, 74.0, 74.0));
+                    let rect = mupdf::Rect::new(rx0, ry0, rx0 + 24.0, ry0 + 24.0);
+                    let text_content = if !a.comment.is_empty() {
+                        &a.comment
+                    } else {
+                        &a.snippet
+                    };
+                    if let Ok(mut annot) = page.add_text_annotation(rect, text_content) {
+                        let _ = annot.set_color(color);
+                        let _ = annot.update();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Save atomically: write to temp file then rename
+    let tmp_path = format!("{}.folio_tmp", file_path);
+    let mut options = mupdf::pdf::PdfWriteOptions::default();
+    options.set_incremental(false);
+    options.set_garbage(true);
+    doc.save_with_options(&tmp_path, options)
+        .map_err(|e| format!("Failed to write modified PDF to disk: {e}"))?;
+
+    std::fs::rename(&tmp_path, file_path)
+        .map_err(|e| format!("Failed to replace PDF file: {e}"))?;
+
+    Ok(())
+}
+
+/// Overwrites MuPDF's default Adobe-style curved/rounded appearance stream with
+/// clean, modern, crisp rectangular paths (re f) matching Folio's live reading design.
+fn set_crisp_rectangular_highlight_appearance(
+    annot: &mut mupdf::pdf::PdfAnnotation,
+    (r, g, b): (f32, f32, f32),
+) {
+    let obj = annot.object();
+    let qp = match obj.get_dict("QuadPoints") {
+        Ok(Some(qp)) => qp,
+        _ => return,
+    };
+    let qp_len = match qp.len() {
+        Ok(len) if len >= 8 && len % 8 == 0 => len,
+        _ => return,
+    };
+
+    let mut rect_ops = String::new();
+    let mut min_all_x = f32::INFINITY;
+    let mut min_all_y = f32::INFINITY;
+    let mut max_all_x = f32::NEG_INFINITY;
+    let mut max_all_y = f32::NEG_INFINITY;
+
+    for i in (0..qp_len).step_by(8) {
+        let ul_x = qp.get_array(i as i32 + 0).ok().flatten().and_then(|o| o.as_float().ok()).unwrap_or(0.0);
+        let ul_y = qp.get_array(i as i32 + 1).ok().flatten().and_then(|o| o.as_float().ok()).unwrap_or(0.0);
+        let ur_x = qp.get_array(i as i32 + 2).ok().flatten().and_then(|o| o.as_float().ok()).unwrap_or(0.0);
+        let ur_y = qp.get_array(i as i32 + 3).ok().flatten().and_then(|o| o.as_float().ok()).unwrap_or(0.0);
+        let ll_x = qp.get_array(i as i32 + 4).ok().flatten().and_then(|o| o.as_float().ok()).unwrap_or(0.0);
+        let ll_y = qp.get_array(i as i32 + 5).ok().flatten().and_then(|o| o.as_float().ok()).unwrap_or(0.0);
+        let lr_x = qp.get_array(i as i32 + 6).ok().flatten().and_then(|o| o.as_float().ok()).unwrap_or(0.0);
+        let lr_y = qp.get_array(i as i32 + 7).ok().flatten().and_then(|o| o.as_float().ok()).unwrap_or(0.0);
+
+        let rx0 = ul_x.min(ll_x);
+        let rx1 = ur_x.max(lr_x);
+        let ry0 = ll_y.min(lr_y);
+        let ry1 = ul_y.max(ur_y);
+        let rw = (rx1 - rx0).max(0.1);
+        let rh = (ry1 - ry0).max(0.1);
+
+        min_all_x = min_all_x.min(rx0);
+        min_all_y = min_all_y.min(ry0);
+        max_all_x = max_all_x.max(rx1);
+        max_all_y = max_all_y.max(ry1);
+
+        rect_ops.push_str(&format!("{rx0:.3} {ry0:.3} {rw:.3} {rh:.3} re\n"));
+    }
+
+    if rect_ops.is_empty() {
+        return;
+    }
+
+    let stream_content = format!("/H gs\n{r:.4} {g:.4} {b:.4} rg\n{rect_ops}f\n");
+
+    if let Ok(Some(ap)) = obj.get_dict("AP") {
+        if let Ok(Some(mut n_stream)) = ap.get_dict("N") {
+            let _ = n_stream.write_stream_string(&stream_content);
+            if let Ok(Some(mut bbox_arr)) = n_stream.get_dict("BBox") {
+                let _ = bbox_arr.array_put(0, mupdf::pdf::PdfObject::new_real(min_all_x).unwrap());
+                let _ = bbox_arr.array_put(1, mupdf::pdf::PdfObject::new_real(min_all_y).unwrap());
+                let _ = bbox_arr.array_put(2, mupdf::pdf::PdfObject::new_real(max_all_x).unwrap());
+                let _ = bbox_arr.array_put(3, mupdf::pdf::PdfObject::new_real(max_all_y).unwrap());
+            }
+        }
+    }
+
+    if let Ok(Some(mut rect_arr)) = obj.get_dict("Rect") {
+        let _ = rect_arr.array_put(0, mupdf::pdf::PdfObject::new_real(min_all_x).unwrap());
+        let _ = rect_arr.array_put(1, mupdf::pdf::PdfObject::new_real(min_all_y).unwrap());
+        let _ = rect_arr.array_put(2, mupdf::pdf::PdfObject::new_real(max_all_x).unwrap());
+        let _ = rect_arr.array_put(3, mupdf::pdf::PdfObject::new_real(max_all_y).unwrap());
+    }
 }
 
 #[cfg(test)]
@@ -552,14 +898,149 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_annotations() {
+    fn test_inspect_annot_ap() {
+        let mut doc = mupdf::pdf::PdfDocument::new();
+        let mut page = doc.new_page((500.0, 700.0)).unwrap();
+        let quad = mupdf::Rect::new(50.0, 100.0, 250.0, 120.0).quad();
+        let mut annot = page.add_highlight_annotation(vec![quad]).unwrap();
+        annot.set_color(mupdf::color::AnnotationColor::Rgb { red: 1.0, green: 0.8, blue: 0.2 }).unwrap();
+        annot.update().unwrap();
+        set_crisp_rectangular_highlight_appearance(&mut annot, (1.0, 0.8, 0.2));
+
+        let tmp = "/tmp/folio_test_rect_highlight.pdf";
+        doc.save(tmp).unwrap();
+
+        // Render page using mupdf to verify it renders cleanly
+        let doc2 = mupdf::Document::open(tmp).unwrap();
+        let page2 = doc2.load_page(0).unwrap();
+        let pixmap = page2.to_pixmap(&mupdf::Matrix::new_scale(1.0, 1.0), &mupdf::Colorspace::device_rgb(), false, true).unwrap();
+        let quads = annot.quads().unwrap();
+        println!("annot.quads(): {:?}", quads);
+        let samples = pixmap.samples();
+        let stride = pixmap.stride() as usize;
+
+        // Check pixel at (48, 110) - outside rect: should be pure white (255, 255, 255)
+        let p_out = (110 * stride) + (48 * 3);
+        println!("Outside pixel (48, 110): {:?}", &samples[p_out..p_out+3]);
+
+        // Check pixel at (52, 110) - inside rect: should be highlighted
+        let p_in = (110 * stride) + (52 * 3);
+        println!("Inside pixel (52, 110): {:?}", &samples[p_in..p_in+3]);
+
+        // Check top corner pixel at (50, 100): should be highlighted (flat rectangular edge, NOT curved away!)
+        let p_corner = (100 * stride) + (50 * 3);
+        println!("Corner pixel (50, 100): {:?}", &samples[p_corner..p_corner+3]);
+
+        assert_eq!(&samples[p_out..p_out+3], &[255, 255, 255]);
+        assert_ne!(&samples[p_in..p_in+3], &[255, 255, 255]);
+        assert_ne!(&samples[p_corner..p_corner+3], &[255, 255, 255]);
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn test_extract_and_deduplicate() {
         let path = "/home/twof/Documents/The Message of Ephesians (John R. W. Stott) (z-library.sk, 1lib.sk, z-lib.sk).pdf";
         if std::path::Path::new(path).exists() {
             let annots = extract_document_annotations(path);
-            println!("Extracted {} annotations from PDF", annots.len());
+            println!("Extracted {} deduplicated annotations from PDF", annots.len());
             for a in &annots {
                 println!("- Page {}: [{}] '{}' (color: {})", a.page + 1, a.kind, a.snippet, a.color_hex);
             }
+            // Verify there are no duplicate snippets on the same page
+            let mut seen = std::collections::HashSet::new();
+            for a in &annots {
+                let key = (a.page, a.kind.clone(), a.snippet.clone());
+                assert!(seen.insert(key), "Found duplicate annotation: Page {} [{}] '{}'", a.page + 1, a.kind, a.snippet);
+            }
+
+            // Test saving and reloading: count must stay identical (no duplicates!)
+            let tmp_copy = "/tmp/folio_ephesians_test_roundtrip.pdf";
+            std::fs::copy(path, tmp_copy).unwrap();
+
+            let to_save: Vec<SaveAnnotationData> = annots.iter().map(|a| {
+                let rgb = if a.kind == "highlight" {
+                    // Test pastel orange for "Most commentators"
+                    if a.snippet.contains("Most commentators") {
+                        (1.0, 0.8157, 0.6078)
+                    } else {
+                        a.color_rgb
+                    }
+                } else {
+                    a.color_rgb
+                };
+                SaveAnnotationData {
+                    page: a.page,
+                    kind: a.kind.clone(),
+                    color_rgb: rgb,
+                    snippet: a.snippet.clone(),
+                    comment: a.comment.clone(),
+                    line_rects_pt: a.line_rects_pt.clone(),
+                }
+            }).collect();
+
+            save_document_annotations(tmp_copy, &to_save).unwrap();
+            let reloaded1 = extract_document_annotations(tmp_copy);
+            assert_eq!(reloaded1.len(), annots.len(), "Reloaded count must match exactly");
+
+            // Save a second time: count must still remain exactly identical!
+            save_document_annotations(tmp_copy, &to_save).unwrap();
+            let reloaded2 = extract_document_annotations(tmp_copy);
+            assert_eq!(reloaded2.len(), annots.len(), "Second save must still match exactly");
+
+            // Check color of "Most commentators" is pastel peach/orange
+            let most_comm = reloaded2.iter().find(|a| a.snippet.contains("Most commentators")).unwrap();
+            assert_eq!(most_comm.color_hex, "#ffd09b", "Color must be soft pastel peach/orange");
+
+            let _ = std::fs::remove_file(tmp_copy);
         }
+    }
+
+    #[test]
+    fn test_save_and_extract_roundtrip() {
+        let temp_dir = std::env::temp_dir();
+        let test_pdf_path = temp_dir.join("folio_test_annot.pdf");
+        let path_str = test_pdf_path.to_str().unwrap();
+
+        // Create a blank PDF with 1 page
+        {
+            let mut doc = mupdf::pdf::PdfDocument::new();
+            doc.new_page((500.0, 700.0)).unwrap();
+            doc.save(path_str).unwrap();
+        }
+
+        // Save a highlight and a note
+        let to_save = vec![
+            SaveAnnotationData {
+                page: 0,
+                kind: "highlight".to_string(),
+                color_rgb: (0.98, 0.80, 0.08),
+                snippet: "Testing Folio Highlight Saving".to_string(),
+                comment: String::new(),
+                line_rects_pt: vec![(50.0, 100.0, 250.0, 120.0)],
+            },
+            SaveAnnotationData {
+                page: 0,
+                kind: "note".to_string(),
+                color_rgb: (0.23, 0.51, 0.96),
+                snippet: String::new(),
+                comment: "Important user note".to_string(),
+                line_rects_pt: vec![(60.0, 60.0, 84.0, 84.0)],
+            },
+        ];
+
+        save_document_annotations(path_str, &to_save).unwrap();
+
+        // Extract and verify
+        let extracted = extract_document_annotations(path_str);
+        assert_eq!(extracted.len(), 2);
+        assert!(extracted.iter().any(|a| a.kind == "highlight"));
+        assert!(extracted.iter().any(|a| a.kind == "note" && a.comment == "Important user note"));
+
+        // Save again with the same 2 annotations: verify count stays 2 (no duplicates created)
+        save_document_annotations(path_str, &to_save).unwrap();
+        let extracted2 = extract_document_annotations(path_str);
+        assert_eq!(extracted2.len(), 2, "Re-saving must not create duplicate annotations");
+
+        let _ = std::fs::remove_file(test_pdf_path);
     }
 }

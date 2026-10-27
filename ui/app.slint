@@ -121,10 +121,15 @@ export component AppWindow inherits Window {
     in-out property <bool> show-note-input: false;
     in-out property <string> current-note-text: "";
 
+    in-out property <bool> is-dirty: false;
+    in-out property <bool> is-saving: false;
+    in-out property <bool> show-saved-badge: false;
+
     in-out property <bool> suppress-page-change: false;
     in property <bool> has-error: false;
     in property <string> error-message: "";
 
+    callback save-document();
     callback prev-page();
     callback next-page();
     callback zoom-in();
@@ -184,8 +189,12 @@ export component AppWindow inherits Window {
                         }
                     }
                 } else {
+                    // Ctrl + S: Save Document
+                    if (event.text == "s" || event.text == "S") {
+                        root.save-document();
+                        return accept;
                     // Ctrl + H: Highlight
-                    if (event.text == "h" || event.text == "H") {
+                    } else if (event.text == "h" || event.text == "H") {
                         if (root.has-selection) {
                             root.create-annotation("highlight", root.selected-color-index);
                             return accept;
@@ -460,6 +469,68 @@ export component AppWindow inherits Window {
                             text: "Fit";
                             y: (parent.height - self.height) / 2;
                             clicked => { root.zoom-fit(); }
+                        }
+
+                        // Save Button (Appears when annotations are modified)
+                        if root.is-dirty: Rectangle {
+                            height: 30px;
+                            border-radius: 6px;
+                            background: save-ta.has-hover ? #2563eb : #3b82f6;
+                            border-width: 1px;
+                            border-color: #60a5fa;
+                            animate background { duration: 100ms; }
+                            y: (parent.height - self.height) / 2;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 5px;
+                                alignment: center;
+
+                                Text {
+                                    text: "💾";
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: root.is-saving ? "Saving..." : "Save";
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    color: #ffffff;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            save-ta := TouchArea {
+                                clicked => { root.save-document(); }
+                                mouse-cursor: pointer;
+                            }
+                        }
+
+                        // Saved Confirmation Badge
+                        if !root.is-dirty && root.show-saved-badge: Rectangle {
+                            height: 30px;
+                            border-radius: 6px;
+                            background: #05966920;
+                            border-width: 1px;
+                            border-color: #10b98160;
+                            y: (parent.height - self.height) / 2;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 4px;
+                                alignment: center;
+
+                                Text {
+                                    text: "✓ Saved";
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    color: #34d399;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
                     }
                 }
