@@ -703,6 +703,88 @@ fn trigger_scroll_page_render_direct(state: &mut AppState, page_idx: i32, ui: &A
     });
 }
 
+fn collect_annotations_to_save(s: &AppState) -> Vec<pdf::SaveAnnotationData> {
+    s.annotations
+        .iter()
+        .map(|a| {
+            let rgb = if a.kind == "highlight" {
+                if !a.is_from_pdf || STATIC_COLORS.iter().any(|(h, ..)| *h == a.color_hex) {
+                    get_highlight_blend_rgb_floats(a.color_index)
+                } else if let Some((r, g, b)) = parse_hex_to_rgb(&a.color_hex) {
+                    (r, g, b)
+                } else {
+                    get_highlight_blend_rgb_floats(a.color_index)
+                }
+            } else if let Some((r, g, b)) = parse_hex_to_rgb(&a.color_hex) {
+                (r, g, b)
+            } else {
+                get_highlight_blend_rgb_floats(a.color_index)
+            };
+
+            pdf::SaveAnnotationData {
+                page: a.page,
+                kind: a.kind.clone(),
+                color_rgb: rgb,
+                snippet: a.snippet.clone(),
+                comment: a.comment.clone(),
+                line_rects_pt: a.line_rects_pt.clone(),
+            }
+        })
+        .collect()
+}
+
+fn prompt_save_as(default_path: &str) -> Option<std::path::PathBuf> {
+    let current_path = std::path::Path::new(default_path);
+    let file_name = current_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("document.pdf");
+
+    let initial_dir = current_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+
+    // 1. Try rfd native file dialog
+    let res = rfd::FileDialog::new()
+        .set_directory(initial_dir)
+        .set_file_name(file_name)
+        .add_filter("PDF document (*.pdf)", &["pdf"])
+        .save_file();
+
+    if let Some(mut path) = res {
+        if path.extension().is_none() {
+            path.set_extension("pdf");
+        }
+        return Some(path);
+    }
+
+    // 2. Fallback to zenity if available
+    if let Ok(output) = std::process::Command::new("zenity")
+        .args([
+            "--file-selection",
+            "--save",
+            "--confirm-overwrite",
+            &format!("--filename={}", default_path),
+            "--file-filter=PDF documents (*.pdf) | *.pdf",
+            "--file-filter=All files | *",
+        ])
+        .output()
+    {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                let mut path = std::path::PathBuf::from(path_str);
+                if path.extension().is_none() {
+                    path.set_extension("pdf");
+                }
+                return Some(path);
+            }
+        }
+    }
+
+    None
+}
+
 fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     // Toggle Sidebar
     {
@@ -1122,35 +1204,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             let (file_path, to_save) = {
                 if let Ok(mut lock) = state_lock.lock() {
                     if let Some(s) = lock.as_mut() {
-                        let to_save: Vec<pdf::SaveAnnotationData> = s
-                            .annotations
-                            .iter()
-                            .map(|a| {
-                                let rgb = if a.kind == "highlight" {
-                                    if !a.is_from_pdf || STATIC_COLORS.iter().any(|(h, ..)| *h == a.color_hex) {
-                                        get_highlight_blend_rgb_floats(a.color_index)
-                                    } else if let Some((r, g, b)) = parse_hex_to_rgb(&a.color_hex) {
-                                        (r, g, b)
-                                    } else {
-                                        get_highlight_blend_rgb_floats(a.color_index)
-                                    }
-                                } else if let Some((r, g, b)) = parse_hex_to_rgb(&a.color_hex) {
-                                    (r, g, b)
-                                } else {
-                                    get_highlight_blend_rgb_floats(a.color_index)
-                                };
-
-                                pdf::SaveAnnotationData {
-                                    page: a.page,
-                                    kind: a.kind.clone(),
-                                    color_rgb: rgb,
-                                    snippet: a.snippet.clone(),
-                                    comment: a.comment.clone(),
-                                    line_rects_pt: a.line_rects_pt.clone(),
-                                }
-                            })
-                            .collect();
-
+                        let to_save = collect_annotations_to_save(s);
                         (s.file_path.clone(), to_save)
                     } else {
                         return;
@@ -1185,6 +1239,89 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     }
                     Err(e) => {
                         eprintln!("Failed to save PDF: {e}");
+                    }
+                }
+            }
+        });
+    }
+
+    // Save Document As (Ctrl + Shift + S)
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_save_document_as(move || {
+            let (file_path, to_save) = {
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        let to_save = collect_annotations_to_save(s);
+                        (s.file_path.clone(), to_save)
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            };
+
+            let chosen_path = match prompt_save_as(&file_path) {
+                Some(p) => p,
+                None => return, // User cancelled
+            };
+
+            let new_path_str = chosen_path.to_string_lossy().to_string();
+
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_is_saving(true);
+            }
+
+            // If saving to a new path, copy the base file over first if they differ
+            if new_path_str != file_path {
+                if let Err(e) = std::fs::copy(&file_path, &new_path_str) {
+                    eprintln!("Failed to copy PDF for Save As: {e}");
+                    if let Some(ui) = app_weak.upgrade() {
+                        ui.set_is_saving(false);
+                    }
+                    return;
+                }
+            }
+
+            let save_result = pdf::save_document_annotations(&new_path_str, &to_save);
+
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_is_saving(false);
+                match save_result {
+                    Ok(()) => {
+                        let new_file_name = std::path::Path::new(&new_path_str)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&new_path_str)
+                            .to_string();
+
+                        ui.set_is_dirty(false);
+                        ui.set_file_path(new_path_str.clone().into());
+                        ui.set_file_title(new_file_name.into());
+                        ui.set_show_saved_badge(true);
+
+                        let ui_weak = app_weak.clone();
+                        slint::Timer::single_shot(
+                            std::time::Duration::from_millis(2000),
+                            move || {
+                                if let Some(ui) = ui_weak.upgrade() {
+                                    ui.set_show_saved_badge(false);
+                                }
+                            },
+                        );
+
+                        if let Ok(mut lock) = state_lock.lock() {
+                            if let Some(s) = lock.as_mut() {
+                                s.file_path = new_path_str.clone();
+                                s.cached_text_page = -1;
+                                s.worker.switch_document(new_path_str);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to save PDF as: {e}");
                     }
                 }
             }

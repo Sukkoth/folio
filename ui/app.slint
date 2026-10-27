@@ -131,6 +131,7 @@ export component AppWindow inherits Window {
     in property <string> error-message: "";
 
     callback save-document();
+    callback save-document-as();
     callback prev-page();
     callback next-page();
     callback zoom-in();
@@ -174,7 +175,13 @@ export component AppWindow inherits Window {
     keyboard-handler := FocusScope {
         key-pressed(event) => {
             if (event.modifiers.control) {
-                if (event.modifiers.alt) {
+                if (event.modifiers.shift) {
+                    // Ctrl + Shift + S: Save As
+                    if (event.text == "s" || event.text == "S") {
+                        root.save-document-as();
+                        return accept;
+                    }
+                } else if (event.modifiers.alt) {
                     // Ctrl + Alt + S: Strikethrough
                     if (event.text == "s" || event.text == "S") {
                         if (root.has-selection) {

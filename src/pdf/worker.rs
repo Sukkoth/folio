@@ -33,6 +33,7 @@ pub enum WorkerMessage {
     Render(RenderRequest),
     #[allow(dead_code)]
     Reload,
+    SwitchDocument(String),
 }
 
 pub struct PdfWorker {
@@ -68,6 +69,10 @@ impl PdfWorker {
         let _ = self.sender.send(WorkerMessage::Render(req));
     }
 
+    pub fn switch_document(&self, new_path: String) {
+        let _ = self.sender.send(WorkerMessage::SwitchDocument(new_path));
+    }
+
     #[allow(dead_code)]
     pub fn reload_document(&self) {
         let _ = self.sender.send(WorkerMessage::Reload);
@@ -88,6 +93,7 @@ fn worker_loop(
     current_generation: Arc<AtomicU64>,
     on_rendered: Arc<dyn Fn(RenderedPage) + Send + Sync + 'static>,
 ) {
+    let mut file_path = file_path;
     let mut doc = match mupdf::Document::open(&file_path) {
         Ok(d) => d,
         Err(e) => {
@@ -98,6 +104,12 @@ fn worker_loop(
 
     while let Ok(msg) = receiver.recv() {
         match msg {
+            WorkerMessage::SwitchDocument(new_path) => {
+                if let Ok(new_doc) = mupdf::Document::open(&new_path) {
+                    doc = new_doc;
+                    file_path = new_path;
+                }
+            }
             WorkerMessage::Reload => {
                 if let Ok(new_doc) = mupdf::Document::open(&file_path) {
                     doc = new_doc;
