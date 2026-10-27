@@ -90,7 +90,7 @@ fn setup_document(
     let scroll_item_h = card_h + 24.0;
 
     app.set_scroll_item_height(scroll_item_h);
-    app.set_is_scroll_view(false);
+    app.set_is_scroll_view(true);
 
     // Initialize the scroll-pages model for continuous scroll view
     let mut items = Vec::with_capacity(meta.page_count as usize);
@@ -125,7 +125,7 @@ fn setup_document(
         current_page: 0,
         total_pages: meta.page_count,
         zoom_level: default_zoom,
-        is_scroll_view: false,
+        is_scroll_view: true,
         page_width_pt: meta.initial_width_pt,
         page_height_pt: meta.initial_height_pt,
         cache: PageCache::new(16),
