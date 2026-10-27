@@ -4,11 +4,18 @@ use std::sync::Arc;
 use std::thread;
 
 #[derive(Debug, Clone)]
+pub struct HighlightOverlay {
+    pub rgb: [u8; 3],
+    pub rects_pt: Vec<(f32, f32, f32, f32)>,
+}
+
+#[derive(Debug, Clone)]
 pub struct RenderRequest {
     pub page: i32,
     pub zoom: f32,
     pub generation: u64,
     pub is_preview: bool,
+    pub highlights: Vec<HighlightOverlay>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,7 +90,7 @@ fn worker_loop(
             continue;
         }
 
-        match render_page(&doc, req.page, req.zoom) {
+        match render_page(&doc, req.page, req.zoom, &req.highlights) {
             Ok((rgba, w, h)) => {
                 if req.generation >= current_generation.load(Ordering::Relaxed) {
                     on_rendered(RenderedPage {
@@ -107,6 +114,7 @@ fn render_page(
     doc: &mupdf::Document,
     page_no: i32,
     zoom: f32,
+    highlights: &[HighlightOverlay],
 ) -> Result<(Vec<u8>, u32, u32), String> {
     let page = doc
         .load_page(page_no)
@@ -138,6 +146,39 @@ fn render_page(
             }
         } else {
             return Err("Pixmap row exceeds sample buffer".to_string());
+        }
+    }
+
+    // Apply optical Multiply blending for highlights:
+    // White paper (255,255,255) becomes the highlight color.
+    // Text pixels (0,0,0) remain 100% pure black (0 * color / 255 = 0), never discolored or washed out!
+    // A pixel coverage mask ensures overlapping line boundaries are NEVER multiplied twice.
+    let mut applied = vec![false; (w * h) as usize];
+
+    for h_over in highlights {
+        let hr = h_over.rgb[0] as u16;
+        let hg = h_over.rgb[1] as u16;
+        let hb = h_over.rgb[2] as u16;
+
+        for rect in &h_over.rects_pt {
+            let px0 = ((rect.0 * zoom).round() as usize).min(w as usize);
+            let py0 = ((rect.1 * zoom).round() as usize).min(h as usize);
+            let px1 = ((rect.2 * zoom).round() as usize).min(w as usize);
+            let py1 = ((rect.3 * zoom).round() as usize).min(h as usize);
+
+            for y in py0..py1 {
+                let row_offset = y * (w as usize);
+                for x in px0..px1 {
+                    let p_idx = row_offset + x;
+                    if !applied[p_idx] {
+                        applied[p_idx] = true;
+                        let idx = p_idx * 4;
+                        rgba[idx] = ((rgba[idx] as u16 * hr) / 255) as u8;
+                        rgba[idx + 1] = ((rgba[idx + 1] as u16 * hg) / 255) as u8;
+                        rgba[idx + 2] = ((rgba[idx + 2] as u16 * hb) / 255) as u8;
+                    }
+                }
+            }
         }
     }
 

@@ -34,6 +34,18 @@ impl PageCache {
         self.cache.put((page, Self::zoom_bucket(zoom)), entry);
     }
 
+    pub fn remove_page(&mut self, page: i32) {
+        let keys_to_remove: Vec<_> = self
+            .cache
+            .iter()
+            .filter(|((p, _), _)| *p == page)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in keys_to_remove {
+            self.cache.pop(&k);
+        }
+    }
+
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.cache.clear();
