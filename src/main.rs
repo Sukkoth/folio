@@ -125,6 +125,11 @@ enum UndoAction {
         new_color_index: i32,
         new_color_hex: String,
     },
+    NoteChanged {
+        id: i32,
+        old_comment: String,
+        new_comment: String,
+    },
 }
 
 struct AppState {
@@ -482,14 +487,18 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
             display_page: format!("{}", annot.page + 1).into(),
         };
 
-        if annot.kind == "note" {
-            notes.push(item_data);
-        } else {
+        let has_note = annot.kind == "note" || !annot.comment.trim().is_empty();
+        if has_note {
+            notes.push(item_data.clone());
+        }
+        if annot.kind != "note" {
             highlights.push(item_data);
         }
 
         // All annotations (including highlights) provide visual hitboxes for hover & click interaction
-        for rect in &annot.line_rects_pt {
+        let num_rects = annot.line_rects_pt.len();
+        for (idx, rect) in annot.line_rects_pt.iter().enumerate() {
+            let is_last_rect = idx + 1 == num_rects;
             visuals.push(AnnotationVisual {
                 id: annot.id,
                 page: annot.page,
@@ -501,6 +510,7 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
                 w: (rect.2 - rect.0).max(4.0) * s.zoom_level,
                 h: (rect.3 - rect.1).max(4.0) * s.zoom_level,
                 comment: annot.comment.clone().into(),
+                show_note_icon: has_note && is_last_rect,
             });
         }
     }
@@ -869,6 +879,17 @@ fn perform_undo(s: &mut AppState) -> Option<(bool, Option<i32>)> {
                 }
             }
         }
+        UndoAction::NoteChanged {
+            id,
+            old_comment,
+            ..
+        } => {
+            // Undoing a note change: revert to old comment
+            if let Some(pos) = s.annotations.iter().position(|a| a.id == *id) {
+                s.annotations[pos].comment = old_comment.clone();
+                s.annotations[pos].is_from_pdf = false;
+            }
+        }
     }
 
     if s.redo_stack.len() >= MAX_UNDO_OPERATIONS {
@@ -923,6 +944,17 @@ fn perform_redo(s: &mut AppState) -> Option<(bool, Option<i32>)> {
                     s.cache.remove_page(page);
                     highlight_page_to_rerender = Some(page);
                 }
+            }
+        }
+        UndoAction::NoteChanged {
+            id,
+            new_comment,
+            ..
+        } => {
+            // Redoing a note change: apply new comment again
+            if let Some(pos) = s.annotations.iter().position(|a| a.id == *id) {
+                s.annotations[pos].comment = new_comment.clone();
+                s.annotations[pos].is_from_pdf = false;
             }
         }
     }
@@ -1016,6 +1048,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 ui.set_show_note_input(false);
                 ui.set_selected_annotation_id(-1);
                 ui.set_hovered_annotation_id(-1);
+                ui.set_current_note_text("".into());
                 ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
             }
         });
@@ -1137,6 +1170,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_has_selection(false);
                     ui.set_show_popup(false);
                     ui.set_show_note_input(false);
+                    ui.set_current_note_text("".into());
                     ui.set_selected_annotation_id(-1);
                 }
             }
@@ -1233,6 +1267,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_has_selection(false);
                     ui.set_show_popup(false);
                     ui.set_show_note_input(false);
+                    ui.set_current_note_text("".into());
                     ui.set_selected_annotation_id(-1);
                     ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
 
@@ -1297,6 +1332,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_has_selection(false);
                     ui.set_show_popup(false);
                     ui.set_show_note_input(false);
+                    ui.set_current_note_text("".into());
                     ui.set_selected_annotation_id(-1);
                     ui.set_current_note_text("".into());
                     ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
@@ -1416,6 +1452,44 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Update Annotation Note
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_update_annotation_note(move |id, comment_text| {
+            let comment_str = comment_text.to_string();
+            let mut need_sync = false;
+            if let Ok(mut lock) = state_lock.lock() {
+                if let Some(s) = lock.as_mut() {
+                    if let Some(pos) = s.annotations.iter().position(|a| a.id == id) {
+                        let old_comment = s.annotations[pos].comment.clone();
+                        if old_comment != comment_str {
+                            s.push_undo(UndoAction::NoteChanged {
+                                id,
+                                old_comment,
+                                new_comment: comment_str.clone(),
+                            });
+                            s.annotations[pos].comment = comment_str;
+                            s.annotations[pos].is_from_pdf = false;
+                            need_sync = true;
+                        }
+                    }
+                }
+            }
+
+            if need_sync {
+                if let Some(ui) = app_weak.upgrade() {
+                    ui.set_is_dirty(true);
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            sync_annotations_to_ui(s, &ui);
                         }
                     }
                 }
@@ -1642,6 +1716,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 ui.set_show_note_input(false);
                 ui.set_selected_annotation_id(-1);
                 ui.set_hovered_annotation_id(-1);
+                ui.set_current_note_text("".into());
                 ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
             }
         });
@@ -2144,6 +2219,47 @@ mod tests {
         assert!(res.is_some());
         assert_eq!(state.annotations[0].color_index, 2);
         assert_eq!(state.annotations[0].color_hex, "#60a5fa");
+
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn test_undo_redo_note_change() {
+        let (mut state, pdf_path) = setup_test_state();
+
+        let annot = AnnotationRecord {
+            id: 1,
+            page: 0,
+            kind: "highlight".to_string(),
+            color_index: 0,
+            color_hex: "#facc15".to_string(),
+            snippet: "Important passage".to_string(),
+            comment: "".to_string(),
+            line_rects_pt: vec![(10.0, 20.0, 100.0, 30.0)],
+            is_from_pdf: false,
+        };
+
+        state.annotations.push(annot);
+
+        // Add note to highlight
+        state.push_undo(UndoAction::NoteChanged {
+            id: 1,
+            old_comment: "".to_string(),
+            new_comment: "Review this later".to_string(),
+        });
+        state.annotations[0].comment = "Review this later".to_string();
+
+        assert_eq!(state.annotations[0].comment, "Review this later");
+
+        // Undo -> Reverts to empty comment
+        let res = perform_undo(&mut state);
+        assert!(res.is_some());
+        assert_eq!(state.annotations[0].comment, "");
+
+        // Redo -> Re-applies comment
+        let res = perform_redo(&mut state);
+        assert!(res.is_some());
+        assert_eq!(state.annotations[0].comment, "Review this later");
 
         let _ = std::fs::remove_file(pdf_path);
     }

@@ -75,6 +75,7 @@ export struct AnnotationVisual {
     w: length,
     h: length,
     comment: string,
+    show-note-icon: bool,
 }
 
 export component AppWindow inherits Window {
@@ -159,6 +160,7 @@ export component AppWindow inherits Window {
     callback create-note-annotation(string, int); // (comment, color_index)
     callback delete-annotation(int); // (id)
     callback update-annotation-color(int, int); // (id, color_index)
+    callback update-annotation-note(int, string); // (id, comment)
     callback undo();
     callback redo();
 
@@ -1063,11 +1065,17 @@ export component AppWindow inherits Window {
                                             }
                                         }
 
-                                        // Delete icon button
+                                        // Delete icon button in Notes tab: removes note from highlight, or deletes standalone note
                                         IconButton {
                                             text: "✕";
                                             y: (parent.height - self.height) / 2;
-                                            clicked => { root.delete-annotation(item.id); }
+                                            clicked => {
+                                                if (item.kind == "note") {
+                                                    root.delete-annotation(item.id);
+                                                } else {
+                                                    root.update-annotation-note(item.id, "");
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1214,8 +1222,12 @@ export component AppWindow inherits Window {
                                         } else if (event.button == PointerEventButton.left) {
                                             if (event.kind == PointerEventKind.down) {
                                                 root.selected-annotation-id = -1;
+                                                root.current-note-text = "";
+                                                root.show-note-input = false;
                                                 root.selection-started(root.current-page, page-ta.mouse-x, page-ta.mouse-y);
                                             } else if (event.kind == PointerEventKind.up) {
+                                                root.current-note-text = "";
+                                                root.show-note-input = false;
                                                 root.selection-completed(root.current-page, page-ta.mouse-x, page-ta.mouse-y);
                                             }
                                         }
@@ -1262,22 +1274,47 @@ export component AppWindow inherits Window {
                                             background: annot.color;
                                         }
 
-                                        // Note icon badge
-                                        if annot.kind == "note": Rectangle {
-                                            x: parent.width - 20px;
-                                            y: -2px;
-                                            width: 22px;
-                                            height: 22px;
-                                            border-radius: 4px;
-                                            background: annot.color;
-                                            drop-shadow-blur: 4px;
-                                            drop-shadow-color: #00000060;
+                                        // Margin Gutter Note Pin: positioned in the right page margin so text is never covered
+                                        if annot.show-note-icon: margin-pin := Rectangle {
+                                            x: root.page-width - annot.x - 28px;
+                                            y: (parent.height - self.height) / 2;
+                                            width: 24px;
+                                            height: 24px;
+                                            border-radius: 6px;
+                                            background: (root.hovered-annotation-id == annot.id || root.selected-annotation-id == annot.id || pin-ta.has-hover) ? annot.color : annot.color.darker(0.15);
+                                            border-width: (root.hovered-annotation-id == annot.id || root.selected-annotation-id == annot.id || pin-ta.has-hover) ? 2px : 1px;
+                                            border-color: (root.hovered-annotation-id == annot.id || root.selected-annotation-id == annot.id || pin-ta.has-hover) ? #ffffff : #ffffff50;
+                                            drop-shadow-blur: (root.hovered-annotation-id == annot.id || pin-ta.has-hover) ? 6px : 3px;
+                                            drop-shadow-color: #00000080;
+                                            animate background { duration: 100ms; }
+                                            animate border-color { duration: 100ms; }
 
                                             Text {
                                                 text: "💬";
-                                                font-size: 11px;
+                                                font-size: 12px;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
+                                            }
+
+                                            pin-ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                pointer-event(event) => {
+                                                    if (event.kind == PointerEventKind.move) {
+                                                        root.hovered-annotation-id = annot.id;
+                                                    }
+                                                }
+                                                clicked => {
+                                                    root.selected-annotation-id = annot.id;
+                                                    root.selected-color-index = annot.color-index;
+                                                    root.has-selection = false;
+                                                    root.current-note-text = annot.comment;
+                                                    root.show-note-input = true;
+                                                    let p_width = 290px;
+                                                    let p_height = 108px;
+                                                    root.popup-x = max(8px, min(root.page-width - p_width - 8px, root.page-width - p_width - 16px));
+                                                    root.popup-y = annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px;
+                                                    root.show-popup = true;
+                                                }
                                             }
                                         }
 
@@ -1296,9 +1333,12 @@ export component AppWindow inherits Window {
                                                 root.selected-annotation-id = annot.id;
                                                 root.selected-color-index = annot.color-index;
                                                 root.has-selection = false;
-                                                root.show-note-input = false;
-                                                root.popup-x = max(8px, min(root.page-width - 200px, annot.x + (annot.w - 190px) / 2));
-                                                root.popup-y = annot.y > 52px ? annot.y - 48px : annot.y + annot.h + 8px;
+                                                root.current-note-text = annot.comment;
+                                                root.show-note-input = annot.comment != "" || annot.kind == "note";
+                                                let p_width = root.show-note-input ? 290px : 224px;
+                                                let p_height = root.show-note-input ? 108px : 40px;
+                                                root.popup-x = max(8px, min(root.page-width - p_width - 8px, annot.x + (annot.w - p_width) / 2));
+                                                root.popup-y = annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px;
                                                 root.show-popup = true;
                                             }
                                         }
@@ -1309,8 +1349,8 @@ export component AppWindow inherits Window {
                                 if root.show-popup: popup := Rectangle {
                                     x: root.popup-x;
                                     y: root.popup-y;
-                                    width: root.selected-annotation-id > 0 ? 190px : 250px;
-                                    height: (root.selected-annotation-id <= 0 && root.show-note-input) ? 84px : 40px;
+                                    width: root.show-note-input ? 290px : (root.selected-annotation-id > 0 ? 224px : 254px);
+                                    height: root.show-note-input ? 108px : 40px;
                                     border-radius: 8px;
                                     background: #181d27;
                                     border-width: 1px;
@@ -1428,10 +1468,27 @@ export component AppWindow inherits Window {
                                                 y: (parent.height - self.height) / 2;
                                             }
 
-                                            // Action Icons: Delete & Close
+                                            // Action Icons: Note Toggle, Delete & Close
                                             HorizontalLayout {
                                                 spacing: 2px;
                                                 alignment: end;
+
+                                                Rectangle {
+                                                    width: 26px;
+                                                    height: 26px;
+                                                    border-radius: 4px;
+                                                    background: root.show-note-input ? #3b82f640 : note-ta-edit.has-hover ? #283141 : transparent;
+                                                    Text {
+                                                        text: "📝";
+                                                        font-size: 13px;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    note-ta-edit := TouchArea {
+                                                        clicked => { root.show-note-input = !root.show-note-input; }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
 
                                                 Rectangle {
                                                     width: 26px;
@@ -1648,7 +1705,12 @@ export component AppWindow inherits Window {
                                                         vertical-alignment: center;
                                                     }
                                                     note-ta := TouchArea {
-                                                        clicked => { root.show-note-input = !root.show-note-input; }
+                                                        clicked => {
+                                                            if (!root.show-note-input) {
+                                                                root.current-note-text = "";
+                                                            }
+                                                            root.show-note-input = !root.show-note-input;
+                                                        }
                                                         mouse-cursor: pointer;
                                                     }
                                                 }
@@ -1674,49 +1736,72 @@ export component AppWindow inherits Window {
                                             }
                                         }
 
-                                        // Bottom Row: Inline Note Input Box (when note icon active)
-                                        if root.selected-annotation-id <= 0 && root.show-note-input: HorizontalLayout {
+                                        // Bottom Row: Inline Note Input Box (when note active)
+                                        if root.show-note-input: HorizontalLayout {
                                             spacing: 4px;
 
                                             Rectangle {
-                                                height: 30px;
+                                                height: 56px;
                                                 horizontal-stretch: 1;
                                                 border-radius: 4px;
                                                 background: #11141c;
                                                 border-width: 1px;
                                                 border-color: #3e4c66;
 
-                                                note-input := TextInput {
-                                                    init => { self.focus(); }
-                                                    text <=> root.current-note-text;
-                                                    font-size: 12px;
-                                                    color: #f1f5f9;
-                                                    vertical-alignment: center;
+                                                if root.current-note-text == "": Text {
                                                     x: 8px;
-                                                    width: parent.width - 16px;
-                                                    accepted => {
-                                                        root.create-note-annotation(self.text, root.selected-color-index);
+                                                    y: 8px;
+                                                    text: root.selected-annotation-id > 0 ? "Add note to annotation..." : "Write a note...";
+                                                    font-size: 12px;
+                                                    color: #64748b;
+                                                }
+
+                                                ScrollView {
+                                                    height: 100%;
+                                                    width: 100%;
+
+                                                    VerticalLayout {
+                                                        padding: 6px;
+
+                                                        note-input := TextInput {
+                                                            init => { self.focus(); }
+                                                            text <=> root.current-note-text;
+                                                            font-size: 12px;
+                                                            color: #f1f5f9;
+                                                            wrap: word-wrap;
+                                                            single-line: false;
+                                                            width: 100%;
+                                                        }
                                                     }
                                                 }
                                             }
 
                                             // Save Note button (✓ icon)
                                             Rectangle {
-                                                width: 30px;
-                                                height: 30px;
+                                                width: 32px;
+                                                height: 56px;
                                                 border-radius: 4px;
-                                                background: #10b981;
+                                                background: note-save-ta.has-hover ? #059669 : #10b981;
+                                                animate background { duration: 100ms; }
+
                                                 Text {
                                                     text: "✓";
-                                                    font-size: 14px;
+                                                    font-size: 16px;
                                                     font-weight: 700;
                                                     color: #ffffff;
                                                     horizontal-alignment: center;
                                                     vertical-alignment: center;
                                                 }
-                                                TouchArea {
+
+                                                note-save-ta := TouchArea {
                                                     clicked => {
-                                                        root.create-note-annotation(note-input.text, root.selected-color-index);
+                                                        if (root.selected-annotation-id > 0) {
+                                                            root.update-annotation-note(root.selected-annotation-id, root.current-note-text);
+                                                            root.show-popup = false;
+                                                            root.selected-annotation-id = -1;
+                                                        } else {
+                                                            root.create-note-annotation(root.current-note-text, root.selected-color-index);
+                                                        }
                                                     }
                                                     mouse-cursor: pointer;
                                                 }
@@ -1819,9 +1904,13 @@ export component AppWindow inherits Window {
                                         } else if (event.button == PointerEventButton.left) {
                                             if (event.kind == PointerEventKind.down) {
                                                 root.selected-annotation-id = -1;
+                                                root.current-note-text = "";
+                                                root.show-note-input = false;
                                                 root.current-page = page-item.page-index;
                                                 root.selection-started(page-item.page-index, page-scroll-ta.mouse-x, page-scroll-ta.mouse-y);
                                             } else if (event.kind == PointerEventKind.up) {
+                                                root.current-note-text = "";
+                                                root.show-note-input = false;
                                                 root.selection-completed(page-item.page-index, page-scroll-ta.mouse-x, page-scroll-ta.mouse-y);
                                             }
                                         }
@@ -1868,21 +1957,48 @@ export component AppWindow inherits Window {
                                             background: annot.color;
                                         }
 
-                                        if annot.kind == "note": Rectangle {
-                                            x: parent.width - 20px;
-                                            y: -2px;
-                                            width: 22px;
-                                            height: 22px;
-                                            border-radius: 4px;
-                                            background: annot.color;
-                                            drop-shadow-blur: 4px;
-                                            drop-shadow-color: #00000060;
+                                        // Margin Gutter Note Pin in Scroll View
+                                        if annot.show-note-icon: margin-pin2 := Rectangle {
+                                            x: page-item.width - annot.x - 28px;
+                                            y: (parent.height - self.height) / 2;
+                                            width: 24px;
+                                            height: 24px;
+                                            border-radius: 6px;
+                                            background: (root.hovered-annotation-id == annot.id || root.selected-annotation-id == annot.id || pin-ta2.has-hover) ? annot.color : annot.color.darker(0.15);
+                                            border-width: (root.hovered-annotation-id == annot.id || root.selected-annotation-id == annot.id || pin-ta2.has-hover) ? 2px : 1px;
+                                            border-color: (root.hovered-annotation-id == annot.id || root.selected-annotation-id == annot.id || pin-ta2.has-hover) ? #ffffff : #ffffff50;
+                                            drop-shadow-blur: (root.hovered-annotation-id == annot.id || pin-ta2.has-hover) ? 6px : 3px;
+                                            drop-shadow-color: #00000080;
+                                            animate background { duration: 100ms; }
+                                            animate border-color { duration: 100ms; }
 
                                             Text {
                                                 text: "💬";
-                                                font-size: 11px;
+                                                font-size: 12px;
                                                 horizontal-alignment: center;
                                                 vertical-alignment: center;
+                                            }
+
+                                            pin-ta2 := TouchArea {
+                                                mouse-cursor: pointer;
+                                                pointer-event(event) => {
+                                                    if (event.kind == PointerEventKind.move) {
+                                                        root.hovered-annotation-id = annot.id;
+                                                    }
+                                                }
+                                                clicked => {
+                                                    root.current-page = page-item.page-index;
+                                                    root.selected-annotation-id = annot.id;
+                                                    root.selected-color-index = annot.color-index;
+                                                    root.has-selection = false;
+                                                    root.current-note-text = annot.comment;
+                                                    root.show-note-input = true;
+                                                    let p_width = 290px;
+                                                    let p_height = 108px;
+                                                    root.popup-x = max(8px, min(page-item.width - p_width - 8px, page-item.width - p_width - 16px));
+                                                    root.popup-y = annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px;
+                                                    root.show-popup = true;
+                                                }
                                             }
                                         }
 
@@ -1902,9 +2018,12 @@ export component AppWindow inherits Window {
                                                 root.selected-annotation-id = annot.id;
                                                 root.selected-color-index = annot.color-index;
                                                 root.has-selection = false;
-                                                root.show-note-input = false;
-                                                root.popup-x = max(8px, min(page-item.width - 200px, annot.x + (annot.w - 190px) / 2));
-                                                root.popup-y = annot.y > 52px ? annot.y - 48px : annot.y + annot.h + 8px;
+                                                root.current-note-text = annot.comment;
+                                                root.show-note-input = annot.comment != "" || annot.kind == "note";
+                                                let p_width = root.show-note-input ? 290px : 224px;
+                                                let p_height = root.show-note-input ? 108px : 40px;
+                                                root.popup-x = max(8px, min(page-item.width - p_width - 8px, annot.x + (annot.w - p_width) / 2));
+                                                root.popup-y = annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px;
                                                 root.show-popup = true;
                                             }
                                         }
@@ -1915,8 +2034,8 @@ export component AppWindow inherits Window {
                                 if root.show-popup && root.current-page == page-item.page-index: Rectangle {
                                     x: root.popup-x;
                                     y: root.popup-y;
-                                    width: root.selected-annotation-id > 0 ? 190px : 250px;
-                                    height: (root.selected-annotation-id <= 0 && root.show-note-input) ? 84px : 40px;
+                                    width: root.show-note-input ? 290px : (root.selected-annotation-id > 0 ? 224px : 254px);
+                                    height: root.show-note-input ? 108px : 40px;
                                     border-radius: 8px;
                                     background: #181d27;
                                     border-width: 1px;
@@ -2034,10 +2153,27 @@ export component AppWindow inherits Window {
                                                 y: (parent.height - self.height) / 2;
                                             }
 
-                                            // Action Icons: Delete & Close
+                                            // Action Icons: Note Toggle, Delete & Close
                                             HorizontalLayout {
                                                 spacing: 2px;
                                                 alignment: end;
+
+                                                Rectangle {
+                                                    width: 26px;
+                                                    height: 26px;
+                                                    border-radius: 4px;
+                                                    background: root.show-note-input ? #3b82f640 : note-ta-edit2.has-hover ? #283141 : transparent;
+                                                    Text {
+                                                        text: "📝";
+                                                        font-size: 13px;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    note-ta-edit2 := TouchArea {
+                                                        clicked => { root.show-note-input = !root.show-note-input; }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
 
                                                 Rectangle {
                                                     width: 26px;
@@ -2254,7 +2390,12 @@ export component AppWindow inherits Window {
                                                         vertical-alignment: center;
                                                     }
                                                     note-ta2 := TouchArea {
-                                                        clicked => { root.show-note-input = !root.show-note-input; }
+                                                        clicked => {
+                                                            if (!root.show-note-input) {
+                                                                root.current-note-text = "";
+                                                            }
+                                                            root.show-note-input = !root.show-note-input;
+                                                        }
                                                         mouse-cursor: pointer;
                                                     }
                                                 }
@@ -2280,49 +2421,72 @@ export component AppWindow inherits Window {
                                             }
                                         }
 
-                                        // Bottom Row: Inline Note Input Box (when note icon active)
-                                        if root.selected-annotation-id <= 0 && root.show-note-input: HorizontalLayout {
+                                        // Bottom Row: Inline Note Input Box (when note active)
+                                        if root.show-note-input: HorizontalLayout {
                                             spacing: 4px;
 
                                             Rectangle {
-                                                height: 30px;
+                                                height: 56px;
                                                 horizontal-stretch: 1;
                                                 border-radius: 4px;
                                                 background: #11141c;
                                                 border-width: 1px;
                                                 border-color: #3e4c66;
 
-                                                note-input2 := TextInput {
-                                                    init => { self.focus(); }
-                                                    text <=> root.current-note-text;
-                                                    font-size: 12px;
-                                                    color: #f1f5f9;
-                                                    vertical-alignment: center;
+                                                if root.current-note-text == "": Text {
                                                     x: 8px;
-                                                    width: parent.width - 16px;
-                                                    accepted => {
-                                                        root.create-note-annotation(self.text, root.selected-color-index);
+                                                    y: 8px;
+                                                    text: root.selected-annotation-id > 0 ? "Add note to annotation..." : "Write a note...";
+                                                    font-size: 12px;
+                                                    color: #64748b;
+                                                }
+
+                                                ScrollView {
+                                                    height: 100%;
+                                                    width: 100%;
+
+                                                    VerticalLayout {
+                                                        padding: 6px;
+
+                                                        note-input2 := TextInput {
+                                                            init => { self.focus(); }
+                                                            text <=> root.current-note-text;
+                                                            font-size: 12px;
+                                                            color: #f1f5f9;
+                                                            wrap: word-wrap;
+                                                            single-line: false;
+                                                            width: 100%;
+                                                        }
                                                     }
                                                 }
                                             }
 
                                             // Save Note button (✓ icon)
                                             Rectangle {
-                                                width: 30px;
-                                                height: 30px;
+                                                width: 32px;
+                                                height: 56px;
                                                 border-radius: 4px;
-                                                background: #10b981;
+                                                background: note-save-ta2.has-hover ? #059669 : #10b981;
+                                                animate background { duration: 100ms; }
+
                                                 Text {
                                                     text: "✓";
-                                                    font-size: 14px;
+                                                    font-size: 16px;
                                                     font-weight: 700;
                                                     color: #ffffff;
                                                     horizontal-alignment: center;
                                                     vertical-alignment: center;
                                                 }
-                                                TouchArea {
+
+                                                note-save-ta2 := TouchArea {
                                                     clicked => {
-                                                        root.create-note-annotation(note-input2.text, root.selected-color-index);
+                                                        if (root.selected-annotation-id > 0) {
+                                                            root.update-annotation-note(root.selected-annotation-id, root.current-note-text);
+                                                            root.show-popup = false;
+                                                            root.selected-annotation-id = -1;
+                                                        } else {
+                                                            root.create-note-annotation(root.current-note-text, root.selected-color-index);
+                                                        }
                                                     }
                                                     mouse-cursor: pointer;
                                                 }

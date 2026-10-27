@@ -187,7 +187,8 @@ pub fn extract_page_text_data(file_path: &str, page_no: i32) -> PageTextData {
                 }
             }
 
-            if !chars.is_empty() {
+            let has_visible_text = chars.iter().any(|c| !c.ch.is_whitespace());
+            if has_visible_text {
                 lines.push(PageLine {
                     x0: line_x0,
                     x1: line_x1,
@@ -217,15 +218,15 @@ pub fn compute_text_selection(
 
     let lines = &text_data.lines;
 
-    // Helper to find nearest line to a point (x, y)
+    // Helper to find nearest line to a point (x, y) with tight tolerance
     let find_line = |_px: f32, py: f32| -> Option<usize> {
-        // Direct vertical hit (with 5pt tolerance)
+        // Direct vertical hit (with 2pt tolerance)
         for (i, l) in lines.iter().enumerate() {
-            if py >= l.y0 - 5.0 && py <= l.y1 + 5.0 {
+            if py >= l.y0 - 2.0 && py <= l.y1 + 2.0 {
                 return Some(i);
             }
         }
-        // Vertical proximity
+        // Vertical proximity (clamped to max 12pt so we don't jump across sections/paragraphs)
         let mut best = None;
         let mut min_d = f32::MAX;
         for (i, l) in lines.iter().enumerate() {
@@ -236,7 +237,7 @@ pub fn compute_text_selection(
                 best = Some(i);
             }
         }
-        if min_d <= 50.0 {
+        if min_d <= 12.0 {
             best
         } else {
             None
@@ -354,10 +355,26 @@ pub fn compute_text_selection(
     let mut line_rects: Vec<(f32, f32, f32, f32)> = Vec::new();
     let mut snippet_parts: Vec<String> = Vec::new();
 
-    for (l_idx, chars) in selected_per_line {
+    for (l_idx, mut chars) in selected_per_line {
+        // Trim leading and trailing whitespace characters so we only highlight actual text
+        while let Some(first) = chars.first() {
+            if first.ch.is_whitespace() {
+                chars.remove(0);
+            } else {
+                break;
+            }
+        }
+        while let Some(last) = chars.last() {
+            if last.ch.is_whitespace() {
+                chars.pop();
+            } else {
+                break;
+            }
+        }
         if chars.is_empty() {
             continue;
         }
+
         let line = &lines[l_idx];
         let rx0 = chars.iter().map(|c| c.x0).fold(f32::INFINITY, f32::min);
         let rx1 = chars.iter().map(|c| c.x1).fold(f32::NEG_INFINITY, f32::max);
@@ -754,8 +771,9 @@ pub fn save_document_annotations(
                     if !quads.is_empty() {
                         if let Ok(mut annot) = page.add_highlight_annotation(quads) {
                             let _ = annot.set_color(color);
-                            if !a.snippet.is_empty() {
-                                let _ = annot.set_contents(&a.snippet);
+                            let text = if !a.comment.is_empty() { &a.comment } else { &a.snippet };
+                            if !text.is_empty() {
+                                let _ = annot.set_contents(text);
                             }
                             let _ = annot.update();
                             set_crisp_rectangular_highlight_appearance(&mut annot, a.color_rgb);
@@ -766,8 +784,9 @@ pub fn save_document_annotations(
                     if !quads.is_empty() {
                         if let Ok(mut annot) = page.add_underline_annotation(quads) {
                             let _ = annot.set_color(color);
-                            if !a.snippet.is_empty() {
-                                let _ = annot.set_contents(&a.snippet);
+                            let text = if !a.comment.is_empty() { &a.comment } else { &a.snippet };
+                            if !text.is_empty() {
+                                let _ = annot.set_contents(text);
                             }
                             let _ = annot.update();
                         }
@@ -777,8 +796,9 @@ pub fn save_document_annotations(
                     if !quads.is_empty() {
                         if let Ok(mut annot) = page.add_strikeout_annotation(quads) {
                             let _ = annot.set_color(color);
-                            if !a.snippet.is_empty() {
-                                let _ = annot.set_contents(&a.snippet);
+                            let text = if !a.comment.is_empty() { &a.comment } else { &a.snippet };
+                            if !text.is_empty() {
+                                let _ = annot.set_contents(text);
                             }
                             let _ = annot.update();
                         }
