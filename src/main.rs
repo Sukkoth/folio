@@ -92,6 +92,22 @@ fn setup_document(
     app.set_scroll_item_height(scroll_item_h);
     app.set_is_scroll_view(true);
 
+    // Initialize Table of Contents (Outline)
+    let has_toc = !meta.toc.is_empty();
+    let mut toc_entries = Vec::with_capacity(meta.toc.len());
+    for item in &meta.toc {
+        toc_entries.push(TocItemData {
+            title: item.title.clone().into(),
+            page: item.page,
+            display_page: format!("{}", item.page + 1).into(),
+            depth: item.depth,
+        });
+    }
+    let toc_model = std::rc::Rc::new(slint::VecModel::from(toc_entries));
+    app.set_toc_items(toc_model.into());
+    // Auto-open sidebar if document contains an outline
+    app.set_show_sidebar(has_toc);
+
     // Initialize the scroll-pages model for continuous scroll view
     let mut items = Vec::with_capacity(meta.page_count as usize);
     for i in 0..meta.page_count {
@@ -207,6 +223,7 @@ fn update_view(ui: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     let actual_render_zoom = (state.zoom_level * scale_factor).max(0.1);
 
     // Update toolbar page indicator: e.g. "1 / 120"
+    ui.set_current_page(state.current_page);
     ui.set_page_display(format!("{} / {}", state.current_page + 1, state.total_pages).into());
     ui.set_can_prev(state.current_page > 0);
     ui.set_can_next(state.current_page < state.total_pages - 1);
@@ -350,6 +367,65 @@ fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindo
 }
 
 fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
+    // Toggle Sidebar
+    {
+        let app_weak = app.as_weak();
+        app.on_toggle_sidebar(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let cur = ui.get_show_sidebar();
+                ui.set_show_sidebar(!cur);
+            }
+        });
+    }
+
+    // Jump to Page (from Table of Contents)
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_jump_to_page(move |target_page| {
+            let mut is_scroll = false;
+            let mut total_pages = 0;
+            let valid = {
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        if target_page >= 0 && target_page < s.total_pages {
+                            s.current_page = target_page;
+                            is_scroll = s.is_scroll_view;
+                            total_pages = s.total_pages;
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+
+            if valid {
+                if let Some(ui) = app_weak.upgrade() {
+                    ui.set_current_page(target_page);
+                    ui.set_page_display(format!("{} / {}", target_page + 1, total_pages).into());
+                    ui.set_can_prev(target_page > 0);
+                    ui.set_can_next(target_page < total_pages - 1);
+
+                    if is_scroll {
+                        ui.invoke_scroll_to_page(target_page);
+                        if let Ok(mut lock) = state_lock.lock() {
+                            if let Some(s) = lock.as_mut() {
+                                trigger_scroll_page_render(s, target_page, &ui);
+                            }
+                        }
+                    } else {
+                        update_view(&ui, &state_lock);
+                    }
+                }
+            }
+        });
+    }
+
     // Toggle View Mode (Page vs Scroll)
     {
         let state_lock = Arc::clone(state_lock);
@@ -398,6 +474,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 if let Some(ui) = app_weak.upgrade() {
                     if let Ok(mut lock) = state_lock.lock() {
                         if let Some(s) = lock.as_mut() {
+                            ui.set_current_page(s.current_page);
                             ui.set_page_display(format!("{} / {}", s.current_page + 1, s.total_pages).into());
                             ui.set_can_prev(s.current_page > 0);
                             ui.set_can_next(s.current_page < s.total_pages - 1);
@@ -436,6 +513,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             };
             if changed {
                 if let Some(ui) = app_weak.upgrade() {
+                    ui.set_current_page(new_page);
                     if is_scroll {
                         ui.invoke_scroll_to_page(new_page);
                         if let Ok(mut lock) = state_lock.lock() {
@@ -481,6 +559,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             };
             if changed {
                 if let Some(ui) = app_weak.upgrade() {
+                    ui.set_current_page(new_page);
                     if is_scroll {
                         ui.invoke_scroll_to_page(new_page);
                         if let Ok(mut lock) = state_lock.lock() {
@@ -576,7 +655,8 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             if let Some(ui) = app_weak.upgrade() {
                 let phys_size = ui.window().size();
                 let scale_factor = ui.window().scale_factor().max(1.0);
-                let avail_w = (phys_size.width as f32 / scale_factor) - 80.0;
+                let sidebar_w = if ui.get_show_sidebar() { 280.0 } else { 0.0 };
+                let avail_w = (phys_size.width as f32 / scale_factor) - 80.0 - sidebar_w;
                 let avail_h = (phys_size.height as f32 / scale_factor) - 120.0;
 
                 let mut is_scroll = false;

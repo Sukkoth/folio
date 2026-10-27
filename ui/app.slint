@@ -3,14 +3,15 @@ import { Button, ListView } from "std-widgets.slint";
 component IconButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
+    in property <bool> active: false;
     callback clicked();
 
     width: 32px;
     height: 32px;
     border-radius: 6px;
-    background: !root.enabled ? #161a21 : ta.pressed ? #2d3545 : ta.has-hover ? #222834 : transparent;
+    background: !root.enabled ? #161a21 : root.active ? #2d3545 : ta.pressed ? #2d3545 : ta.has-hover ? #222834 : transparent;
     border-width: 1px;
-    border-color: ta.has-hover && root.enabled ? #2e3747 : transparent;
+    border-color: root.active ? #3e485a : ta.has-hover && root.enabled ? #2e3747 : transparent;
     animate background { duration: 120ms; easing: ease-out; }
     animate border-color { duration: 120ms; easing: ease-out; }
 
@@ -18,7 +19,7 @@ component IconButton inherits Rectangle {
         text: root.text;
         font-size: 15px;
         font-weight: 600;
-        color: !root.enabled ? #454f60 : ta.has-hover ? #ffffff : #c3ccd9;
+        color: !root.enabled ? #454f60 : root.active ? #ffffff : ta.has-hover ? #ffffff : #c3ccd9;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -35,6 +36,13 @@ export struct PageItemData {
     width: length,
     height: length,
     image: image,
+}
+
+export struct TocItemData {
+    title: string,
+    page: int,
+    display-page: string,
+    depth: int,
 }
 
 export component AppWindow inherits Window {
@@ -61,7 +69,11 @@ export component AppWindow inherits Window {
     in-out property <length> scroll-content-y: 0px;
     in property <length> scroll-item-height: 842px + 24px;
     in property <int> total-pages: 1;
+    in property <int> current-page: 0;
     in property <[PageItemData]> scroll-pages;
+
+    in-out property <bool> show-sidebar: false;
+    in property <[TocItemData]> toc-items;
 
     in property <bool> has-error: false;
     in property <string> error-message: "";
@@ -74,6 +86,8 @@ export component AppWindow inherits Window {
     callback zoom-fit();
     callback set-view-mode(bool);
     callback visible-page-changed(int);
+    callback toggle-sidebar();
+    callback jump-to-page(int);
 
     public function scroll-to-page(index: int) {
         root.scroll-content-y = -index * root.scroll-item-height;
@@ -103,6 +117,9 @@ export component AppWindow inherits Window {
                     return accept;
                 } else if (event.text == "m" || event.text == "M") {
                     root.set-view-mode(!root.is-scroll-view);
+                    return accept;
+                } else if (event.text == "b" || event.text == "B" || event.text == "t" || event.text == "T") {
+                    root.toggle-sidebar();
                     return accept;
                 }
             } else {
@@ -135,19 +152,27 @@ export component AppWindow inherits Window {
                 }
 
                 HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 16px;
+                    padding-left: 14px;
+                    padding-right: 14px;
                     spacing: 12px;
                     alignment: space-between;
 
-                    // Left Group: Brand, Filename & View Mode Toggle
+                    // Left Group: Sidebar Toggle, Brand, Filename & View Mode Toggle
                     HorizontalLayout {
-                        spacing: 12px;
+                        spacing: 10px;
                         alignment: start;
+
+                        // Sidebar Toggle Button
+                        IconButton {
+                            text: "☰";
+                            active: root.show-sidebar;
+                            y: (parent.height - self.height) / 2;
+                            clicked => { root.toggle-sidebar(); }
+                        }
 
                         Rectangle {
                             height: 24px;
-                            width: 58px;
+                            width: 54px;
                             y: (parent.height - self.height) / 2;
                             background: #6366f120;
                             border-radius: 4px;
@@ -179,7 +204,7 @@ export component AppWindow inherits Window {
                             color: #c7d0de;
                             vertical-alignment: center;
                             overflow: elide;
-                            max-width: 260px;
+                            max-width: 220px;
                         }
 
                         Rectangle {
@@ -203,7 +228,7 @@ export component AppWindow inherits Window {
                                 spacing: 2px;
 
                                 page-mode-btn := Rectangle {
-                                    width: 52px;
+                                    width: 50px;
                                     height: 24px;
                                     border-radius: 4px;
                                     background: !root.is-scroll-view ? #2b3648 : page-ta.has-hover ? #1f2735 : transparent;
@@ -225,7 +250,7 @@ export component AppWindow inherits Window {
                                 }
 
                                 scroll-mode-btn := Rectangle {
-                                    width: 52px;
+                                    width: 50px;
                                     height: 24px;
                                     border-radius: 4px;
                                     background: root.is-scroll-view ? #2b3648 : scroll-ta.has-hover ? #1f2735 : transparent;
@@ -339,156 +364,316 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // Document Viewport / Error Area
-            Rectangle {
-                background: #0f1115;
-                clip: true;
+            // Main Workspace Area (Sidebar + Document Viewport)
+            HorizontalLayout {
+                spacing: 0;
+                padding: 0;
 
-                if root.has-error: Rectangle {
-                    width: 440px;
-                    height: 220px;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                    background: #161a21;
-                    border-radius: 12px;
-                    border-width: 1px;
-                    border-color: #ef444450;
-                    drop-shadow-blur: 24px;
-                    drop-shadow-color: #000000a0;
+                // Table of Contents Sidebar
+                sidebar := Rectangle {
+                    width: root.show-sidebar ? 280px : 0px;
+                    clip: true;
+                    background: #13161e;
+                    animate width { duration: 160ms; easing: ease-out; }
+
+                    Rectangle {
+                        x: parent.width - 1px;
+                        width: 1px;
+                        height: 100%;
+                        background: #232936;
+                    }
 
                     VerticalLayout {
-                        padding: 24px;
-                        spacing: 12px;
-                        alignment: center;
+                        width: 280px;
+                        height: 100%;
+                        padding: 0;
+                        spacing: 0;
 
+                        // Sidebar Header
                         Rectangle {
-                            width: 42px;
-                            height: 42px;
-                            border-radius: 21px;
-                            background: #ef444420;
-                            border-width: 1px;
-                            border-color: #ef444460;
-                            x: (parent.width - self.width) / 2;
+                            height: 44px;
+                            background: #171b24;
 
-                            Text {
-                                text: "!";
-                                font-size: 20px;
-                                font-weight: 700;
-                                color: #f87171;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-
-                        Text {
-                            text: "Failed to Open PDF";
-                            font-size: 16px;
-                            font-weight: 600;
-                            color: #f1f5f9;
-                            horizontal-alignment: center;
-                        }
-
-                        Text {
-                            text: root.error-message;
-                            font-size: 12px;
-                            color: #94a3b8;
-                            horizontal-alignment: center;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-
-                // Single Page View
-                if !root.has-error && !root.is-scroll-view: view-scroll := Flickable {
-                    width: 100%;
-                    height: 100%;
-                    content-width: max(parent.width, root.page-width + 64px);
-                    content-height: max(parent.height, root.page-height + 64px);
-
-                    viewport-touch := TouchArea {
-                        width: view-scroll.content-width;
-                        height: view-scroll.content-height;
-
-                        scroll-event(event) => {
-                            if (event.modifiers.control) {
-                                if (event.delta-y > 0) {
-                                    root.zoom-in();
-                                    return accept;
-                                } else if (event.delta-y < 0) {
-                                    root.zoom-out();
-                                    return accept;
-                                }
-                            }
-                            return reject;
-                        }
-
-                        // Page Card with soft shadow and rounded corners
-                        page-card := Rectangle {
-                            x: max(32px, (view-scroll.content-width - self.width) / 2);
-                            y: max(32px, (view-scroll.content-height - self.height) / 2);
-                            width: root.page-width;
-                            height: root.page-height;
-                            background: #ffffff;
-                            border-radius: 4px;
-                            drop-shadow-blur: 24px;
-                            drop-shadow-offset-y: 8px;
-                            drop-shadow-color: #000000a6;
-
-                            Image {
+                            Rectangle {
+                                y: parent.height - 1px;
+                                height: 1px;
                                 width: 100%;
-                                height: 100%;
-                                image-fit: contain;
-                                source: root.page-image;
-                                opacity: root.page-opacity;
-                                animate opacity {
-                                    duration: 160ms;
-                                    easing: ease-out;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Continuous Scroll View
-                if !root.has-error && root.is-scroll-view: scroll-list := ListView {
-                    width: 100%;
-                    height: 100%;
-                    content-y <=> root.scroll-content-y;
-
-                    for page-item in root.scroll-pages: Rectangle {
-                        width: parent.width;
-                        height: root.scroll-item-height;
-
-                        page-card-scroll := Rectangle {
-                            x: max(32px, (parent.width - self.width) / 2);
-                            y: 12px;
-                            width: page-item.width;
-                            height: page-item.height;
-                            background: #ffffff;
-                            border-radius: 4px;
-                            drop-shadow-blur: 24px;
-                            drop-shadow-offset-y: 8px;
-                            drop-shadow-color: #000000a6;
-
-                            Image {
-                                width: 100%;
-                                height: 100%;
-                                image-fit: contain;
-                                source: page-item.image;
+                                background: #232936;
                             }
 
-                            TouchArea {
-                                scroll-event(event) => {
-                                    if (event.modifiers.control) {
-                                        if (event.delta-y > 0) {
-                                            root.zoom-in();
-                                            return accept;
-                                        } else if (event.delta-y < 0) {
-                                            root.zoom-out();
-                                            return accept;
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 10px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+
+                                    Text {
+                                        text: "Contents";
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        letter-spacing: 0.5px;
+                                        color: #e2e8f0;
+                                        vertical-alignment: center;
+                                    }
+
+                                    if root.toc-items.length > 0: Rectangle {
+                                        height: 18px;
+                                        width: 24px;
+                                        border-radius: 9px;
+                                        background: #2d3545;
+                                        y: (parent.height - self.height) / 2;
+
+                                        Text {
+                                            text: root.toc-items.length;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            color: #94a3b8;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
                                     }
-                                    return reject;
+                                }
+
+                                IconButton {
+                                    text: "✕";
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.toggle-sidebar(); }
+                                }
+                            }
+                        }
+
+                        // Sidebar Body: Empty State or Items List
+                        if root.toc-items.length == 0: Rectangle {
+                            vertical-stretch: 1;
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 8px;
+                                padding: 24px;
+
+                                Text {
+                                    text: "No Outline";
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: #64748b;
+                                    horizontal-alignment: center;
+                                }
+
+                                Text {
+                                    text: "This document does not provide a table of contents.";
+                                    font-size: 12px;
+                                    color: #475569;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        if root.toc-items.length > 0: ListView {
+                            vertical-stretch: 1;
+
+                            for item in root.toc-items: row := Rectangle {
+                                height: 36px;
+                                width: parent.width;
+                                background: item.page == root.current-page ? #1e2636 : row-ta.has-hover ? #171c26 : transparent;
+                                animate background { duration: 100ms; }
+
+                                // Active left accent bar
+                                if item.page == root.current-page: Rectangle {
+                                    x: 0;
+                                    width: 3px;
+                                    height: 100%;
+                                    background: #818cf8;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 14px + item.depth * 12px;
+                                    padding-right: 14px;
+                                    spacing: 8px;
+                                    alignment: space-between;
+
+                                    Text {
+                                        text: item.title;
+                                        font-size: 12px;
+                                        font-weight: item.page == root.current-page ? 600 : 400;
+                                        color: item.page == root.current-page ? #ffffff : row-ta.has-hover ? #f1f5f9 : #94a3b8;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+
+                                    Text {
+                                        text: item.display-page;
+                                        font-size: 11px;
+                                        color: item.page == root.current-page ? #818cf8 : #64748b;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                row-ta := TouchArea {
+                                    clicked => { root.jump-to-page(item.page); }
+                                    mouse-cursor: pointer;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Document Viewport / Error Area
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: #0f1115;
+                    clip: true;
+
+                    if root.has-error: Rectangle {
+                        width: 440px;
+                        height: 220px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        background: #161a21;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: #ef444450;
+                        drop-shadow-blur: 24px;
+                        drop-shadow-color: #000000a0;
+
+                        VerticalLayout {
+                            padding: 24px;
+                            spacing: 12px;
+                            alignment: center;
+
+                            Rectangle {
+                                width: 42px;
+                                height: 42px;
+                                border-radius: 21px;
+                                background: #ef444420;
+                                border-width: 1px;
+                                border-color: #ef444460;
+                                x: (parent.width - self.width) / 2;
+
+                                Text {
+                                    text: "!";
+                                    font-size: 20px;
+                                    font-weight: 700;
+                                    color: #f87171;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Text {
+                                text: "Failed to Open PDF";
+                                font-size: 16px;
+                                font-weight: 600;
+                                color: #f1f5f9;
+                                horizontal-alignment: center;
+                            }
+
+                            Text {
+                                text: root.error-message;
+                                font-size: 12px;
+                                color: #94a3b8;
+                                horizontal-alignment: center;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // Single Page View
+                    if !root.has-error && !root.is-scroll-view: view-scroll := Flickable {
+                        width: 100%;
+                        height: 100%;
+                        content-width: max(parent.width, root.page-width + 64px);
+                        content-height: max(parent.height, root.page-height + 64px);
+
+                        viewport-touch := TouchArea {
+                            width: view-scroll.content-width;
+                            height: view-scroll.content-height;
+
+                            scroll-event(event) => {
+                                if (event.modifiers.control) {
+                                    if (event.delta-y > 0) {
+                                        root.zoom-in();
+                                        return accept;
+                                    } else if (event.delta-y < 0) {
+                                        root.zoom-out();
+                                        return accept;
+                                    }
+                                }
+                                return reject;
+                            }
+
+                            // Page Card with soft shadow and rounded corners
+                            page-card := Rectangle {
+                                x: max(32px, (view-scroll.content-width - self.width) / 2);
+                                y: max(32px, (view-scroll.content-height - self.height) / 2);
+                                width: root.page-width;
+                                height: root.page-height;
+                                background: #ffffff;
+                                border-radius: 4px;
+                                drop-shadow-blur: 24px;
+                                drop-shadow-offset-y: 8px;
+                                drop-shadow-color: #000000a6;
+
+                                Image {
+                                    width: 100%;
+                                    height: 100%;
+                                    image-fit: contain;
+                                    source: root.page-image;
+                                    opacity: root.page-opacity;
+                                    animate opacity {
+                                        duration: 160ms;
+                                        easing: ease-out;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Continuous Scroll View
+                    if !root.has-error && root.is-scroll-view: scroll-list := ListView {
+                        width: 100%;
+                        height: 100%;
+                        content-y <=> root.scroll-content-y;
+
+                        for page-item in root.scroll-pages: Rectangle {
+                            width: parent.width;
+                            height: root.scroll-item-height;
+
+                            page-card-scroll := Rectangle {
+                                x: max(32px, (parent.width - self.width) / 2);
+                                y: 12px;
+                                width: page-item.width;
+                                height: page-item.height;
+                                background: #ffffff;
+                                border-radius: 4px;
+                                drop-shadow-blur: 24px;
+                                drop-shadow-offset-y: 8px;
+                                drop-shadow-color: #000000a6;
+
+                                Image {
+                                    width: 100%;
+                                    height: 100%;
+                                    image-fit: contain;
+                                    source: page-item.image;
+                                }
+
+                                TouchArea {
+                                    scroll-event(event) => {
+                                        if (event.modifiers.control) {
+                                            if (event.delta-y > 0) {
+                                                root.zoom-in();
+                                                return accept;
+                                            } else if (event.delta-y < 0) {
+                                                root.zoom-out();
+                                                return accept;
+                                            }
+                                        }
+                                        return reject;
+                                    }
                                 }
                             }
                         }
