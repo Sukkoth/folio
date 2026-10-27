@@ -210,6 +210,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let app_weak = app.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
+        if let Some(app) = app_weak.upgrade() {
+            app.invoke_grab_focus();
+        }
+    });
+
     app.run()?;
     Ok(())
 }

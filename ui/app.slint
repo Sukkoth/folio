@@ -182,28 +182,51 @@ export component AppWindow inherits Window {
 
     forward-focus: keyboard-handler;
 
+    public function grab-focus() {
+        keyboard-handler.focus();
+    }
+
+    changed show-popup => {
+        if (!root.show-popup) {
+            keyboard-handler.focus();
+        }
+    }
+
+    changed show-note-input => {
+        if (!root.show-note-input) {
+            keyboard-handler.focus();
+        }
+    }
+
+    changed has-selection => {
+        if (!root.has-selection && !root.show-note-input) {
+            keyboard-handler.focus();
+        }
+    }
+
     keyboard-handler := FocusScope {
+        init => { self.focus(); }
         key-pressed(event) => {
-            if (event.modifiers.control) {
-                if (event.modifiers.shift) {
+            if (event.modifiers.control || event.text == "\u{1a}" || event.text == "\u{13}" || event.text == "\u{19}" || event.text == "\u{15}" || event.text == "\u{2}" || event.text == "\u{14}") {
+                if (event.modifiers.shift || (event.modifiers.control && (event.text == "Z" || event.text == "S"))) {
                     // Ctrl + Shift + S: Save As
-                    if (event.text == "s" || event.text == "S") {
+                    if (event.text == "s" || event.text == "S" || event.text == "\u{13}") {
                         root.save-document-as();
                         return accept;
                     // Ctrl + Shift + Z: Redo
-                    } else if (event.text == "z" || event.text == "Z") {
+                    } else if (event.text == "z" || event.text == "Z" || event.text == "\u{1a}") {
                         root.redo();
                         return accept;
                     }
                 } else if (event.modifiers.alt) {
                     // Ctrl + Alt + S: Strikethrough
-                    if (event.text == "s" || event.text == "S") {
+                    if (event.text == "s" || event.text == "S" || event.text == "\u{13}") {
                         if (root.has-selection) {
                             root.create-annotation("strikethrough", root.selected-color-index);
                             return accept;
                         }
                     // Ctrl + Alt + N: Note
-                    } else if (event.text == "n" || event.text == "N") {
+                    } else if (event.text == "n" || event.text == "N" || event.text == "\u{e}") {
                         if (root.has-selection) {
                             root.show-popup = true;
                             root.show-note-input = true;
@@ -212,25 +235,25 @@ export component AppWindow inherits Window {
                     }
                 } else {
                     // Ctrl + S: Save Document
-                    if (event.text == "s" || event.text == "S") {
+                    if (event.text == "s" || event.text == "S" || event.text == "\u{13}") {
                         root.save-document();
                         return accept;
                     // Ctrl + Z: Undo
-                    } else if (event.text == "z" || event.text == "Z") {
+                    } else if (event.text == "z" || event.text == "Z" || event.text == "\u{1a}") {
                         root.undo();
                         return accept;
                     // Ctrl + Y: Redo
-                    } else if (event.text == "y" || event.text == "Y") {
+                    } else if (event.text == "y" || event.text == "Y" || event.text == "\u{19}") {
                         root.redo();
                         return accept;
                     // Ctrl + H: Highlight
-                    } else if (event.text == "h" || event.text == "H") {
+                    } else if (event.text == "h" || event.text == "H" || (event.modifiers.control && event.text == "\u{8}")) {
                         if (root.has-selection) {
                             root.create-annotation("highlight", root.selected-color-index);
                             return accept;
                         }
                     // Ctrl + U: Underline
-                    } else if (event.text == "u" || event.text == "U") {
+                    } else if (event.text == "u" || event.text == "U" || event.text == "\u{15}") {
                         if (root.has-selection) {
                             root.create-annotation("underline", root.selected-color-index);
                             return accept;
@@ -244,18 +267,21 @@ export component AppWindow inherits Window {
                     } else if (event.text == "0") {
                         root.zoom-reset();
                         return accept;
-                    } else if (event.text == "m" || event.text == "M") {
+                    } else if (event.text == "m" || event.text == "M" || (event.modifiers.control && (event.text == "\n" || event.text == "\u{d}"))) {
                         root.set-view-mode(!root.is-scroll-view);
                         return accept;
-                    } else if (event.text == "b" || event.text == "B" || event.text == "t" || event.text == "T") {
+                    } else if (event.text == "b" || event.text == "B" || event.text == "\u{2}" || event.text == "t" || event.text == "T" || event.text == "\u{14}") {
                         root.toggle-sidebar();
                         return accept;
                     }
                 }
             } else {
                 if (event.text == Key.Escape) {
-                    if (root.show-popup || root.has-selection) {
+                    if (root.show-popup || root.has-selection || root.selected-annotation-id > 0) {
                         root.clear-selection();
+                        root.show-popup = false;
+                        root.selected-annotation-id = -1;
+                        root.hovered-annotation-id = -1;
                         return accept;
                     }
                 } else if (root.selected-annotation-id > 0) {
@@ -1158,6 +1184,8 @@ export component AppWindow inherits Window {
                             pointer-event(event) => {
                                 if (event.kind == PointerEventKind.move) {
                                     root.hovered-annotation-id = -1;
+                                } else if (event.kind == PointerEventKind.down) {
+                                    keyboard-handler.focus();
                                 }
                             }
 
@@ -1221,6 +1249,7 @@ export component AppWindow inherits Window {
                                             root.hovered-annotation-id = -1;
                                         } else if (event.button == PointerEventButton.left) {
                                             if (event.kind == PointerEventKind.down) {
+                                                keyboard-handler.focus();
                                                 root.selected-annotation-id = -1;
                                                 root.current-note-text = "";
                                                 root.show-note-input = false;
@@ -1304,6 +1333,7 @@ export component AppWindow inherits Window {
                                                     }
                                                 }
                                                 clicked => {
+                                                    keyboard-handler.focus();
                                                     root.selected-annotation-id = annot.id;
                                                     root.selected-color-index = annot.color-index;
                                                     root.has-selection = false;
@@ -1330,6 +1360,7 @@ export component AppWindow inherits Window {
                                             }
 
                                             clicked => {
+                                                keyboard-handler.focus();
                                                 root.selected-annotation-id = annot.id;
                                                 root.selected-color-index = annot.color-index;
                                                 root.has-selection = false;
@@ -1833,6 +1864,8 @@ export component AppWindow inherits Window {
                                 pointer-event(event) => {
                                     if (event.kind == PointerEventKind.move) {
                                         root.hovered-annotation-id = -1;
+                                    } else if (event.kind == PointerEventKind.down) {
+                                        keyboard-handler.focus();
                                     }
                                 }
 
@@ -1903,6 +1936,7 @@ export component AppWindow inherits Window {
                                             root.hovered-annotation-id = -1;
                                         } else if (event.button == PointerEventButton.left) {
                                             if (event.kind == PointerEventKind.down) {
+                                                keyboard-handler.focus();
                                                 root.selected-annotation-id = -1;
                                                 root.current-note-text = "";
                                                 root.show-note-input = false;
@@ -1987,6 +2021,7 @@ export component AppWindow inherits Window {
                                                     }
                                                 }
                                                 clicked => {
+                                                    keyboard-handler.focus();
                                                     root.current-page = page-item.page-index;
                                                     root.selected-annotation-id = annot.id;
                                                     root.selected-color-index = annot.color-index;
@@ -2014,6 +2049,7 @@ export component AppWindow inherits Window {
                                             }
 
                                             clicked => {
+                                                keyboard-handler.focus();
                                                 root.current-page = page-item.page-index;
                                                 root.selected-annotation-id = annot.id;
                                                 root.selected-color-index = annot.color-index;
