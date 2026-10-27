@@ -1174,22 +1174,6 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                                 }
                             },
                         );
-
-                        if let Ok(mut lock) = state_lock.lock() {
-                            if let Some(s) = lock.as_mut() {
-                                for a in &mut s.annotations {
-                                    a.is_from_pdf = true;
-                                    if a.kind == "highlight" {
-                                        let [br, bg, bb] = get_highlight_blend_rgb(a.color_index);
-                                        a.color_hex = format!("#{br:02x}{bg:02x}{bb:02x}");
-                                    }
-                                }
-                                s.cache.clear();
-                                s.worker.reload_document();
-                            }
-                        }
-
-                        update_view(&ui, &state_lock);
                     }
                     Err(e) => {
                         eprintln!("Failed to save PDF: {e}");

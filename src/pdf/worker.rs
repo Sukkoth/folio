@@ -31,6 +31,7 @@ pub struct RenderedPage {
 #[derive(Debug, Clone)]
 pub enum WorkerMessage {
     Render(RenderRequest),
+    #[allow(dead_code)]
     Reload,
 }
 
@@ -67,6 +68,7 @@ impl PdfWorker {
         let _ = self.sender.send(WorkerMessage::Render(req));
     }
 
+    #[allow(dead_code)]
     pub fn reload_document(&self) {
         let _ = self.sender.send(WorkerMessage::Reload);
     }
