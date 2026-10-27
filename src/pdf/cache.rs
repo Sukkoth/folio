@@ -30,6 +30,10 @@ impl PageCache {
         self.cache.get(&(page, Self::zoom_bucket(zoom)))
     }
 
+    pub fn get_mut(&mut self, page: i32, zoom: f32) -> Option<&mut CachedRender> {
+        self.cache.get_mut(&(page, Self::zoom_bucket(zoom)))
+    }
+
     pub fn put(&mut self, page: i32, zoom: f32, entry: CachedRender) {
         self.cache.put((page, Self::zoom_bucket(zoom)), entry);
     }

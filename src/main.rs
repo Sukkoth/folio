@@ -361,6 +361,12 @@ fn handle_rendered_page(
         return;
     }
 
+    if let Some(existing) = state.cache.get(rendered.page, state.zoom_level) {
+        if rendered.is_preview && !existing.is_preview {
+            return;
+        }
+    }
+
     if let Some(image) = rgba_to_image(&rendered.rgba, rendered.w, rendered.h) {
         // Cache full-res renders (and previews as fallbacks)
         state.cache.put(
@@ -672,6 +678,23 @@ fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindo
     prefetch_neighbors(state, next_gen, actual_render_zoom);
 }
 
+fn trigger_scroll_page_render_direct(state: &mut AppState, page_idx: i32, ui: &AppWindow) {
+    let scale_factor = ui.window().scale_factor().max(1.0);
+    let actual_render_zoom = (state.zoom_level * scale_factor).max(0.1);
+
+    let next_gen = state.worker.current_generation() + 1;
+    state.worker.set_current_generation(next_gen);
+
+    let h_page = get_page_highlights(state, page_idx);
+    state.worker.request_render(RenderRequest {
+        page: page_idx,
+        zoom: actual_render_zoom,
+        generation: next_gen,
+        is_preview: false,
+        highlights: h_page,
+    });
+}
+
 fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     // Toggle Sidebar
     {
@@ -888,12 +911,12 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 get_color(color_idx).0
             };
             let mut need_sync = false;
-            let mut target_page = 0;
+            let mut highlight_update: Option<(i32, slint::Image)> = None;
 
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
                     if !s.active_selection_line_rects.is_empty() {
-                        target_page = s.active_selection_page;
+                        let target_page = s.active_selection_page;
                         let annot = AnnotationRecord {
                             id: s.next_annot_id,
                             page: target_page,
@@ -906,10 +929,54 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             is_from_pdf: false,
                         };
                         s.next_annot_id += 1;
+
+                        if kind == "highlight" {
+                            let rgb = get_highlight_blend_rgb(color_idx);
+                            let adjusted_rects = adjust_line_rects_for_highlight(&s.active_selection_line_rects);
+                            let (pw_pt, _) = s.get_page_size(target_page);
+
+                            if let Some(cached) = s.cache.get_mut(target_page, s.zoom_level) {
+                                let w = cached.width;
+                                let h = cached.height;
+                                let zoom = w as f32 / pw_pt.max(1.0);
+
+                                let hr = rgb[0] as u16;
+                                let hg = rgb[1] as u16;
+                                let hb = rgb[2] as u16;
+
+                                let mut applied = vec![false; (w * h) as usize];
+                                for rect in &adjusted_rects {
+                                    let px0 = ((rect.0 * zoom).round() as usize).min(w as usize);
+                                    let py0 = ((rect.1 * zoom).round() as usize).min(h as usize);
+                                    let px1 = ((rect.2 * zoom).round() as usize).min(w as usize);
+                                    let py1 = ((rect.3 * zoom).round() as usize).min(h as usize);
+
+                                    for y in py0..py1 {
+                                        let row_offset = y * (w as usize);
+                                        for x in px0..px1 {
+                                            let p_idx = row_offset + x;
+                                            if !applied[p_idx] {
+                                                applied[p_idx] = true;
+                                                let idx = p_idx * 4;
+                                                if idx + 2 < cached.rgba.len() {
+                                                    cached.rgba[idx] = ((cached.rgba[idx] as u16 * hr) / 255) as u8;
+                                                    cached.rgba[idx + 1] = ((cached.rgba[idx + 1] as u16 * hg) / 255) as u8;
+                                                    cached.rgba[idx + 2] = ((cached.rgba[idx + 2] as u16 * hb) / 255) as u8;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if let Some(img) = rgba_to_image(&cached.rgba, w, h) {
+                                    highlight_update = Some((target_page, img));
+                                }
+                            }
+                        }
+
                         s.annotations.push(annot);
                         s.active_selection_line_rects.clear();
                         s.active_selection_snippet.clear();
-                        s.cache.remove_page(target_page);
                         need_sync = true;
                     }
                 }
@@ -922,14 +989,23 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_show_popup(false);
                     ui.set_show_note_input(false);
                     ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
-                    if let Ok(mut lock) = state_lock.lock() {
-                        if let Some(s) = lock.as_mut() {
+
+                    // If a highlight was created and blended directly in-place, update the UI image immediately
+                    if let Some((page, img)) = highlight_update {
+                        let pages_model = ui.get_scroll_pages();
+                        let idx = page as usize;
+                        if let Some(mut item) = pages_model.row_data(idx) {
+                            item.image = img.clone();
+                            pages_model.set_row_data(idx, item);
+                        }
+                        if page == ui.get_current_page() {
+                            ui.set_page_image(img);
+                        }
+                    }
+
+                    if let Ok(lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_ref() {
                             sync_annotations_to_ui(s, &ui);
-                            if s.is_scroll_view {
-                                trigger_scroll_page_render(s, target_page, &ui);
-                            } else {
-                                update_view(&ui, &state_lock);
-                            }
                         }
                     }
                 }
@@ -993,15 +1069,18 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
         app.on_delete_annotation(move |id| {
             let mut need_sync = false;
             let mut deleted_page = None;
+            let mut is_highlight = false;
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
                     if let Some(pos) = s.annotations.iter().position(|a| a.id == id) {
-                        deleted_page = Some(s.annotations[pos].page);
+                        let page = s.annotations[pos].page;
+                        deleted_page = Some(page);
+                        is_highlight = s.annotations[pos].kind == "highlight";
                         s.annotations.remove(pos);
                         need_sync = true;
-                    }
-                    if let Some(p) = deleted_page {
-                        s.cache.remove_page(p);
+                        if is_highlight {
+                            s.cache.remove_page(page);
+                        }
                     }
                 }
             }
@@ -1011,11 +1090,13 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     if let Ok(mut lock) = state_lock.lock() {
                         if let Some(s) = lock.as_mut() {
                             sync_annotations_to_ui(s, &ui);
-                            if let Some(p) = deleted_page {
-                                if s.is_scroll_view {
-                                    trigger_scroll_page_render(s, p, &ui);
-                                } else {
-                                    update_view(&ui, &state_lock);
+                            if is_highlight {
+                                if let Some(p) = deleted_page {
+                                    if s.is_scroll_view {
+                                        trigger_scroll_page_render_direct(s, p, &ui);
+                                    } else {
+                                        update_view(&ui, &state_lock);
+                                    }
                                 }
                             }
                         }
