@@ -406,8 +406,16 @@ fn ensure_cached_text(state: &mut AppState, page: i32) {
 fn get_page_highlights(state: &AppState, page: i32) -> Vec<pdf::worker::HighlightOverlay> {
     let mut res = Vec::new();
     for a in &state.annotations {
-        if a.page == page && a.kind == "highlight" && !a.is_from_pdf {
-            let rgb = get_highlight_blend_rgb(a.color_index);
+        if a.page == page && a.kind == "highlight" {
+            let rgb = if let Some((r, g, b)) = parse_hex_to_rgb(&a.color_hex) {
+                [
+                    (r * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (g * 255.0).round().clamp(0.0, 255.0) as u8,
+                    (b * 255.0).round().clamp(0.0, 255.0) as u8,
+                ]
+            } else {
+                get_highlight_blend_rgb(a.color_index)
+            };
             let adjusted = adjust_line_rects_for_highlight(&a.line_rects_pt);
             res.push(pdf::worker::HighlightOverlay {
                 rgb,
@@ -444,10 +452,9 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
             highlights.push(item_data);
         }
 
-        // Map line rectangles to visual overlays scaled by zoom.
-        // For annotations from PDF, highlights/underlines/strikeouts are already drawn by MuPDF onto the pixmap.
-        // We only generate Slint visual overlays for annotations created in this session, or notes from PDF (to show the icon).
-        if !annot.is_from_pdf || annot.kind == "note" {
+        // Underlines, strikeouts, and notes are rendered via Slint vector overlays.
+        // Highlights are rendered via worker Multiply blend on the page pixmap.
+        if annot.kind != "highlight" {
             for rect in &annot.line_rects_pt {
                 visuals.push(AnnotationVisual {
                     id: annot.id,

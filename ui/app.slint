@@ -835,9 +835,19 @@ export component AppWindow inherits Window {
                                         background: item.color;
                                     }
 
+                                    // TouchArea for jumping to page covers the card except the delete button on the right
+                                    h-ta := TouchArea {
+                                        x: 0;
+                                        y: 0;
+                                        width: parent.width - 48px;
+                                        height: parent.height;
+                                        clicked => { root.jump-to-page(item.page); }
+                                        mouse-cursor: pointer;
+                                    }
+
                                     HorizontalLayout {
                                         padding-left: 14px;
-                                        padding-right: 10px;
+                                        padding-right: 8px;
                                         spacing: 8px;
                                         alignment: space-between;
 
@@ -879,12 +889,6 @@ export component AppWindow inherits Window {
                                             y: (parent.height - self.height) / 2;
                                             clicked => { root.delete-annotation(item.id); }
                                         }
-                                    }
-
-                                    h-ta := TouchArea {
-                                        width: parent.width - 44px;
-                                        clicked => { root.jump-to-page(item.page); }
-                                        mouse-cursor: pointer;
                                     }
                                 }
                             }
@@ -941,9 +945,19 @@ export component AppWindow inherits Window {
                                         background: item.color;
                                     }
 
+                                    // TouchArea for jumping to page covers the card except the delete button on the right
+                                    n-ta := TouchArea {
+                                        x: 0;
+                                        y: 0;
+                                        width: parent.width - 48px;
+                                        height: parent.height;
+                                        clicked => { root.jump-to-page(item.page); }
+                                        mouse-cursor: pointer;
+                                    }
+
                                     HorizontalLayout {
                                         padding-left: 14px;
-                                        padding-right: 10px;
+                                        padding-right: 8px;
                                         spacing: 8px;
                                         alignment: space-between;
 
@@ -994,12 +1008,6 @@ export component AppWindow inherits Window {
                                             y: (parent.height - self.height) / 2;
                                             clicked => { root.delete-annotation(item.id); }
                                         }
-                                    }
-
-                                    n-ta := TouchArea {
-                                        width: parent.width - 44px;
-                                        clicked => { root.jump-to-page(item.page); }
-                                        mouse-cursor: pointer;
                                     }
                                 }
                             }

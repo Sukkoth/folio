@@ -142,9 +142,9 @@ fn render_page(
         .map_err(|e| format!("Failed to load page {page_no}: {e}"))?;
 
     let matrix = mupdf::Matrix::new_scale(zoom, zoom);
-    // Render with alpha=false so page content is rendered onto an opaque white paper canvas
+    // Render with alpha=false onto white paper canvas, show_extras=false so Folio manages all annotations uniformly
     let pixmap = page
-        .to_pixmap(&matrix, &mupdf::Colorspace::device_rgb(), false, true)
+        .to_pixmap(&matrix, &mupdf::Colorspace::device_rgb(), false, false)
         .map_err(|e| format!("Failed to rasterize page {page_no}: {e}"))?;
 
     let w = pixmap.width();
