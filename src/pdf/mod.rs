@@ -370,3 +370,196 @@ pub fn compute_text_selection(
     let snippet = snippet_parts.join(" ");
     (snippet, line_rects)
 }
+
+/// Extracts the underlying text snippet covered by a set of bounding boxes on a page.
+pub fn extract_text_for_rects(
+    text_data: &PageTextData,
+    rects: &[(f32, f32, f32, f32)],
+) -> String {
+    if text_data.lines.is_empty() || rects.is_empty() {
+        return String::new();
+    }
+
+    let mut line_texts = Vec::new();
+
+    for line in &text_data.lines {
+        let mut matched_chars: Vec<char> = Vec::new();
+
+        for ch in &line.chars {
+            let cx = (ch.x0 + ch.x1) * 0.5;
+            let cy = (ch.y0 + ch.y1) * 0.5;
+
+            let in_rect = rects.iter().any(|r| {
+                cx >= (r.0 - 2.0) && cx <= (r.2 + 2.0) && cy >= (r.1 - 4.0) && cy <= (r.3 + 4.0)
+            });
+
+            if in_rect {
+                matched_chars.push(ch.ch);
+            }
+        }
+
+        if !matched_chars.is_empty() {
+            let s: String = matched_chars.into_iter().collect();
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                line_texts.push(trimmed.to_string());
+            }
+        }
+    }
+
+    line_texts.join(" ")
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtractedAnnotation {
+    pub page: i32,
+    pub kind: String, // "highlight", "underline", "strikethrough", "note"
+    pub color_rgb: (f32, f32, f32),
+    pub color_hex: String,
+    pub snippet: String,
+    pub comment: String,
+    pub line_rects_pt: Vec<(f32, f32, f32, f32)>,
+}
+
+/// Extracts all existing annotations (highlights, underlines, strikethroughs, notes) from the PDF
+pub fn extract_document_annotations(file_path: &str) -> Vec<ExtractedAnnotation> {
+    let pdf_doc = match mupdf::pdf::PdfDocument::open(file_path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    let page_count = match pdf_doc.page_count() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut annotations = Vec::new();
+
+    for p in 0..page_count {
+        let page = match pdf_doc.load_pdf_page(p) {
+            Ok(page) => page,
+            Err(_) => continue,
+        };
+
+        let mut page_text: Option<PageTextData> = None;
+
+        for annot in page.annotations() {
+            let annot_type = match annot.r#type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            let kind = match annot_type {
+                mupdf::pdf::PdfAnnotationType::Highlight => "highlight",
+                mupdf::pdf::PdfAnnotationType::Underline | mupdf::pdf::PdfAnnotationType::Squiggly => "underline",
+                mupdf::pdf::PdfAnnotationType::StrikeOut => "strikethrough",
+                mupdf::pdf::PdfAnnotationType::Text | mupdf::pdf::PdfAnnotationType::FreeText => "note",
+                _ => continue,
+            };
+
+            let mut line_rects_pt = Vec::new();
+            if let Ok(quads) = annot.quads() {
+                for q in quads {
+                    let rx0 = q.ul.x.min(q.ur.x).min(q.ll.x).min(q.lr.x);
+                    let ry0 = q.ul.y.min(q.ur.y).min(q.ll.y).min(q.lr.y);
+                    let rx1 = q.ul.x.max(q.ur.x).max(q.ll.x).max(q.lr.x);
+                    let ry1 = q.ul.y.max(q.ur.y).max(q.ll.y).max(q.lr.y);
+                    if (rx1 - rx0) > 0.5 && (ry1 - ry0) > 0.5 {
+                        line_rects_pt.push((rx0, ry0, rx1, ry1));
+                    }
+                }
+            }
+
+            if line_rects_pt.is_empty() {
+                if let Ok(rect) = annot.rect() {
+                    let rx0 = rect.x0.min(rect.x1);
+                    let ry0 = rect.y0.min(rect.y1);
+                    let rx1 = rect.x0.max(rect.x1);
+                    let ry1 = rect.y0.max(rect.y1);
+                    if (rx1 - rx0) > 0.5 && (ry1 - ry0) > 0.5 {
+                        line_rects_pt.push((rx0, ry0, rx1, ry1));
+                    }
+                }
+            }
+
+            let (r, g, b): (f32, f32, f32) = match annot.color() {
+                Ok(Some(mupdf::color::AnnotationColor::Rgb { red, green, blue })) => (red, green, blue),
+                Ok(Some(mupdf::color::AnnotationColor::Gray(gray))) => (gray, gray, gray),
+                Ok(Some(mupdf::color::AnnotationColor::Cmyk { cyan, magenta, yellow, key })) => (
+                    (1.0 - cyan) * (1.0 - key),
+                    (1.0 - magenta) * (1.0 - key),
+                    (1.0 - yellow) * (1.0 - key),
+                ),
+                _ => {
+                    if kind == "note" {
+                        (0.23, 0.51, 0.96)
+                    } else {
+                        (0.98, 0.80, 0.08)
+                    }
+                }
+            };
+
+            let color_hex = format!(
+                "#{:02x}{:02x}{:02x}",
+                (r * 255.0f32).round().clamp(0.0, 255.0) as u8,
+                (g * 255.0f32).round().clamp(0.0, 255.0) as u8,
+                (b * 255.0f32).round().clamp(0.0, 255.0) as u8,
+            );
+
+            let comment = annot.contents().ok().flatten().unwrap_or("").trim().to_string();
+
+            let mut snippet = String::new();
+            if kind == "note" {
+                snippet = comment.clone();
+            } else {
+                if page_text.is_none() {
+                    page_text = Some(extract_page_text_data(file_path, p));
+                }
+                if let Some(ref pt) = page_text {
+                    snippet = extract_text_for_rects(pt, &line_rects_pt);
+                }
+                if snippet.is_empty() && !comment.is_empty() {
+                    snippet = comment.clone();
+                }
+                if snippet.is_empty() {
+                    let kind_capitalized = match kind {
+                        "highlight" => "Highlight",
+                        "underline" => "Underline",
+                        "strikethrough" => "Strikethrough",
+                        _ => "Annotation",
+                    };
+                    snippet = format!("{} on Page {}", kind_capitalized, p + 1);
+                }
+            }
+
+            annotations.push(ExtractedAnnotation {
+                page: p,
+                kind: kind.to_string(),
+                color_rgb: (r, g, b),
+                color_hex,
+                snippet,
+                comment,
+                line_rects_pt,
+            });
+        }
+    }
+
+    annotations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_annotations() {
+        let path = "/home/twof/Documents/The Message of Ephesians (John R. W. Stott) (z-library.sk, 1lib.sk, z-lib.sk).pdf";
+        if std::path::Path::new(path).exists() {
+            let annots = extract_document_annotations(path);
+            println!("Extracted {} annotations from PDF", annots.len());
+            for a in &annots {
+                println!("- Page {}: [{}] '{}' (color: {})", a.page + 1, a.kind, a.snippet, a.color_hex);
+            }
+        }
+    }
+}

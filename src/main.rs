@@ -35,6 +35,42 @@ fn get_color(idx: i32) -> (String, slint::Color) {
     (hex.to_string(), slint::Color::from_rgb_u8(r, g, b))
 }
 
+fn parse_slint_color(hex: &str) -> Option<slint::Color> {
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+    if hex.len() == 6 {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        Some(slint::Color::from_rgb_u8(r, g, b))
+    } else {
+        None
+    }
+}
+
+fn match_closest_color_index(rgb: (f32, f32, f32)) -> i32 {
+    let presets = [
+        (0, (0.98, 0.80, 0.08)), // Yellow (#facc15)
+        (1, (0.29, 0.87, 0.50)), // Green  (#4ade80)
+        (2, (0.38, 0.65, 0.98)), // Blue   (#60a5fa)
+        (3, (0.96, 0.45, 0.71)), // Pink   (#f472b6)
+        (4, (0.98, 0.57, 0.24)), // Orange (#fb923c)
+    ];
+
+    let mut best_idx = 0;
+    let mut min_dist = f32::MAX;
+    for (idx, (pr, pg, pb)) in presets {
+        let dr = rgb.0 - pr;
+        let dg = rgb.1 - pg;
+        let db = rgb.2 - pb;
+        let dist = dr * dr + dg * dg + db * db;
+        if dist < min_dist {
+            min_dist = dist;
+            best_idx = idx;
+        }
+    }
+    best_idx
+}
+
 #[derive(Debug, Clone)]
 struct AnnotationRecord {
     id: i32,
@@ -45,6 +81,7 @@ struct AnnotationRecord {
     snippet: String,
     comment: String,
     line_rects_pt: Vec<(f32, f32, f32, f32)>, // (x0, y0, x1, y1) in points
+    is_from_pdf: bool,
 }
 
 struct AppState {
@@ -173,7 +210,33 @@ fn setup_document(
     }
     let toc_model = std::rc::Rc::new(slint::VecModel::from(toc_entries));
     app.set_toc_items(toc_model.into());
-    app.set_show_sidebar(has_toc);
+
+    // Extract any existing annotations (highlights, underlines, notes) from the PDF
+    let existing_annots = pdf::extract_document_annotations(&path_str);
+    let mut initial_annotations = Vec::with_capacity(existing_annots.len());
+    let mut next_annot_id = 1;
+
+    for ea in existing_annots {
+        let color_idx = match_closest_color_index(ea.color_rgb);
+        initial_annotations.push(AnnotationRecord {
+            id: next_annot_id,
+            page: ea.page,
+            kind: ea.kind,
+            color_index: color_idx,
+            color_hex: ea.color_hex,
+            snippet: ea.snippet,
+            comment: ea.comment,
+            line_rects_pt: ea.line_rects_pt,
+            is_from_pdf: true,
+        });
+        next_annot_id += 1;
+    }
+
+    let has_annotations = !initial_annotations.is_empty();
+    app.set_show_sidebar(has_toc || has_annotations);
+    if !has_toc && has_annotations {
+        app.set_sidebar_tab(1);
+    }
 
     // Initialize the scroll-pages model for continuous scroll view with exact per-page geometry
     let mut items = Vec::with_capacity(meta.page_count as usize);
@@ -220,8 +283,8 @@ fn setup_document(
         page_sizes: meta.page_sizes,
         cache: PageCache::new(16),
         worker,
-        annotations: Vec::new(),
-        next_annot_id: 1,
+        annotations: initial_annotations,
+        next_annot_id,
         cached_text_page: -1,
         cached_text: pdf::PageTextData::default(),
         sel_start_pt: (0.0, 0.0),
@@ -302,7 +365,7 @@ fn ensure_cached_text(state: &mut AppState, page: i32) {
 fn get_page_highlights(state: &AppState, page: i32) -> Vec<pdf::worker::HighlightOverlay> {
     let mut res = Vec::new();
     for a in &state.annotations {
-        if a.page == page && a.kind == "highlight" {
+        if a.page == page && a.kind == "highlight" && !a.is_from_pdf {
             let rgb = get_highlight_blend_rgb(a.color_index);
             let adjusted = adjust_line_rects_for_highlight(&a.line_rects_pt);
             res.push(pdf::worker::HighlightOverlay {
@@ -387,7 +450,7 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
     let mut visuals = Vec::new();
 
     for annot in &s.annotations {
-        let (_, col) = get_color(annot.color_index);
+        let col = parse_slint_color(&annot.color_hex).unwrap_or_else(|| get_color(annot.color_index).1);
         let item_data = AnnotationItemData {
             id: annot.id,
             page: annot.page,
@@ -405,19 +468,23 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
             highlights.push(item_data);
         }
 
-        // Map line rectangles to visual overlays scaled by zoom
-        for rect in &annot.line_rects_pt {
-            visuals.push(AnnotationVisual {
-                id: annot.id,
-                page: annot.page,
-                kind: annot.kind.clone().into(),
-                color: col,
-                x: rect.0 * s.zoom_level,
-                y: rect.1 * s.zoom_level,
-                w: (rect.2 - rect.0).max(4.0) * s.zoom_level,
-                h: (rect.3 - rect.1).max(4.0) * s.zoom_level,
-                comment: annot.comment.clone().into(),
-            });
+        // Map line rectangles to visual overlays scaled by zoom.
+        // For annotations from PDF, highlights/underlines/strikeouts are already drawn by MuPDF onto the pixmap.
+        // We only generate Slint visual overlays for annotations created in this session, or notes from PDF (to show the icon).
+        if !annot.is_from_pdf || annot.kind == "note" {
+            for rect in &annot.line_rects_pt {
+                visuals.push(AnnotationVisual {
+                    id: annot.id,
+                    page: annot.page,
+                    kind: annot.kind.clone().into(),
+                    color: col,
+                    x: rect.0 * s.zoom_level,
+                    y: rect.1 * s.zoom_level,
+                    w: (rect.2 - rect.0).max(4.0) * s.zoom_level,
+                    h: (rect.3 - rect.1).max(4.0) * s.zoom_level,
+                    comment: annot.comment.clone().into(),
+                });
+            }
         }
     }
 
@@ -861,6 +928,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             snippet: s.active_selection_snippet.clone(),
                             comment: String::new(),
                             line_rects_pt: s.active_selection_line_rects.clone(),
+                            is_from_pdf: false,
                         };
                         s.next_annot_id += 1;
                         s.annotations.push(annot);
@@ -913,6 +981,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             snippet: s.active_selection_snippet.clone(),
                             comment: comment.to_string(),
                             line_rects_pt: s.active_selection_line_rects.clone(),
+                            is_from_pdf: false,
                         };
                         s.next_annot_id += 1;
                         s.annotations.push(annot);
