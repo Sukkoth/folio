@@ -69,6 +69,7 @@ export struct AnnotationVisual {
     page: int,
     kind: string,
     color: color,
+    color-index: int,
     x: length,
     y: length,
     w: length,
@@ -119,6 +120,8 @@ export component AppWindow inherits Window {
     in-out property <length> popup-x: 0px;
     in-out property <length> popup-y: 0px;
     in-out property <int> selected-color-index: 0; // 0=Yellow, 1=Green, 2=Blue, 3=Pink, 4=Orange
+    in-out property <int> selected-annotation-id: -1;
+    in-out property <int> hovered-annotation-id: -1;
     in-out property <bool> show-note-input: false;
     in-out property <string> current-note-text: "";
 
@@ -153,6 +156,7 @@ export component AppWindow inherits Window {
     callback create-annotation(string, int); // (kind, color_index)
     callback create-note-annotation(string, int); // (comment, color_index)
     callback delete-annotation(int); // (id)
+    callback update-annotation-color(int, int); // (id, color_index)
 
     public function scroll-to-page(index: int) {
         if (index >= 0 && index < root.scroll-pages.length) {
@@ -234,6 +238,19 @@ export component AppWindow inherits Window {
                 if (event.text == Key.Escape) {
                     if (root.show-popup || root.has-selection) {
                         root.clear-selection();
+                        return accept;
+                    }
+                } else if (root.selected-annotation-id > 0) {
+                    if (event.text == "1") { root.selected-color-index = 0; root.update-annotation-color(root.selected-annotation-id, 0); return accept; }
+                    else if (event.text == "2") { root.selected-color-index = 1; root.update-annotation-color(root.selected-annotation-id, 1); return accept; }
+                    else if (event.text == "3") { root.selected-color-index = 2; root.update-annotation-color(root.selected-annotation-id, 2); return accept; }
+                    else if (event.text == "4") { root.selected-color-index = 3; root.update-annotation-color(root.selected-annotation-id, 3); return accept; }
+                    else if (event.text == "5") { root.selected-color-index = 4; root.update-annotation-color(root.selected-annotation-id, 4); return accept; }
+                    else if (event.text == Key.Delete || event.text == Key.Backspace) {
+                        root.delete-annotation(root.selected-annotation-id);
+                        root.show-popup = false;
+                        root.selected-annotation-id = -1;
+                        root.hovered-annotation-id = -1;
                         return accept;
                     }
                 } else if (root.has-selection && !root.show-note-input) {
@@ -1093,6 +1110,12 @@ export component AppWindow inherits Window {
                             width: view-scroll.content-width;
                             height: view-scroll.content-height;
 
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.move) {
+                                    root.hovered-annotation-id = -1;
+                                }
+                            }
+
                             scroll-event(event) => {
                                 if (event.modifiers.control) {
                                     if (event.delta-y > 0) {
@@ -1130,13 +1153,61 @@ export component AppWindow inherits Window {
                                     }
                                 }
 
-                                // Render Page Annotations
+                                // Interactive Text Selection Highlights directly on actual text
+                                if root.has-selection: Rectangle {
+                                    for sel-r in root.selection-rects: Rectangle {
+                                        x: sel-r.x;
+                                        y: sel-r.y;
+                                        width: sel-r.width;
+                                        height: sel-r.height;
+                                        background: #3b82f640;
+                                        border-radius: 2px;
+                                    }
+                                }
+
+                                // TouchArea for dragging text selection
+                                page-ta := TouchArea {
+                                    width: 100%;
+                                    height: 100%;
+                                    mouse-cursor: text;
+
+                                    pointer-event(event) => {
+                                        if (event.kind == PointerEventKind.move) {
+                                            root.hovered-annotation-id = -1;
+                                        } else if (event.button == PointerEventButton.left) {
+                                            if (event.kind == PointerEventKind.down) {
+                                                root.selected-annotation-id = -1;
+                                                root.selection-started(root.current-page, page-ta.mouse-x, page-ta.mouse-y);
+                                            } else if (event.kind == PointerEventKind.up) {
+                                                root.selection-completed(root.current-page, page-ta.mouse-x, page-ta.mouse-y);
+                                            }
+                                        }
+                                    }
+
+                                    moved => {
+                                        if (page-ta.pressed) {
+                                            root.selection-dragged(root.current-page, page-ta.mouse-x, page-ta.mouse-y);
+                                        }
+                                    }
+                                }
+
+                                // Render Page Annotations on top of page-ta so hover and click are intercepted
                                 for annot in root.page-annotations: Rectangle {
                                     if annot.page == root.current-page: Rectangle {
                                         x: annot.x;
                                         y: annot.y;
                                         width: annot.w;
                                         height: annot.h;
+
+                                        // Hover & Selection visual recognition feedback rectangle
+                                        Rectangle {
+                                            width: 100%;
+                                            height: 100%;
+                                            border-radius: 3px;
+                                            background: root.selected-annotation-id == annot.id ? #3b82f628 : ((root.hovered-annotation-id == annot.id || annot-ta.has-hover) ? #ffffff22 : transparent);
+                                            border-width: (root.selected-annotation-id == annot.id || root.hovered-annotation-id == annot.id || annot-ta.has-hover) ? 1.5px : 0px;
+                                            border-color: root.selected-annotation-id == annot.id ? #3b82f6 : annot.color;
+                                        }
 
                                         // Underline (anchored with breathing space below character baseline, scaling with zoom)
                                         if annot.kind == "underline": Rectangle {
@@ -1172,40 +1243,27 @@ export component AppWindow inherits Window {
                                                 vertical-alignment: center;
                                             }
                                         }
-                                    }
-                                }
 
-                                // Interactive Text Selection Highlights directly on actual text
-                                if root.has-selection: Rectangle {
-                                    for sel-r in root.selection-rects: Rectangle {
-                                        x: sel-r.x;
-                                        y: sel-r.y;
-                                        width: sel-r.width;
-                                        height: sel-r.height;
-                                        background: #3b82f640;
-                                        border-radius: 2px;
-                                    }
-                                }
+                                        annot-ta := TouchArea {
+                                            width: 100%;
+                                            height: 100%;
+                                            mouse-cursor: pointer;
 
-                                // TouchArea for dragging text selection
-                                page-ta := TouchArea {
-                                    width: 100%;
-                                    height: 100%;
-                                    mouse-cursor: text;
-
-                                    pointer-event(event) => {
-                                        if (event.button == PointerEventButton.left) {
-                                            if (event.kind == PointerEventKind.down) {
-                                                root.selection-started(root.current-page, page-ta.mouse-x, page-ta.mouse-y);
-                                            } else if (event.kind == PointerEventKind.up) {
-                                                root.selection-completed(root.current-page, page-ta.mouse-x, page-ta.mouse-y);
+                                            pointer-event(event) => {
+                                                if (event.kind == PointerEventKind.move) {
+                                                    root.hovered-annotation-id = annot.id;
+                                                }
                                             }
-                                        }
-                                    }
 
-                                    moved => {
-                                        if (page-ta.pressed) {
-                                            root.selection-dragged(root.current-page, page-ta.mouse-x, page-ta.mouse-y);
+                                            clicked => {
+                                                root.selected-annotation-id = annot.id;
+                                                root.selected-color-index = annot.color-index;
+                                                root.has-selection = false;
+                                                root.show-note-input = false;
+                                                root.popup-x = max(8px, min(root.page-width - 200px, annot.x + (annot.w - 190px) / 2));
+                                                root.popup-y = annot.y > 52px ? annot.y - 48px : annot.y + annot.h + 8px;
+                                                root.show-popup = true;
+                                            }
                                         }
                                     }
                                 }
@@ -1214,8 +1272,8 @@ export component AppWindow inherits Window {
                                 if root.show-popup: popup := Rectangle {
                                     x: root.popup-x;
                                     y: root.popup-y;
-                                    width: 250px;
-                                    height: root.show-note-input ? 84px : 40px;
+                                    width: root.selected-annotation-id > 0 ? 190px : 250px;
+                                    height: (root.selected-annotation-id <= 0 && root.show-note-input) ? 84px : 40px;
                                     border-radius: 8px;
                                     background: #181d27;
                                     border-width: 1px;
@@ -1223,13 +1281,168 @@ export component AppWindow inherits Window {
                                     drop-shadow-blur: 16px;
                                     drop-shadow-color: #000000c0;
                                     animate height { duration: 120ms; }
+                                    animate width { duration: 120ms; }
 
                                     VerticalLayout {
                                         padding: 6px;
                                         spacing: 6px;
 
-                                        // Top Row: 5 Static Colors + Divider + 4 Action Icons (NO WORDS) + Close
-                                        HorizontalLayout {
+                                        // UPDATE MODE: When existing annotation recognized
+                                        if root.selected-annotation-id > 0: HorizontalLayout {
+                                            spacing: 6px;
+                                            alignment: space-between;
+
+                                            // 5 Color Circles
+                                            HorizontalLayout {
+                                                spacing: 5px;
+                                                alignment: start;
+
+                                                Rectangle {
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    border-radius: 9px;
+                                                    background: #facc15;
+                                                    border-width: root.selected-color-index == 0 ? 2px : 1px;
+                                                    border-color: root.selected-color-index == 0 ? #ffffff : #00000040;
+                                                    y: (parent.height - self.height) / 2;
+                                                    TouchArea {
+                                                        clicked => {
+                                                            root.selected-color-index = 0;
+                                                            root.update-annotation-color(root.selected-annotation-id, 0);
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    border-radius: 9px;
+                                                    background: #4ade80;
+                                                    border-width: root.selected-color-index == 1 ? 2px : 1px;
+                                                    border-color: root.selected-color-index == 1 ? #ffffff : #00000040;
+                                                    y: (parent.height - self.height) / 2;
+                                                    TouchArea {
+                                                        clicked => {
+                                                            root.selected-color-index = 1;
+                                                            root.update-annotation-color(root.selected-annotation-id, 1);
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    border-radius: 9px;
+                                                    background: #60a5fa;
+                                                    border-width: root.selected-color-index == 2 ? 2px : 1px;
+                                                    border-color: root.selected-color-index == 2 ? #ffffff : #00000040;
+                                                    y: (parent.height - self.height) / 2;
+                                                    TouchArea {
+                                                        clicked => {
+                                                            root.selected-color-index = 2;
+                                                            root.update-annotation-color(root.selected-annotation-id, 2);
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    border-radius: 9px;
+                                                    background: #f472b6;
+                                                    border-width: root.selected-color-index == 3 ? 2px : 1px;
+                                                    border-color: root.selected-color-index == 3 ? #ffffff : #00000040;
+                                                    y: (parent.height - self.height) / 2;
+                                                    TouchArea {
+                                                        clicked => {
+                                                            root.selected-color-index = 3;
+                                                            root.update-annotation-color(root.selected-annotation-id, 3);
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    border-radius: 9px;
+                                                    background: #fb923c;
+                                                    border-width: root.selected-color-index == 4 ? 2px : 1px;
+                                                    border-color: root.selected-color-index == 4 ? #ffffff : #00000040;
+                                                    y: (parent.height - self.height) / 2;
+                                                    TouchArea {
+                                                        clicked => {
+                                                            root.selected-color-index = 4;
+                                                            root.update-annotation-color(root.selected-annotation-id, 4);
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+                                            }
+
+                                            // Divider
+                                            Rectangle {
+                                                width: 1px;
+                                                height: 18px;
+                                                background: #2e384d;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+
+                                            // Action Icons: Delete & Close
+                                            HorizontalLayout {
+                                                spacing: 2px;
+                                                alignment: end;
+
+                                                Rectangle {
+                                                    width: 26px;
+                                                    height: 26px;
+                                                    border-radius: 4px;
+                                                    background: del-ta.has-hover ? #ef444430 : transparent;
+                                                    Text {
+                                                        text: "🗑";
+                                                        font-size: 13px;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    del-ta := TouchArea {
+                                                        clicked => {
+                                                            root.delete-annotation(root.selected-annotation-id);
+                                                            root.show-popup = false;
+                                                            root.selected-annotation-id = -1;
+                                                            root.hovered-annotation-id = -1;
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    width: 22px;
+                                                    height: 26px;
+                                                    border-radius: 4px;
+                                                    background: cls-ta-edit.has-hover ? #283141 : transparent;
+                                                    Text {
+                                                        text: "✕";
+                                                        font-size: 11px;
+                                                        color: #94a3b8;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    cls-ta-edit := TouchArea {
+                                                        clicked => {
+                                                            root.show-popup = false;
+                                                            root.selected-annotation-id = -1;
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // CREATE MODE: When text selection is active
+                                        if root.selected-annotation-id <= 0: HorizontalLayout {
                                             spacing: 6px;
                                             alignment: space-between;
 
@@ -1425,7 +1638,7 @@ export component AppWindow inherits Window {
                                         }
 
                                         // Bottom Row: Inline Note Input Box (when note icon active)
-                                        if root.show-note-input: HorizontalLayout {
+                                        if root.selected-annotation-id <= 0 && root.show-note-input: HorizontalLayout {
                                             spacing: 4px;
 
                                             Rectangle {
@@ -1495,6 +1708,12 @@ export component AppWindow inherits Window {
                                 width: 100%;
                                 height: 100%;
 
+                                pointer-event(event) => {
+                                    if (event.kind == PointerEventKind.move) {
+                                        root.hovered-annotation-id = -1;
+                                    }
+                                }
+
                                 scroll-event(event) => {
                                     if (event.modifiers.control) {
                                         if (event.delta-y > 0) {
@@ -1527,13 +1746,74 @@ export component AppWindow inherits Window {
                                     source: page-item.image;
                                 }
 
-                                // Render Page Annotations in Scroll View
+                                // Interactive Text Selection Highlights directly on actual text
+                                if root.has-selection && root.current-page == page-item.page-index: Rectangle {
+                                    for sel-r in root.selection-rects: Rectangle {
+                                        x: sel-r.x;
+                                        y: sel-r.y;
+                                        width: sel-r.width;
+                                        height: sel-r.height;
+                                        background: #3b82f640;
+                                        border-radius: 2px;
+                                    }
+                                }
+
+                                page-scroll-ta := TouchArea {
+                                    width: 100%;
+                                    height: 100%;
+                                    mouse-cursor: text;
+
+                                    scroll-event(event) => {
+                                        if (event.modifiers.control) {
+                                            if (event.delta-y > 0) {
+                                                root.zoom-in();
+                                                return accept;
+                                            } else if (event.delta-y < 0) {
+                                                root.zoom-out();
+                                                return accept;
+                                            }
+                                        }
+                                        return reject;
+                                    }
+
+                                    pointer-event(event) => {
+                                        if (event.kind == PointerEventKind.move) {
+                                            root.hovered-annotation-id = -1;
+                                        } else if (event.button == PointerEventButton.left) {
+                                            if (event.kind == PointerEventKind.down) {
+                                                root.selected-annotation-id = -1;
+                                                root.current-page = page-item.page-index;
+                                                root.selection-started(page-item.page-index, page-scroll-ta.mouse-x, page-scroll-ta.mouse-y);
+                                            } else if (event.kind == PointerEventKind.up) {
+                                                root.selection-completed(page-item.page-index, page-scroll-ta.mouse-x, page-scroll-ta.mouse-y);
+                                            }
+                                        }
+                                    }
+
+                                    moved => {
+                                        if (page-scroll-ta.pressed) {
+                                            root.selection-dragged(page-item.page-index, page-scroll-ta.mouse-x, page-scroll-ta.mouse-y);
+                                        }
+                                    }
+                                }
+
+                                // Render Page Annotations in Scroll View on top of page-scroll-ta
                                 for annot in root.page-annotations: Rectangle {
                                     if annot.page == page-item.page-index: Rectangle {
                                         x: annot.x;
                                         y: annot.y;
                                         width: annot.w;
                                         height: annot.h;
+
+                                        // Hover & Selection visual recognition feedback rectangle
+                                        Rectangle {
+                                            width: 100%;
+                                            height: 100%;
+                                            border-radius: 3px;
+                                            background: root.selected-annotation-id == annot.id ? #3b82f628 : ((root.hovered-annotation-id == annot.id || annot-ta2.has-hover) ? #ffffff22 : transparent);
+                                            border-width: (root.selected-annotation-id == annot.id || root.hovered-annotation-id == annot.id || annot-ta2.has-hover) ? 1.5px : 0px;
+                                            border-color: root.selected-annotation-id == annot.id ? #3b82f6 : annot.color;
+                                        }
 
                                         // Underline (anchored with breathing space below character baseline, scaling with zoom)
                                         if annot.kind == "underline": Rectangle {
@@ -1568,53 +1848,28 @@ export component AppWindow inherits Window {
                                                 vertical-alignment: center;
                                             }
                                         }
-                                    }
-                                }
 
-                                // Interactive Text Selection Highlights directly on actual text
-                                if root.has-selection && root.current-page == page-item.page-index: Rectangle {
-                                    for sel-r in root.selection-rects: Rectangle {
-                                        x: sel-r.x;
-                                        y: sel-r.y;
-                                        width: sel-r.width;
-                                        height: sel-r.height;
-                                        background: #3b82f640;
-                                        border-radius: 2px;
-                                    }
-                                }
+                                        annot-ta2 := TouchArea {
+                                            width: 100%;
+                                            height: 100%;
+                                            mouse-cursor: pointer;
 
-                                page-scroll-ta := TouchArea {
-                                    width: 100%;
-                                    height: 100%;
-                                    mouse-cursor: text;
-
-                                    scroll-event(event) => {
-                                        if (event.modifiers.control) {
-                                            if (event.delta-y > 0) {
-                                                root.zoom-in();
-                                                return accept;
-                                            } else if (event.delta-y < 0) {
-                                                root.zoom-out();
-                                                return accept;
+                                            pointer-event(event) => {
+                                                if (event.kind == PointerEventKind.move) {
+                                                    root.hovered-annotation-id = annot.id;
+                                                }
                                             }
-                                        }
-                                        return reject;
-                                    }
 
-                                    pointer-event(event) => {
-                                        if (event.button == PointerEventButton.left) {
-                                            if (event.kind == PointerEventKind.down) {
+                                            clicked => {
                                                 root.current-page = page-item.page-index;
-                                                root.selection-started(page-item.page-index, page-scroll-ta.mouse-x, page-scroll-ta.mouse-y);
-                                            } else if (event.kind == PointerEventKind.up) {
-                                                root.selection-completed(page-item.page-index, page-scroll-ta.mouse-x, page-scroll-ta.mouse-y);
+                                                root.selected-annotation-id = annot.id;
+                                                root.selected-color-index = annot.color-index;
+                                                root.has-selection = false;
+                                                root.show-note-input = false;
+                                                root.popup-x = max(8px, min(page-item.width - 200px, annot.x + (annot.w - 190px) / 2));
+                                                root.popup-y = annot.y > 52px ? annot.y - 48px : annot.y + annot.h + 8px;
+                                                root.show-popup = true;
                                             }
-                                        }
-                                    }
-
-                                    moved => {
-                                        if (page-scroll-ta.pressed) {
-                                            root.selection-dragged(page-item.page-index, page-scroll-ta.mouse-x, page-scroll-ta.mouse-y);
                                         }
                                     }
                                 }
@@ -1623,8 +1878,8 @@ export component AppWindow inherits Window {
                                 if root.show-popup && root.current-page == page-item.page-index: Rectangle {
                                     x: root.popup-x;
                                     y: root.popup-y;
-                                    width: 250px;
-                                    height: root.show-note-input ? 84px : 40px;
+                                    width: root.selected-annotation-id > 0 ? 190px : 250px;
+                                    height: (root.selected-annotation-id <= 0 && root.show-note-input) ? 84px : 40px;
                                     border-radius: 8px;
                                     background: #181d27;
                                     border-width: 1px;
@@ -1632,13 +1887,168 @@ export component AppWindow inherits Window {
                                     drop-shadow-blur: 16px;
                                     drop-shadow-color: #000000c0;
                                     animate height { duration: 120ms; }
+                                    animate width { duration: 120ms; }
 
                                     VerticalLayout {
                                         padding: 6px;
                                         spacing: 6px;
 
-                                        // Top Row: 5 Static Colors + Divider + 4 Action Icons (NO WORDS) + Close
-                                        HorizontalLayout {
+                                        // UPDATE MODE: When existing annotation recognized
+                                        if root.selected-annotation-id > 0: HorizontalLayout {
+                                            spacing: 6px;
+                                            alignment: space-between;
+
+                                            // 5 Color Circles
+                                            HorizontalLayout {
+                                                spacing: 5px;
+                                                alignment: start;
+
+                                                Rectangle {
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    border-radius: 9px;
+                                                    background: #facc15;
+                                                    border-width: root.selected-color-index == 0 ? 2px : 1px;
+                                                    border-color: root.selected-color-index == 0 ? #ffffff : #00000040;
+                                                    y: (parent.height - self.height) / 2;
+                                                    TouchArea {
+                                                        clicked => {
+                                                            root.selected-color-index = 0;
+                                                            root.update-annotation-color(root.selected-annotation-id, 0);
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    border-radius: 9px;
+                                                    background: #4ade80;
+                                                    border-width: root.selected-color-index == 1 ? 2px : 1px;
+                                                    border-color: root.selected-color-index == 1 ? #ffffff : #00000040;
+                                                    y: (parent.height - self.height) / 2;
+                                                    TouchArea {
+                                                        clicked => {
+                                                            root.selected-color-index = 1;
+                                                            root.update-annotation-color(root.selected-annotation-id, 1);
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    border-radius: 9px;
+                                                    background: #60a5fa;
+                                                    border-width: root.selected-color-index == 2 ? 2px : 1px;
+                                                    border-color: root.selected-color-index == 2 ? #ffffff : #00000040;
+                                                    y: (parent.height - self.height) / 2;
+                                                    TouchArea {
+                                                        clicked => {
+                                                            root.selected-color-index = 2;
+                                                            root.update-annotation-color(root.selected-annotation-id, 2);
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    border-radius: 9px;
+                                                    background: #f472b6;
+                                                    border-width: root.selected-color-index == 3 ? 2px : 1px;
+                                                    border-color: root.selected-color-index == 3 ? #ffffff : #00000040;
+                                                    y: (parent.height - self.height) / 2;
+                                                    TouchArea {
+                                                        clicked => {
+                                                            root.selected-color-index = 3;
+                                                            root.update-annotation-color(root.selected-annotation-id, 3);
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    border-radius: 9px;
+                                                    background: #fb923c;
+                                                    border-width: root.selected-color-index == 4 ? 2px : 1px;
+                                                    border-color: root.selected-color-index == 4 ? #ffffff : #00000040;
+                                                    y: (parent.height - self.height) / 2;
+                                                    TouchArea {
+                                                        clicked => {
+                                                            root.selected-color-index = 4;
+                                                            root.update-annotation-color(root.selected-annotation-id, 4);
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+                                            }
+
+                                            // Divider
+                                            Rectangle {
+                                                width: 1px;
+                                                height: 18px;
+                                                background: #2e384d;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+
+                                            // Action Icons: Delete & Close
+                                            HorizontalLayout {
+                                                spacing: 2px;
+                                                alignment: end;
+
+                                                Rectangle {
+                                                    width: 26px;
+                                                    height: 26px;
+                                                    border-radius: 4px;
+                                                    background: del-ta2.has-hover ? #ef444430 : transparent;
+                                                    Text {
+                                                        text: "🗑";
+                                                        font-size: 13px;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    del-ta2 := TouchArea {
+                                                        clicked => {
+                                                            root.delete-annotation(root.selected-annotation-id);
+                                                            root.show-popup = false;
+                                                            root.selected-annotation-id = -1;
+                                                            root.hovered-annotation-id = -1;
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    width: 22px;
+                                                    height: 26px;
+                                                    border-radius: 4px;
+                                                    background: cls-ta-edit2.has-hover ? #283141 : transparent;
+                                                    Text {
+                                                        text: "✕";
+                                                        font-size: 11px;
+                                                        color: #94a3b8;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    cls-ta-edit2 := TouchArea {
+                                                        clicked => {
+                                                            root.show-popup = false;
+                                                            root.selected-annotation-id = -1;
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // CREATE MODE: When text selection is active
+                                        if root.selected-annotation-id <= 0: HorizontalLayout {
                                             spacing: 6px;
                                             alignment: space-between;
 
@@ -1834,7 +2244,7 @@ export component AppWindow inherits Window {
                                         }
 
                                         // Bottom Row: Inline Note Input Box (when note icon active)
-                                        if root.show-note-input: HorizontalLayout {
+                                        if root.selected-annotation-id <= 0 && root.show-note-input: HorizontalLayout {
                                             spacing: 4px;
 
                                             Rectangle {

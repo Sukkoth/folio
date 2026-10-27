@@ -434,7 +434,12 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
     let mut visuals = Vec::new();
 
     for annot in &s.annotations {
-        let col = parse_slint_color(&annot.color_hex).unwrap_or_else(|| get_color(annot.color_index).1);
+        let swatch_col = get_color(annot.color_index).1;
+        let col = if annot.kind == "highlight" {
+            swatch_col
+        } else {
+            parse_slint_color(&annot.color_hex).unwrap_or(swatch_col)
+        };
         let item_data = AnnotationItemData {
             id: annot.id,
             page: annot.page,
@@ -452,22 +457,20 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
             highlights.push(item_data);
         }
 
-        // Underlines, strikeouts, and notes are rendered via Slint vector overlays.
-        // Highlights are rendered via worker Multiply blend on the page pixmap.
-        if annot.kind != "highlight" {
-            for rect in &annot.line_rects_pt {
-                visuals.push(AnnotationVisual {
-                    id: annot.id,
-                    page: annot.page,
-                    kind: annot.kind.clone().into(),
-                    color: col,
-                    x: rect.0 * s.zoom_level,
-                    y: rect.1 * s.zoom_level,
-                    w: (rect.2 - rect.0).max(4.0) * s.zoom_level,
-                    h: (rect.3 - rect.1).max(4.0) * s.zoom_level,
-                    comment: annot.comment.clone().into(),
-                });
-            }
+        // All annotations (including highlights) provide visual hitboxes for hover & click interaction
+        for rect in &annot.line_rects_pt {
+            visuals.push(AnnotationVisual {
+                id: annot.id,
+                page: annot.page,
+                kind: annot.kind.clone().into(),
+                color: col,
+                color_index: annot.color_index,
+                x: rect.0 * s.zoom_level,
+                y: rect.1 * s.zoom_level,
+                w: (rect.2 - rect.0).max(4.0) * s.zoom_level,
+                h: (rect.3 - rect.1).max(4.0) * s.zoom_level,
+                comment: annot.comment.clone().into(),
+            });
         }
     }
 
@@ -864,6 +867,8 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 ui.set_has_selection(false);
                 ui.set_show_popup(false);
                 ui.set_show_note_input(false);
+                ui.set_selected_annotation_id(-1);
+                ui.set_hovered_annotation_id(-1);
                 ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
             }
         });
@@ -976,6 +981,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 if has_sel {
                     ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::from(line_rects_ui)).into());
                     ui.set_has_selection(true);
+                    ui.set_selected_annotation_id(-1);
                     ui.set_popup_x(popup_x);
                     ui.set_popup_y(popup_y);
                     ui.set_show_popup(true);
@@ -984,6 +990,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_has_selection(false);
                     ui.set_show_popup(false);
                     ui.set_show_note_input(false);
+                    ui.set_selected_annotation_id(-1);
                 }
             }
         });
@@ -1078,6 +1085,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_has_selection(false);
                     ui.set_show_popup(false);
                     ui.set_show_note_input(false);
+                    ui.set_selected_annotation_id(-1);
                     ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
 
                     // If a highlight was created and blended directly in-place, update the UI image immediately
@@ -1140,6 +1148,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_has_selection(false);
                     ui.set_show_popup(false);
                     ui.set_show_note_input(false);
+                    ui.set_selected_annotation_id(-1);
                     ui.set_current_note_text("".into());
                     ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
                     if let Ok(lock) = state_lock.lock() {
@@ -1177,11 +1186,64 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             if need_sync {
                 if let Some(ui) = app_weak.upgrade() {
                     ui.set_is_dirty(true);
+                    ui.set_selected_annotation_id(-1);
+                    ui.set_hovered_annotation_id(-1);
+                    ui.set_show_popup(false);
                     if let Ok(mut lock) = state_lock.lock() {
                         if let Some(s) = lock.as_mut() {
                             sync_annotations_to_ui(s, &ui);
                             if is_highlight {
                                 if let Some(p) = deleted_page {
+                                    if s.is_scroll_view {
+                                        trigger_scroll_page_render_direct(s, p, &ui);
+                                    } else {
+                                        update_view(&ui, &state_lock);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Update Annotation Color
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_update_annotation_color(move |id, new_color_idx| {
+            let mut need_sync = false;
+            let mut update_page = None;
+            let mut is_highlight = false;
+
+            if let Ok(mut lock) = state_lock.lock() {
+                if let Some(s) = lock.as_mut() {
+                    if let Some(pos) = s.annotations.iter().position(|a| a.id == id) {
+                        let page = s.annotations[pos].page;
+                        update_page = Some(page);
+                        is_highlight = s.annotations[pos].kind == "highlight";
+                        let (hex, _) = get_color(new_color_idx);
+                        s.annotations[pos].color_index = new_color_idx;
+                        s.annotations[pos].color_hex = hex;
+                        s.annotations[pos].is_from_pdf = false;
+                        need_sync = true;
+
+                        if is_highlight {
+                            s.cache.remove_page(page);
+                        }
+                    }
+                }
+            }
+
+            if need_sync {
+                if let Some(ui) = app_weak.upgrade() {
+                    ui.set_is_dirty(true);
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            sync_annotations_to_ui(s, &ui);
+                            if is_highlight {
+                                if let Some(p) = update_page {
                                     if s.is_scroll_view {
                                         trigger_scroll_page_render_direct(s, p, &ui);
                                     } else {
@@ -1343,6 +1405,8 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 ui.set_has_selection(false);
                 ui.set_show_popup(false);
                 ui.set_show_note_input(false);
+                ui.set_selected_annotation_id(-1);
+                ui.set_hovered_annotation_id(-1);
                 ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
             }
         });
@@ -1610,6 +1674,9 @@ fn perform_zoom(
     factor: f32,
     target_page: Option<i32>,
 ) {
+    ui.set_show_popup(false);
+    ui.set_selected_annotation_id(-1);
+    ui.set_hovered_annotation_id(-1);
     let mut is_scroll = false;
     let mut old_zoom = 1.0;
     let mut new_zoom = 1.0;
