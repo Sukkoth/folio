@@ -33,6 +33,7 @@ component IconButton inherits Rectangle {
 
 export struct PageItemData {
     page-index: int,
+    offset-y: length,
     width: length,
     height: length,
     image: image,
@@ -98,6 +99,7 @@ export component AppWindow inherits Window {
     in-out property <bool> is-scroll-view: true;
     in-out property <length> scroll-content-y: 0px;
     in property <length> scroll-item-height: 842px + 24px;
+    in property <length> total-scroll-height: 0px;
     in property <int> total-pages: 1;
     in-out property <int> current-page: 0;
     in property <[PageItemData]> scroll-pages;
@@ -116,7 +118,6 @@ export component AppWindow inherits Window {
     in-out property <length> popup-x: 0px;
     in-out property <length> popup-y: 0px;
     in-out property <int> selected-color-index: 0; // 0=Yellow, 1=Green, 2=Blue, 3=Pink, 4=Orange
-    in-out property <int> highlight-style: 0; // 0=Spaced (Folio), 1=Continuous (Other apps)
     in-out property <bool> show-note-input: false;
     in-out property <string> current-note-text: "";
 
@@ -133,7 +134,6 @@ export component AppWindow inherits Window {
     callback zoom-reset();
     callback zoom-fit();
     callback set-view-mode(bool);
-    callback set-highlight-style(int);
     callback visible-page-changed(int);
     callback toggle-sidebar();
     callback jump-to-page(int);
@@ -148,7 +148,11 @@ export component AppWindow inherits Window {
     callback delete-annotation(int); // (id)
 
     public function scroll-to-page(index: int) {
-        root.scroll-content-y = -index * root.scroll-item-height;
+        if (index >= 0 && index < root.scroll-pages.length) {
+            root.scroll-content-y = -root.scroll-pages[index].offset-y;
+        } else {
+            root.scroll-content-y = -index * root.scroll-item-height;
+        }
     }
 
     property <int> visible-page: max(0, min(root.total-pages - 1, round(-root.scroll-content-y / max(1px, root.scroll-item-height))));
@@ -164,21 +168,50 @@ export component AppWindow inherits Window {
     keyboard-handler := FocusScope {
         key-pressed(event) => {
             if (event.modifiers.control) {
-                if (event.text == "+" || event.text == "=") {
-                    root.zoom-in();
-                    return accept;
-                } else if (event.text == "-" || event.text == "_") {
-                    root.zoom-out();
-                    return accept;
-                } else if (event.text == "0") {
-                    root.zoom-reset();
-                    return accept;
-                } else if (event.text == "m" || event.text == "M") {
-                    root.set-view-mode(!root.is-scroll-view);
-                    return accept;
-                } else if (event.text == "b" || event.text == "B" || event.text == "t" || event.text == "T") {
-                    root.toggle-sidebar();
-                    return accept;
+                if (event.modifiers.alt) {
+                    // Ctrl + Alt + S: Strikethrough
+                    if (event.text == "s" || event.text == "S") {
+                        if (root.has-selection) {
+                            root.create-annotation("strikethrough", root.selected-color-index);
+                            return accept;
+                        }
+                    // Ctrl + Alt + N: Note
+                    } else if (event.text == "n" || event.text == "N") {
+                        if (root.has-selection) {
+                            root.show-popup = true;
+                            root.show-note-input = true;
+                            return accept;
+                        }
+                    }
+                } else {
+                    // Ctrl + H: Highlight
+                    if (event.text == "h" || event.text == "H") {
+                        if (root.has-selection) {
+                            root.create-annotation("highlight", root.selected-color-index);
+                            return accept;
+                        }
+                    // Ctrl + U: Underline
+                    } else if (event.text == "u" || event.text == "U") {
+                        if (root.has-selection) {
+                            root.create-annotation("underline", root.selected-color-index);
+                            return accept;
+                        }
+                    } else if (event.text == "+" || event.text == "=") {
+                        root.zoom-in();
+                        return accept;
+                    } else if (event.text == "-" || event.text == "_") {
+                        root.zoom-out();
+                        return accept;
+                    } else if (event.text == "0") {
+                        root.zoom-reset();
+                        return accept;
+                    } else if (event.text == "m" || event.text == "M") {
+                        root.set-view-mode(!root.is-scroll-view);
+                        return accept;
+                    } else if (event.text == "b" || event.text == "B" || event.text == "t" || event.text == "T") {
+                        root.toggle-sidebar();
+                        return accept;
+                    }
                 }
             } else {
                 if (event.text == Key.Escape) {
@@ -186,6 +219,12 @@ export component AppWindow inherits Window {
                         root.clear-selection();
                         return accept;
                     }
+                } else if (root.has-selection && !root.show-note-input) {
+                    if (event.text == "1") { root.selected-color-index = 0; return accept; }
+                    else if (event.text == "2") { root.selected-color-index = 1; return accept; }
+                    else if (event.text == "3") { root.selected-color-index = 2; return accept; }
+                    else if (event.text == "4") { root.selected-color-index = 3; return accept; }
+                    else if (event.text == "5") { root.selected-color-index = 4; return accept; }
                 } else if (event.text == Key.LeftArrow || event.text == Key.PageUp || event.text == Key.UpArrow) {
                     root.prev-page();
                     return accept;
@@ -675,63 +714,6 @@ export component AppWindow inherits Window {
                         // Tab 1 Body: Highlights & Markups
                         if root.sidebar-tab == 1: VerticalLayout {
                             vertical-stretch: 1;
-                            spacing: 8px;
-
-                            // Style Selector: Spaced (Folio) | Continuous (Other apps)
-                            Rectangle {
-                                height: 32px;
-                                background: #131720;
-                                border-radius: 6px;
-                                border-width: 1px;
-                                border-color: #2b3342;
-
-                                HorizontalLayout {
-                                    padding: 2px;
-                                    spacing: 2px;
-
-                                    Rectangle {
-                                        horizontal-stretch: 1;
-                                        border-radius: 4px;
-                                        background: root.highlight-style == 0 ? #2b3648 : sp-ta.has-hover ? #1f2735 : transparent;
-                                        animate background { duration: 100ms; }
-
-                                        Text {
-                                            text: "Spaced (Default)";
-                                            font-size: 11px;
-                                            font-weight: 600;
-                                            color: root.highlight-style == 0 ? #ffffff : #94a3b8;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-
-                                        sp-ta := TouchArea {
-                                            clicked => { root.set-highlight-style(0); }
-                                            mouse-cursor: pointer;
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        horizontal-stretch: 1;
-                                        border-radius: 4px;
-                                        background: root.highlight-style == 1 ? #2b3648 : co-ta.has-hover ? #1f2735 : transparent;
-                                        animate background { duration: 100ms; }
-
-                                        Text {
-                                            text: "Continuous (Others)";
-                                            font-size: 11px;
-                                            font-weight: 600;
-                                            color: root.highlight-style == 1 ? #ffffff : #94a3b8;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-
-                                        co-ta := TouchArea {
-                                            clicked => { root.set-highlight-style(1); }
-                                            mouse-cursor: pointer;
-                                        }
-                                    }
-                                }
-                            }
 
                             if root.highlight-items.length == 0: Rectangle {
                                 vertical-stretch: 1;
@@ -1368,6 +1350,7 @@ export component AppWindow inherits Window {
                                                 border-color: #3e4c66;
 
                                                 note-input := TextInput {
+                                                    init => { self.focus(); }
                                                     text <=> root.current-note-text;
                                                     font-size: 12px;
                                                     color: #f1f5f9;
@@ -1413,13 +1396,13 @@ export component AppWindow inherits Window {
                         width: 100%;
                         height: 100%;
                         content-y <=> root.scroll-content-y;
-                        content-height: root.total-pages * root.scroll-item-height;
+                        content-height: root.total-scroll-height;
                         content-width: parent.width;
 
                         for page-item in root.scroll-pages: Rectangle {
-                            y: page-item.page-index * root.scroll-item-height;
+                            y: page-item.offset-y;
                             width: parent.width;
-                            height: root.scroll-item-height;
+                            height: page-item.height + 24px;
 
                             margin-ta := TouchArea {
                                 width: 100%;
@@ -1776,6 +1759,7 @@ export component AppWindow inherits Window {
                                                 border-color: #3e4c66;
 
                                                 note-input2 := TextInput {
+                                                    init => { self.focus(); }
                                                     text <=> root.current-note-text;
                                                     font-size: 12px;
                                                     color: #f1f5f9;

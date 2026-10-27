@@ -69,7 +69,6 @@ struct AppState {
     active_selection_snippet: String,
     active_selection_line_rects: Vec<(f32, f32, f32, f32)>,
     is_zooming: bool,
-    highlight_style: i32, // 0 = Spaced (Folio), 1 = Continuous (Other apps)
 }
 
 impl AppState {
@@ -147,9 +146,14 @@ fn setup_document(
     let default_zoom = 2.0;
 
     let (p0_w, p0_h) = meta.page_sizes.first().copied().unwrap_or((meta.initial_width_pt, meta.initial_height_pt));
+    let standard_h = if meta.page_sizes.len() > 1 {
+        meta.page_sizes[1].1
+    } else {
+        p0_h
+    };
     let card_w = p0_w * default_zoom;
     let card_h = p0_h * default_zoom;
-    let scroll_item_h = card_h + 24.0;
+    let scroll_item_h = standard_h * default_zoom + 24.0;
 
     app.set_page_width(card_w);
     app.set_page_height(card_h);
@@ -173,14 +177,20 @@ fn setup_document(
 
     // Initialize the scroll-pages model for continuous scroll view with exact per-page geometry
     let mut items = Vec::with_capacity(meta.page_count as usize);
+    let mut cur_offset = 0.0f32;
     for (i, &(w_pt, h_pt)) in meta.page_sizes.iter().enumerate() {
+        let pw = w_pt * default_zoom;
+        let ph = h_pt * default_zoom;
         items.push(PageItemData {
             page_index: i as i32,
-            width: w_pt * default_zoom,
-            height: h_pt * default_zoom,
+            offset_y: cur_offset,
+            width: pw,
+            height: ph,
             image: slint::Image::default(),
         });
+        cur_offset += ph + 24.0;
     }
+    app.set_total_scroll_height(cur_offset + 12.0);
     let model = std::rc::Rc::new(slint::VecModel::from(items));
     app.set_scroll_pages(model.into());
 
@@ -219,7 +229,6 @@ fn setup_document(
         active_selection_snippet: String::new(),
         active_selection_line_rects: Vec::new(),
         is_zooming: false,
-        highlight_style: 0,
     };
 
     if let Ok(mut lock) = state.lock() {
@@ -292,11 +301,10 @@ fn ensure_cached_text(state: &mut AppState, page: i32) {
 
 fn get_page_highlights(state: &AppState, page: i32) -> Vec<pdf::worker::HighlightOverlay> {
     let mut res = Vec::new();
-    let is_continuous = state.highlight_style == 1;
     for a in &state.annotations {
         if a.page == page && a.kind == "highlight" {
             let rgb = get_highlight_blend_rgb(a.color_index);
-            let adjusted = adjust_line_rects_for_highlight(&a.line_rects_pt, is_continuous);
+            let adjusted = adjust_line_rects_for_highlight(&a.line_rects_pt);
             res.push(pdf::worker::HighlightOverlay {
                 rgb,
                 rects_pt: adjusted,
@@ -308,7 +316,6 @@ fn get_page_highlights(state: &AppState, page: i32) -> Vec<pdf::worker::Highligh
 
 fn adjust_line_rects_for_highlight(
     rects: &[(f32, f32, f32, f32)],
-    is_continuous: bool,
 ) -> Vec<(f32, f32, f32, f32)> {
     let n = rects.len();
     if n == 0 {
@@ -321,7 +328,15 @@ fn adjust_line_rects_for_highlight(
         return vec![(rx0, (ry0 - pad).max(0.0), rx1, ry1 + pad)];
     }
 
-    let gap = if is_continuous { 0.0 } else { 2.4 };
+    // Auto-detect: if rects already touch or overlap (e.g. from an app using continuous highlights with no gaps),
+    // we preserve the continuous block (gap = 0). Otherwise, we use Folio's spaced highlight (gap = 2.4pt).
+    let is_already_continuous = (0..n - 1).all(|i| {
+        let y1_curr = rects[i].3;
+        let y0_next = rects[i + 1].1;
+        (y0_next - y1_curr) <= 0.5
+    });
+
+    let gap = if is_already_continuous { 0.0 } else { 2.4 };
     let mut adjusted_y = Vec::with_capacity(n);
     for i in 0..n {
         adjusted_y.push((rects[i].1, rects[i].3));
@@ -418,7 +433,7 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
     // Update active selection rects according to the current zoom level
     if !s.active_selection_line_rects.is_empty() {
         let mut ui_rects = Vec::new();
-        for (rx0, ry0, rx1, ry1) in adjust_line_rects_for_highlight(&s.active_selection_line_rects, s.highlight_style == 1) {
+        for (rx0, ry0, rx1, ry1) in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
             ui_rects.push(SelectionRect {
                 x: rx0 * s.zoom_level,
                 y: ry0 * s.zoom_level,
@@ -467,15 +482,22 @@ fn update_view(ui: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     ui.set_page_height(card_h);
 
     // Update dimensions in scroll-pages model for continuous scroll view
-    let scroll_item_h = card_h + 24.0;
+    let standard_h = if state.page_sizes.len() > 1 {
+        state.page_sizes[1].1
+    } else {
+        cur_h_pt
+    };
+    let scroll_item_h = standard_h * state.zoom_level + 24.0;
     ui.set_scroll_item_height(scroll_item_h);
 
     let pages_model = ui.get_scroll_pages();
+    let mut cur_offset = 0.0f32;
     for i in 0..state.total_pages as usize {
         let (pw_pt, ph_pt) = state.get_page_size(i as i32);
         let pw = pw_pt * state.zoom_level;
         let ph = ph_pt * state.zoom_level;
         if let Some(mut item) = pages_model.row_data(i) {
+            item.offset_y = cur_offset;
             item.width = pw;
             item.height = ph;
             if let Some(cached) = state.cache.get(i as i32, state.zoom_level) {
@@ -485,7 +507,9 @@ fn update_view(ui: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             }
             pages_model.set_row_data(i, item);
         }
+        cur_offset += ph + 24.0;
     }
+    ui.set_total_scroll_height(cur_offset + 12.0);
 
     // Refresh annotation visual coordinates scaled to current zoom
     sync_annotations_to_ui(state, ui);
@@ -723,7 +747,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 
                     if !s.active_selection_line_rects.is_empty() {
                         has_sel = true;
-                        for (rx0, ry0, rx1, ry1) in adjust_line_rects_for_highlight(&s.active_selection_line_rects, s.highlight_style == 1) {
+                        for (rx0, ry0, rx1, ry1) in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
                             line_rects_ui.push(SelectionRect {
                                 x: rx0 * zoom,
                                 y: ry0 * zoom,
@@ -777,7 +801,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 
                     if !s.active_selection_line_rects.is_empty() && !s.active_selection_snippet.trim().is_empty() {
                         has_sel = true;
-                        for (rx0, ry0, rx1, ry1) in adjust_line_rects_for_highlight(&s.active_selection_line_rects, s.highlight_style == 1) {
+                        for (rx0, ry0, rx1, ry1) in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
                             line_rects_ui.push(SelectionRect {
                                 x: rx0 * zoom,
                                 y: ry0 * zoom,
@@ -998,37 +1022,6 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.invoke_scroll_to_page(target_page);
                 } else {
                     update_view(&ui, &state_lock);
-                }
-            }
-        });
-    }
-
-    // Set Highlight Style (0 = Spaced, 1 = Continuous)
-    {
-        let state_lock = Arc::clone(state_lock);
-        let app_weak = app.as_weak();
-        app.on_set_highlight_style(move |style| {
-            if let Some(ui) = app_weak.upgrade() {
-                let mut is_scroll = false;
-                let mut cur_page = 0;
-                if let Ok(mut lock) = state_lock.lock() {
-                    if let Some(s) = lock.as_mut() {
-                        s.highlight_style = style;
-                        s.cache.clear();
-                        is_scroll = s.is_scroll_view;
-                        cur_page = s.current_page;
-                    }
-                }
-                ui.set_highlight_style(style);
-                if let Ok(mut lock) = state_lock.lock() {
-                    if let Some(s) = lock.as_mut() {
-                        sync_annotations_to_ui(s, &ui);
-                        if is_scroll {
-                            trigger_scroll_page_render(s, cur_page, &ui);
-                        } else {
-                            update_view(&ui, &state_lock);
-                        }
-                    }
                 }
             }
         });
