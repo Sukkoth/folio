@@ -516,6 +516,7 @@ fn update_view(ui: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     ui.set_can_prev(state.current_page > 0);
     ui.set_can_next(state.current_page < state.total_pages - 1);
     ui.set_zoom_display(format!("{}%", (state.zoom_level * 100.0).round() as i32).into());
+    ui.set_zoom_level(state.zoom_level);
 
     // Update displayed page dimensions for single page view with current page's exact geometry
     let (cur_w_pt, cur_h_pt) = state.get_page_size(state.current_page);
