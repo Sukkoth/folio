@@ -97,6 +97,8 @@ export component AppWindow inherits Window {
     in property <float> zoom-level: 2.0;
     in property <bool> can-prev: false;
     in property <bool> can-next: false;
+    in property <bool> can-undo: false;
+    in property <bool> can-redo: false;
 
     in-out property <bool> is-scroll-view: true;
     in-out property <length> scroll-content-y: 0px;
@@ -157,6 +159,8 @@ export component AppWindow inherits Window {
     callback create-note-annotation(string, int); // (comment, color_index)
     callback delete-annotation(int); // (id)
     callback update-annotation-color(int, int); // (id, color_index)
+    callback undo();
+    callback redo();
 
     public function scroll-to-page(index: int) {
         if (index >= 0 && index < root.scroll-pages.length) {
@@ -184,6 +188,10 @@ export component AppWindow inherits Window {
                     if (event.text == "s" || event.text == "S") {
                         root.save-document-as();
                         return accept;
+                    // Ctrl + Shift + Z: Redo
+                    } else if (event.text == "z" || event.text == "Z") {
+                        root.redo();
+                        return accept;
                     }
                 } else if (event.modifiers.alt) {
                     // Ctrl + Alt + S: Strikethrough
@@ -204,6 +212,14 @@ export component AppWindow inherits Window {
                     // Ctrl + S: Save Document
                     if (event.text == "s" || event.text == "S") {
                         root.save-document();
+                        return accept;
+                    // Ctrl + Z: Undo
+                    } else if (event.text == "z" || event.text == "Z") {
+                        root.undo();
+                        return accept;
+                    // Ctrl + Y: Redo
+                    } else if (event.text == "y" || event.text == "Y") {
+                        root.redo();
                         return accept;
                     // Ctrl + H: Highlight
                     } else if (event.text == "h" || event.text == "H") {
@@ -406,6 +422,27 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
+                        }
+
+                        Rectangle {
+                            width: 1px;
+                            height: 18px;
+                            y: (parent.height - self.height) / 2;
+                            background: #232936;
+                        }
+
+                        IconButton {
+                            text: "↺";
+                            enabled: root.can-undo;
+                            y: (parent.height - self.height) / 2;
+                            clicked => { root.undo(); }
+                        }
+
+                        IconButton {
+                            text: "↻";
+                            enabled: root.can-redo;
+                            y: (parent.height - self.height) / 2;
+                            clicked => { root.redo(); }
                         }
                     }
 

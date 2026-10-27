@@ -2,11 +2,14 @@ mod pdf;
 
 use pdf::{CachedRender, PageCache, PdfWorker, RenderRequest, RenderedPage};
 use slint::Model;
+use std::collections::VecDeque;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 slint::include_modules!();
+
+const MAX_UNDO_OPERATIONS: usize = 100;
 
 const STATIC_COLORS: &[(&str, u8, u8, u8)] = &[
     ("#facc15", 0xfa, 0xcc, 0x15), // Yellow
@@ -108,6 +111,22 @@ struct AnnotationRecord {
     is_from_pdf: bool,
 }
 
+#[derive(Debug, Clone)]
+enum UndoAction {
+    Created(AnnotationRecord),
+    Deleted {
+        index: usize,
+        record: AnnotationRecord,
+    },
+    ColorChanged {
+        id: i32,
+        old_color_index: i32,
+        old_color_hex: String,
+        new_color_index: i32,
+        new_color_hex: String,
+    },
+}
+
 struct AppState {
     file_path: String,
     current_page: i32, // 0-indexed
@@ -121,6 +140,8 @@ struct AppState {
     worker: PdfWorker,
     annotations: Vec<AnnotationRecord>,
     next_annot_id: i32,
+    undo_stack: VecDeque<UndoAction>,
+    redo_stack: VecDeque<UndoAction>,
     // Cached character-level text geometry for sub-word selection
     cached_text_page: i32,
     cached_text: pdf::PageTextData,
@@ -133,6 +154,14 @@ struct AppState {
 }
 
 impl AppState {
+    pub fn push_undo(&mut self, action: UndoAction) {
+        if self.undo_stack.len() >= MAX_UNDO_OPERATIONS {
+            self.undo_stack.pop_front();
+        }
+        self.undo_stack.push_back(action);
+        self.redo_stack.clear();
+    }
+
     pub fn get_page_size(&self, page: i32) -> (f32, f32) {
         if page >= 0 && (page as usize) < self.page_sizes.len() {
             self.page_sizes[page as usize]
@@ -320,6 +349,8 @@ fn setup_document(
         worker,
         annotations: initial_annotations,
         next_annot_id,
+        undo_stack: VecDeque::new(),
+        redo_stack: VecDeque::new(),
         cached_text_page: -1,
         cached_text: pdf::PageTextData::default(),
         sel_start_pt: (0.0, 0.0),
@@ -505,6 +536,9 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
         }
         ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::from(ui_rects)).into());
     }
+
+    ui.set_can_undo(!s.undo_stack.is_empty());
+    ui.set_can_redo(!s.redo_stack.is_empty());
 }
 
 fn update_view(ui: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
@@ -788,6 +822,119 @@ fn prompt_save_as(default_path: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+fn perform_undo(s: &mut AppState) -> Option<(bool, Option<i32>)> {
+    let action = s.undo_stack.pop_back()?;
+    let mut highlight_page_to_rerender = None;
+
+    match &action {
+        UndoAction::Created(annot) => {
+            // Undoing a creation: remove the created annotation
+            if let Some(pos) = s.annotations.iter().position(|a| a.id == annot.id) {
+                let page = s.annotations[pos].page;
+                let is_hl = s.annotations[pos].kind == "highlight";
+                s.annotations.remove(pos);
+                if is_hl {
+                    s.cache.remove_page(page);
+                    highlight_page_to_rerender = Some(page);
+                }
+            }
+        }
+        UndoAction::Deleted { index, record } => {
+            // Undoing a deletion: re-insert the annotation at its previous position
+            let page = record.page;
+            let is_hl = record.kind == "highlight";
+            let pos = (*index).min(s.annotations.len());
+            s.annotations.insert(pos, record.clone());
+            if is_hl {
+                s.cache.remove_page(page);
+                highlight_page_to_rerender = Some(page);
+            }
+        }
+        UndoAction::ColorChanged {
+            id,
+            old_color_index,
+            old_color_hex,
+            ..
+        } => {
+            // Undoing a color change: revert to old color
+            if let Some(pos) = s.annotations.iter().position(|a| a.id == *id) {
+                let page = s.annotations[pos].page;
+                let is_hl = s.annotations[pos].kind == "highlight";
+                s.annotations[pos].color_index = *old_color_index;
+                s.annotations[pos].color_hex = old_color_hex.clone();
+                s.annotations[pos].is_from_pdf = false;
+                if is_hl {
+                    s.cache.remove_page(page);
+                    highlight_page_to_rerender = Some(page);
+                }
+            }
+        }
+    }
+
+    if s.redo_stack.len() >= MAX_UNDO_OPERATIONS {
+        s.redo_stack.pop_front();
+    }
+    s.redo_stack.push_back(action);
+
+    Some((true, highlight_page_to_rerender))
+}
+
+fn perform_redo(s: &mut AppState) -> Option<(bool, Option<i32>)> {
+    let action = s.redo_stack.pop_back()?;
+    let mut highlight_page_to_rerender = None;
+
+    match &action {
+        UndoAction::Created(annot) => {
+            // Redoing a creation: re-insert the annotation
+            let page = annot.page;
+            let is_hl = annot.kind == "highlight";
+            s.annotations.push(annot.clone());
+            if is_hl {
+                s.cache.remove_page(page);
+                highlight_page_to_rerender = Some(page);
+            }
+        }
+        UndoAction::Deleted { record, .. } => {
+            // Redoing a deletion: remove the annotation again
+            if let Some(pos) = s.annotations.iter().position(|a| a.id == record.id) {
+                let page = s.annotations[pos].page;
+                let is_hl = s.annotations[pos].kind == "highlight";
+                s.annotations.remove(pos);
+                if is_hl {
+                    s.cache.remove_page(page);
+                    highlight_page_to_rerender = Some(page);
+                }
+            }
+        }
+        UndoAction::ColorChanged {
+            id,
+            new_color_index,
+            new_color_hex,
+            ..
+        } => {
+            // Redoing a color change: apply new color again
+            if let Some(pos) = s.annotations.iter().position(|a| a.id == *id) {
+                let page = s.annotations[pos].page;
+                let is_hl = s.annotations[pos].kind == "highlight";
+                s.annotations[pos].color_index = *new_color_index;
+                s.annotations[pos].color_hex = new_color_hex.clone();
+                s.annotations[pos].is_from_pdf = false;
+                if is_hl {
+                    s.cache.remove_page(page);
+                    highlight_page_to_rerender = Some(page);
+                }
+            }
+        }
+    }
+
+    if s.undo_stack.len() >= MAX_UNDO_OPERATIONS {
+        s.undo_stack.pop_front();
+    }
+    s.undo_stack.push_back(action);
+
+    Some((true, highlight_page_to_rerender))
+}
+
 fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     // Toggle Sidebar
     {
@@ -1026,6 +1173,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             is_from_pdf: false,
                         };
                         s.next_annot_id += 1;
+                        s.push_undo(UndoAction::Created(annot.clone()));
 
                         if kind == "highlight" {
                             let rgb = get_highlight_blend_rgb(color_idx);
@@ -1134,6 +1282,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             is_from_pdf: false,
                         };
                         s.next_annot_id += 1;
+                        s.push_undo(UndoAction::Created(annot.clone()));
                         s.annotations.push(annot);
                         s.active_selection_line_rects.clear();
                         s.active_selection_snippet.clear();
@@ -1175,6 +1324,11 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                         let page = s.annotations[pos].page;
                         deleted_page = Some(page);
                         is_highlight = s.annotations[pos].kind == "highlight";
+                        let deleted_record = s.annotations[pos].clone();
+                        s.push_undo(UndoAction::Deleted {
+                            index: pos,
+                            record: deleted_record,
+                        });
                         s.annotations.remove(pos);
                         need_sync = true;
                         if is_highlight {
@@ -1221,9 +1375,20 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 if let Some(s) = lock.as_mut() {
                     if let Some(pos) = s.annotations.iter().position(|a| a.id == id) {
                         let page = s.annotations[pos].page;
+                        let old_index = s.annotations[pos].color_index;
+                        let old_hex = s.annotations[pos].color_hex.clone();
+                        let (hex, _) = get_color(new_color_idx);
+                        if old_index != new_color_idx {
+                            s.push_undo(UndoAction::ColorChanged {
+                                id,
+                                old_color_index: old_index,
+                                old_color_hex: old_hex,
+                                new_color_index: new_color_idx,
+                                new_color_hex: hex.clone(),
+                            });
+                        }
                         update_page = Some(page);
                         is_highlight = s.annotations[pos].kind == "highlight";
-                        let (hex, _) = get_color(new_color_idx);
                         s.annotations[pos].color_index = new_color_idx;
                         s.annotations[pos].color_hex = hex;
                         s.annotations[pos].is_from_pdf = false;
@@ -1249,6 +1414,76 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                                     } else {
                                         update_view(&ui, &state_lock);
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Undo
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_undo(move || {
+            let mut undo_result = None;
+            if let Ok(mut lock) = state_lock.lock() {
+                if let Some(s) = lock.as_mut() {
+                    undo_result = perform_undo(s);
+                }
+            }
+
+            if let Some((_, hl_page)) = undo_result {
+                if let Some(ui) = app_weak.upgrade() {
+                    ui.set_is_dirty(true);
+                    ui.set_show_popup(false);
+                    ui.set_selected_annotation_id(-1);
+                    ui.set_hovered_annotation_id(-1);
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            sync_annotations_to_ui(s, &ui);
+                            if let Some(p) = hl_page {
+                                if s.is_scroll_view {
+                                    trigger_scroll_page_render_direct(s, p, &ui);
+                                } else {
+                                    update_view(&ui, &state_lock);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Redo
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_redo(move || {
+            let mut redo_result = None;
+            if let Ok(mut lock) = state_lock.lock() {
+                if let Some(s) = lock.as_mut() {
+                    redo_result = perform_redo(s);
+                }
+            }
+
+            if let Some((_, hl_page)) = redo_result {
+                if let Some(ui) = app_weak.upgrade() {
+                    ui.set_is_dirty(true);
+                    ui.set_show_popup(false);
+                    ui.set_selected_annotation_id(-1);
+                    ui.set_hovered_annotation_id(-1);
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            sync_annotations_to_ui(s, &ui);
+                            if let Some(p) = hl_page {
+                                if s.is_scroll_view {
+                                    trigger_scroll_page_render_direct(s, p, &ui);
+                                } else {
+                                    update_view(&ui, &state_lock);
                                 }
                             }
                         }
@@ -1738,4 +1973,225 @@ fn rgba_to_image(rgba: &[u8], w: u32, h: u32) -> Option<slint::Image> {
     }
 
     Some(slint::Image::from_rgba8(pixel_buffer))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_test_state() -> (AppState, std::path::PathBuf) {
+        let temp_dir = std::env::temp_dir();
+        let test_pdf_path = temp_dir.join("folio_undo_test.pdf");
+        let path_str = test_pdf_path.to_str().unwrap();
+
+        // Create a blank 1-page PDF
+        {
+            let mut doc = mupdf::pdf::PdfDocument::new();
+            doc.new_page((500.0, 700.0)).unwrap();
+            doc.save(path_str).unwrap();
+        }
+
+        let worker = PdfWorker::spawn(path_str.to_string(), |_| {}).unwrap();
+
+        let state = AppState {
+            file_path: path_str.to_string(),
+            current_page: 0,
+            total_pages: 1,
+            zoom_level: 1.0,
+            is_scroll_view: false,
+            page_width_pt: 500.0,
+            page_height_pt: 700.0,
+            page_sizes: vec![(500.0, 700.0)],
+            cache: PageCache::new(4),
+            worker,
+            annotations: Vec::new(),
+            next_annot_id: 1,
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
+            cached_text_page: -1,
+            cached_text: pdf::PageTextData::default(),
+            sel_start_pt: (0.0, 0.0),
+            active_selection_page: 0,
+            active_selection_snippet: String::new(),
+            active_selection_line_rects: Vec::new(),
+            is_zooming: false,
+        };
+
+        (state, test_pdf_path)
+    }
+
+    #[test]
+    fn test_undo_redo_create() {
+        let (mut state, pdf_path) = setup_test_state();
+
+        let annot = AnnotationRecord {
+            id: 1,
+            page: 0,
+            kind: "highlight".to_string(),
+            color_index: 0,
+            color_hex: "#facc15".to_string(),
+            snippet: "Test snippet".to_string(),
+            comment: "".to_string(),
+            line_rects_pt: vec![(10.0, 20.0, 100.0, 30.0)],
+            is_from_pdf: false,
+        };
+
+        // Create
+        state.annotations.push(annot.clone());
+        state.push_undo(UndoAction::Created(annot));
+        assert_eq!(state.annotations.len(), 1);
+        assert_eq!(state.undo_stack.len(), 1);
+        assert_eq!(state.redo_stack.len(), 0);
+
+        // Undo -> Annotation should be removed
+        let res = perform_undo(&mut state);
+        assert!(res.is_some());
+        assert_eq!(state.annotations.len(), 0);
+        assert_eq!(state.undo_stack.len(), 0);
+        assert_eq!(state.redo_stack.len(), 1);
+
+        // Redo -> Annotation should be restored
+        let res = perform_redo(&mut state);
+        assert!(res.is_some());
+        assert_eq!(state.annotations.len(), 1);
+        assert_eq!(state.annotations[0].id, 1);
+        assert_eq!(state.undo_stack.len(), 1);
+        assert_eq!(state.redo_stack.len(), 0);
+
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn test_undo_redo_delete() {
+        let (mut state, pdf_path) = setup_test_state();
+
+        let annot = AnnotationRecord {
+            id: 1,
+            page: 0,
+            kind: "underline".to_string(),
+            color_index: 1,
+            color_hex: "#4ade80".to_string(),
+            snippet: "Underlined text".to_string(),
+            comment: "".to_string(),
+            line_rects_pt: vec![(10.0, 20.0, 100.0, 30.0)],
+            is_from_pdf: false,
+        };
+
+        state.annotations.push(annot.clone());
+
+        // Delete
+        let deleted = state.annotations.remove(0);
+        state.push_undo(UndoAction::Deleted {
+            index: 0,
+            record: deleted,
+        });
+        assert_eq!(state.annotations.len(), 0);
+
+        // Undo -> Restores deleted annotation
+        let res = perform_undo(&mut state);
+        assert!(res.is_some());
+        assert_eq!(state.annotations.len(), 1);
+        assert_eq!(state.annotations[0].id, 1);
+        assert_eq!(state.annotations[0].kind, "underline");
+
+        // Redo -> Deletes it again
+        let res = perform_redo(&mut state);
+        assert!(res.is_some());
+        assert_eq!(state.annotations.len(), 0);
+
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn test_undo_redo_color_change() {
+        let (mut state, pdf_path) = setup_test_state();
+
+        let annot = AnnotationRecord {
+            id: 1,
+            page: 0,
+            kind: "highlight".to_string(),
+            color_index: 0,
+            color_hex: "#facc15".to_string(),
+            snippet: "Colored text".to_string(),
+            comment: "".to_string(),
+            line_rects_pt: vec![(10.0, 20.0, 100.0, 30.0)],
+            is_from_pdf: false,
+        };
+
+        state.annotations.push(annot);
+
+        // Change color from Yellow (0) to Blue (2)
+        state.push_undo(UndoAction::ColorChanged {
+            id: 1,
+            old_color_index: 0,
+            old_color_hex: "#facc15".to_string(),
+            new_color_index: 2,
+            new_color_hex: "#60a5fa".to_string(),
+        });
+        state.annotations[0].color_index = 2;
+        state.annotations[0].color_hex = "#60a5fa".to_string();
+
+        assert_eq!(state.annotations[0].color_index, 2);
+
+        // Undo -> Reverts to Yellow (0)
+        let res = perform_undo(&mut state);
+        assert!(res.is_some());
+        assert_eq!(state.annotations[0].color_index, 0);
+        assert_eq!(state.annotations[0].color_hex, "#facc15");
+
+        // Redo -> Re-applies Blue (2)
+        let res = perform_redo(&mut state);
+        assert!(res.is_some());
+        assert_eq!(state.annotations[0].color_index, 2);
+        assert_eq!(state.annotations[0].color_hex, "#60a5fa");
+
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn test_undo_stack_capacity_cap_and_redo_clearing() {
+        let (mut state, pdf_path) = setup_test_state();
+
+        // Push 105 actions
+        for i in 0..105 {
+            let annot = AnnotationRecord {
+                id: i,
+                page: 0,
+                kind: "note".to_string(),
+                color_index: 0,
+                color_hex: "#facc15".to_string(),
+                snippet: format!("Note {i}"),
+                comment: "".to_string(),
+                line_rects_pt: vec![],
+                is_from_pdf: false,
+            };
+            state.push_undo(UndoAction::Created(annot));
+        }
+
+        // Must be capped at MAX_UNDO_OPERATIONS (100)
+        assert_eq!(state.undo_stack.len(), 100);
+
+        // Undo 3 times -> redo stack has 3 items
+        perform_undo(&mut state);
+        perform_undo(&mut state);
+        perform_undo(&mut state);
+        assert_eq!(state.redo_stack.len(), 3);
+
+        // Performing a new action must clear the redo stack
+        let new_annot = AnnotationRecord {
+            id: 999,
+            page: 0,
+            kind: "note".to_string(),
+            color_index: 0,
+            color_hex: "#facc15".to_string(),
+            snippet: "New Note".to_string(),
+            comment: "".to_string(),
+            line_rects_pt: vec![],
+            is_from_pdf: false,
+        };
+        state.push_undo(UndoAction::Created(new_annot));
+        assert_eq!(state.redo_stack.len(), 0);
+
+        let _ = std::fs::remove_file(pdf_path);
+    }
 }
