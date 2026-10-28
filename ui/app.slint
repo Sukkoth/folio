@@ -110,6 +110,19 @@ export component AppWindow inherits Window {
     in property <length> page-height: 842px;
     in property <float> page-opacity: 1.0;
 
+    // Dual-Page Spread properties
+    in-out property <bool> is-dual-page: false;
+    in property <image> secondary-page-image;
+    in property <length> secondary-page-width: 595px;
+    in property <length> secondary-page-height: 842px;
+    in property <bool> has-secondary-page: false;
+
+    // Page Rotation (0, 90, 180, 270)
+    in-out property <int> rotation: 0;
+
+    callback rotate-clockwise();
+    callback set-dual-page(bool);
+
     in property <string> file-title: "";
     in property <string> file-path: "";
     in property <string> page-display: "1 / 1";
@@ -346,6 +359,12 @@ export component AppWindow inherits Window {
                     } else if (event.text == "m" || event.text == "M" || (event.modifiers.control && (event.text == "\n" || event.text == "\u{d}"))) {
                         root.set-view-mode(!root.is-scroll-view);
                         return accept;
+                    } else if (event.text == "r" || event.text == "R" || (event.modifiers.control && event.text == "\u{12}")) {
+                        root.rotate-clockwise();
+                        return accept;
+                    } else if (event.text == "d" || event.text == "D" || (event.modifiers.control && event.text == "\u{4}")) {
+                        root.set-dual-page(!root.is-dual-page);
+                        return accept;
                     } else if (event.text == "b" || event.text == "B" || event.text == "\u{2}" || event.text == "t" || event.text == "T" || event.text == "\u{14}") {
                         root.toggle-sidebar();
                         return accept;
@@ -477,7 +496,7 @@ export component AppWindow inherits Window {
                             background: #232936;
                         }
 
-                        // View Mode Toggle (Page / Scroll)
+                        // View Mode Toggle (Page / Dual / Scroll)
                         Rectangle {
                             height: 30px;
                             border-radius: 6px;
@@ -491,29 +510,56 @@ export component AppWindow inherits Window {
                                 spacing: 2px;
 
                                 page-mode-btn := Rectangle {
-                                    width: 50px;
+                                    width: 44px;
                                     height: 24px;
                                     border-radius: 4px;
-                                    background: !root.is-scroll-view ? #2b3648 : page-btn-ta.has-hover ? #1f2735 : transparent;
+                                    background: (!root.is-scroll-view && !root.is-dual-page) ? #2b3648 : page-btn-ta.has-hover ? #1f2735 : transparent;
                                     animate background { duration: 120ms; }
 
                                     Text {
                                         text: "Page";
-                                        font-size: 12px;
+                                        font-size: 11px;
                                         font-weight: 600;
-                                        color: !root.is-scroll-view ? #ffffff : #94a3b8;
+                                        color: (!root.is-scroll-view && !root.is-dual-page) ? #ffffff : #94a3b8;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
 
                                     page-btn-ta := TouchArea {
-                                        clicked => { root.set-view-mode(false); }
+                                        clicked => {
+                                            root.set-dual-page(false);
+                                            root.set-view-mode(false);
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+                                }
+
+                                dual-mode-btn := Rectangle {
+                                    width: 44px;
+                                    height: 24px;
+                                    border-radius: 4px;
+                                    background: (!root.is-scroll-view && root.is-dual-page) ? #2b3648 : dual-btn-ta.has-hover ? #1f2735 : transparent;
+                                    animate background { duration: 120ms; }
+
+                                    Text {
+                                        text: "Dual";
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: (!root.is-scroll-view && root.is-dual-page) ? #ffffff : #94a3b8;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    dual-btn-ta := TouchArea {
+                                        clicked => {
+                                            root.set-dual-page(true);
+                                        }
                                         mouse-cursor: pointer;
                                     }
                                 }
 
                                 scroll-mode-btn := Rectangle {
-                                    width: 50px;
+                                    width: 44px;
                                     height: 24px;
                                     border-radius: 4px;
                                     background: root.is-scroll-view ? #2b3648 : scroll-ta.has-hover ? #1f2735 : transparent;
@@ -521,7 +567,7 @@ export component AppWindow inherits Window {
 
                                     Text {
                                         text: "Scroll";
-                                        font-size: 12px;
+                                        font-size: 11px;
                                         font-weight: 600;
                                         color: root.is-scroll-view ? #ffffff : #94a3b8;
                                         horizontal-alignment: center;
@@ -529,11 +575,21 @@ export component AppWindow inherits Window {
                                     }
 
                                     scroll-ta := TouchArea {
-                                        clicked => { root.set-view-mode(true); }
+                                        clicked => {
+                                            root.set-dual-page(false);
+                                            root.set-view-mode(true);
+                                        }
                                         mouse-cursor: pointer;
                                     }
                                 }
                             }
+                        }
+
+                        // Rotate Clockwise Button (⟳)
+                        IconButton {
+                            text: "⟳";
+                            y: (parent.height - self.height) / 2;
+                            clicked => { root.rotate-clockwise(); }
                         }
 
                         Rectangle {
@@ -1831,12 +1887,12 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // Single Page View
+                    // Single Page / Dual Page View
                     if !root.has-error && !root.is-scroll-view: view-scroll := Flickable {
                         width: 100%;
                         height: 100%;
-                        content-width: max(parent.width, root.page-width + 64px);
-                        content-height: max(parent.height, root.page-height + 64px);
+                        content-width: max(parent.width, (root.is-dual-page && root.has-secondary-page) ? (root.page-width + root.secondary-page-width + 88px) : (root.page-width + 64px));
+                        content-height: max(parent.height, (root.is-dual-page && root.has-secondary-page) ? (max(root.page-height, root.secondary-page-height) + 64px) : (root.page-height + 64px));
 
                         viewport-touch := TouchArea {
                             width: view-scroll.content-width;
@@ -1865,7 +1921,9 @@ export component AppWindow inherits Window {
 
                             // Page Card with soft shadow and rounded corners
                             page-card := Rectangle {
-                                x: max(32px, (view-scroll.content-width - self.width) / 2);
+                                x: (root.is-dual-page && root.has-secondary-page)
+                                    ? max(32px, (view-scroll.content-width - (root.page-width + root.secondary-page-width + 24px)) / 2)
+                                    : max(32px, (view-scroll.content-width - self.width) / 2);
                                 y: max(32px, (view-scroll.content-height - self.height) / 2);
                                 width: root.page-width;
                                 height: root.page-height;
@@ -2516,6 +2574,31 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
+
+                            // Secondary Page Card for Dual Page Spread
+                            if root.is-dual-page && root.has-secondary-page: secondary-page-card := Rectangle {
+                                x: page-card.x + page-card.width + 24px;
+                                y: max(32px, (view-scroll.content-height - self.height) / 2);
+                                width: root.secondary-page-width;
+                                height: root.secondary-page-height;
+                                background: #ffffff;
+                                border-radius: 4px;
+                                drop-shadow-blur: 24px;
+                                drop-shadow-offset-y: 8px;
+                                drop-shadow-color: #000000a6;
+
+                                Image {
+                                    width: 100%;
+                                    height: 100%;
+                                    image-fit: contain;
+                                    source: root.secondary-page-image;
+                                    opacity: root.page-opacity;
+                                    animate opacity {
+                                        duration: 160ms;
+                                        easing: ease-out;
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -2525,11 +2608,11 @@ export component AppWindow inherits Window {
                         height: 100%;
                         content-y <=> root.scroll-content-y;
                         content-height: root.total-scroll-height;
-                        content-width: parent.width;
+                        content-width: max(parent.width, root.page-width + 64px);
 
                         for page-item in root.scroll-pages: Rectangle {
                             y: page-item.offset-y;
-                            width: parent.width;
+                            width: scroll-view.content-width;
                             height: page-item.height + 24px;
 
                             margin-ta := TouchArea {
@@ -3313,6 +3396,12 @@ export component AppWindow inherits Window {
                 text: "Fit";
                 y: (parent.height - self.height) / 2;
                 clicked => { root.zoom-fit(); }
+            }
+
+            IconButton {
+                text: "⟳";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.rotate-clockwise(); }
             }
 
             Rectangle {

@@ -13,6 +13,7 @@ pub struct HighlightOverlay {
 pub struct RenderRequest {
     pub page: i32,
     pub zoom: f32,
+    pub rotation: i32,
     pub generation: u64,
     pub is_preview: bool,
     pub highlights: Vec<HighlightOverlay>,
@@ -24,6 +25,7 @@ pub struct RenderedPage {
     pub rgba: Vec<u8>,
     pub w: u32,
     pub h: u32,
+    pub rotation: i32,
     pub generation: u64,
     pub is_preview: bool,
 }
@@ -121,7 +123,7 @@ fn worker_loop(
                     continue;
                 }
 
-                match render_page(&doc, req.page, req.zoom, &req.highlights) {
+                match render_page(&doc, req.page, req.zoom, req.rotation, &req.highlights) {
                     Ok((rgba, w, h)) => {
                         if req.generation >= current_generation.load(Ordering::Relaxed) {
                             on_rendered(RenderedPage {
@@ -129,6 +131,7 @@ fn worker_loop(
                                 rgba,
                                 w,
                                 h,
+                                rotation: req.rotation,
                                 generation: req.generation,
                                 is_preview: req.is_preview,
                             });
@@ -143,17 +146,26 @@ fn worker_loop(
     }
 }
 
-fn render_page(
+pub fn render_page(
     doc: &mupdf::Document,
     page_no: i32,
     zoom: f32,
+    rotation: i32,
     highlights: &[HighlightOverlay],
 ) -> Result<(Vec<u8>, u32, u32), String> {
     let page = doc
         .load_page(page_no)
         .map_err(|e| format!("Failed to load page {page_no}: {e}"))?;
 
-    let matrix = mupdf::Matrix::new_scale(zoom, zoom);
+    let bounds = page.bounds().unwrap_or(mupdf::Rect { x0: 0.0, y0: 0.0, x1: 595.0, y1: 842.0 });
+    let pw_pt = (bounds.x1 - bounds.x0).abs();
+    let ph_pt = (bounds.y1 - bounds.y0).abs();
+
+    let mut matrix = mupdf::Matrix::new_scale(zoom, zoom);
+    if rotation != 0 {
+        matrix.rotate(rotation as f32);
+    }
+
     // Render with alpha=false onto white paper canvas, show_extras=false so Folio manages all annotations uniformly
     let pixmap = page
         .to_pixmap(&matrix, &mupdf::Colorspace::device_rgb(), false, false)
@@ -182,10 +194,7 @@ fn render_page(
         }
     }
 
-    // Apply optical Multiply blending for highlights:
-    // White paper (255,255,255) becomes the highlight color.
-    // Text pixels (0,0,0) remain 100% pure black (0 * color / 255 = 0), never discolored or washed out!
-    // A pixel coverage mask ensures overlapping line boundaries are NEVER multiplied twice.
+    // Apply optical Multiply blending for highlights
     let mut applied = vec![false; (w * h) as usize];
 
     for h_over in highlights {
@@ -194,10 +203,17 @@ fn render_page(
         let hb = h_over.rgb[2] as u16;
 
         for rect in &h_over.rects_pt {
-            let px0 = ((rect.0 * zoom).round() as usize).min(w as usize);
-            let py0 = ((rect.1 * zoom).round() as usize).min(h as usize);
-            let px1 = ((rect.2 * zoom).round() as usize).min(w as usize);
-            let py1 = ((rect.3 * zoom).round() as usize).min(h as usize);
+            let (rx0, ry0, rx1, ry1) = match rotation.rem_euclid(360) {
+                90 => (ph_pt - rect.3, rect.0, ph_pt - rect.1, rect.2),
+                180 => (pw_pt - rect.2, ph_pt - rect.3, pw_pt - rect.0, ph_pt - rect.1),
+                270 => (rect.1, pw_pt - rect.2, rect.3, pw_pt - rect.0),
+                _ => (rect.0, rect.1, rect.2, rect.3),
+            };
+
+            let px0 = ((rx0 * zoom).round() as usize).min(w as usize);
+            let py0 = ((ry0 * zoom).round() as usize).min(h as usize);
+            let px1 = ((rx1 * zoom).round() as usize).min(w as usize);
+            let py1 = ((ry1 * zoom).round() as usize).min(h as usize);
 
             for y in py0..py1 {
                 let row_offset = y * (w as usize);

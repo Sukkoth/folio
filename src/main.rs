@@ -167,6 +167,37 @@ struct AppState {
     search_match_case: bool,
     search_match_whole_word: bool,
     pub toc: Vec<pdf::TocItem>,
+    pub rotation: i32, // 0, 90, 180, 270
+    pub is_dual_page: bool,
+}
+
+pub fn transform_rect_for_rotation(
+    rect: (f32, f32, f32, f32),
+    page_w_pt: f32,
+    page_h_pt: f32,
+    rotation: i32,
+) -> (f32, f32, f32, f32) {
+    match rotation {
+        90 => (
+            page_h_pt - rect.3,
+            rect.0,
+            page_h_pt - rect.1,
+            rect.2,
+        ),
+        180 => (
+            page_w_pt - rect.2,
+            page_h_pt - rect.3,
+            page_w_pt - rect.0,
+            page_h_pt - rect.1,
+        ),
+        270 => (
+            rect.1,
+            page_w_pt - rect.2,
+            rect.3,
+            page_w_pt - rect.0,
+        ),
+        _ => rect,
+    }
 }
 
 impl AppState {
@@ -178,11 +209,30 @@ impl AppState {
         self.redo_stack.clear();
     }
 
-    pub fn get_page_size(&self, page: i32) -> (f32, f32) {
+    pub fn get_unrotated_page_size(&self, page: i32) -> (f32, f32) {
         if page >= 0 && (page as usize) < self.page_sizes.len() {
             self.page_sizes[page as usize]
         } else {
             (self.page_width_pt, self.page_height_pt)
+        }
+    }
+
+    pub fn get_page_size(&self, page: i32) -> (f32, f32) {
+        let (w, h) = self.get_unrotated_page_size(page);
+        if self.rotation == 90 || self.rotation == 270 {
+            (h, w)
+        } else {
+            (w, h)
+        }
+    }
+
+    pub fn to_unrotated_pt(&self, page: i32, rx: f32, ry: f32) -> (f32, f32) {
+        let (w, h) = self.get_unrotated_page_size(page);
+        match self.rotation {
+            90 => (ry, h - rx),
+            180 => (w - rx, h - ry),
+            270 => (w - ry, rx),
+            _ => (rx, ry),
         }
     }
 }
@@ -404,7 +454,13 @@ fn setup_document(
         search_match_case: false,
         search_match_whole_word: false,
         toc: meta.toc,
+        rotation: 0,
+        is_dual_page: false,
     };
+
+    app.set_rotation(0);
+    app.set_is_dual_page(false);
+    app.set_has_secondary_page(false);
 
     if let Ok(mut lock) = state.lock() {
         *lock = Some(app_state);
@@ -447,12 +503,17 @@ fn handle_rendered_page(
         None => return,
     };
 
-    // Drop stale results from older generations
-    if rendered.generation != state.worker.current_generation() {
+    // Drop stale results from different rotation
+    if rendered.rotation != state.rotation {
         return;
     }
 
-    if let Some(existing) = state.cache.get(rendered.page, state.zoom_level) {
+    // Drop stale preview from older generation
+    if rendered.is_preview && rendered.generation != state.worker.current_generation() {
+        return;
+    }
+
+    if let Some(existing) = state.cache.get(rendered.page, state.zoom_level, state.rotation) {
         if rendered.is_preview && !existing.is_preview {
             return;
         }
@@ -463,6 +524,7 @@ fn handle_rendered_page(
         state.cache.put(
             rendered.page,
             state.zoom_level,
+            state.rotation,
             CachedRender {
                 rgba: rendered.rgba,
                 width: rendered.w,
@@ -475,6 +537,11 @@ fn handle_rendered_page(
         if rendered.page == state.current_page {
             ui.set_page_image(image.clone());
             ui.set_page_opacity(1.0);
+        }
+
+        // Update secondary page if in dual-page spread
+        if state.is_dual_page && !state.is_scroll_view && rendered.page == state.current_page + 1 {
+            ui.set_secondary_page_image(image.clone());
         }
 
         // Update scroll-pages model row
@@ -551,19 +618,21 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
         }
 
         // All annotations (including highlights) provide visual hitboxes for hover & click interaction
+        let (unrot_w, unrot_h) = s.get_unrotated_page_size(annot.page);
         let num_rects = annot.line_rects_pt.len();
         for (idx, rect) in annot.line_rects_pt.iter().enumerate() {
             let is_last_rect = idx + 1 == num_rects;
+            let tr = transform_rect_for_rotation(*rect, unrot_w, unrot_h, s.rotation);
             visuals.push(AnnotationVisual {
                 id: annot.id,
                 page: annot.page,
                 kind: annot.kind.clone().into(),
                 color: col,
                 color_index: annot.color_index,
-                x: rect.0 * s.zoom_level,
-                y: rect.1 * s.zoom_level,
-                w: (rect.2 - rect.0).max(4.0) * s.zoom_level,
-                h: (rect.3 - rect.1).max(4.0) * s.zoom_level,
+                x: tr.0 * s.zoom_level,
+                y: tr.1 * s.zoom_level,
+                w: (tr.2 - tr.0).max(4.0) * s.zoom_level,
+                h: (tr.3 - tr.1).max(4.0) * s.zoom_level,
                 comment: annot.comment.clone().into(),
                 show_note_icon: has_note && is_last_rect,
             });
@@ -581,13 +650,15 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
 
     // Update active selection rects according to the current zoom level
     if !s.active_selection_line_rects.is_empty() {
+        let (unrot_w, unrot_h) = s.get_unrotated_page_size(s.active_selection_page);
         let mut ui_rects = Vec::new();
-        for (rx0, ry0, rx1, ry1) in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
+        for orig_r in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
+            let tr = transform_rect_for_rotation(orig_r, unrot_w, unrot_h, s.rotation);
             ui_rects.push(SelectionRect {
-                x: rx0 * s.zoom_level,
-                y: ry0 * s.zoom_level,
-                width: (rx1 - rx0) * s.zoom_level,
-                height: (ry1 - ry0) * s.zoom_level,
+                x: tr.0 * s.zoom_level,
+                y: tr.1 * s.zoom_level,
+                width: (tr.2 - tr.0) * s.zoom_level,
+                height: (tr.3 - tr.1) * s.zoom_level,
             });
         }
         if !ui_rects.is_empty() {
@@ -660,11 +731,13 @@ fn sync_search_to_ui(s: &AppState, ui: &AppWindow) {
             .copied()
             .unwrap_or((0.0, 595.0 * s.zoom_level));
 
+        let (unrot_w, unrot_h) = s.get_unrotated_page_size(m.page);
         for rect in &m.rects_pt {
-            let rx = rect.0 * s.zoom_level;
-            let ry = rect.1 * s.zoom_level;
-            let rw = (rect.2 - rect.0).max(2.0) * s.zoom_level;
-            let rh = (rect.3 - rect.1).max(2.0) * s.zoom_level;
+            let tr = transform_rect_for_rotation(*rect, unrot_w, unrot_h, s.rotation);
+            let rx = tr.0 * s.zoom_level;
+            let ry = tr.1 * s.zoom_level;
+            let rw = (tr.2 - tr.0).max(2.0) * s.zoom_level;
+            let rh = (tr.3 - tr.1).max(2.0) * s.zoom_level;
 
             // Single page view highlight (only if current page)
             if m.page == s.current_page {
@@ -861,11 +934,22 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
     let scale_factor = ui.window().scale_factor().max(1.0);
     let actual_render_zoom = (state.zoom_level * scale_factor).max(0.1);
 
-    // Update toolbar page indicator: e.g. "1 / 120"
+    // Update toolbar page indicator: e.g. "1 / 120" or "1-2 / 120"
     ui.set_current_page(state.current_page);
-    ui.set_page_display(format!("{} / {}", state.current_page + 1, state.total_pages).into());
+    ui.set_rotation(state.rotation);
+    let is_dual = state.is_dual_page && !state.is_scroll_view;
+    let has_secondary = is_dual && (state.current_page + 1 < state.total_pages);
+    ui.set_is_dual_page(state.is_dual_page);
+    ui.set_has_secondary_page(has_secondary);
+
+    if has_secondary {
+        ui.set_page_display(format!("{}-{} / {}", state.current_page + 1, state.current_page + 2, state.total_pages).into());
+        ui.set_can_next(state.current_page + 2 < state.total_pages);
+    } else {
+        ui.set_page_display(format!("{} / {}", state.current_page + 1, state.total_pages).into());
+        ui.set_can_next(state.current_page < state.total_pages - 1);
+    }
     ui.set_can_prev(state.current_page > 0);
-    ui.set_can_next(state.current_page < state.total_pages - 1);
     ui.set_zoom_display(format!("{}%", (state.zoom_level * 100.0).round() as i32).into());
     ui.set_zoom_level(state.zoom_level);
 
@@ -876,9 +960,15 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
     ui.set_page_width(card_w);
     ui.set_page_height(card_h);
 
+    if has_secondary {
+        let (sec_w_pt, sec_h_pt) = state.get_page_size(state.current_page + 1);
+        ui.set_secondary_page_width(sec_w_pt * state.zoom_level);
+        ui.set_secondary_page_height(sec_h_pt * state.zoom_level);
+    }
+
     // Update dimensions in scroll-pages model for continuous scroll view
     let standard_h = if state.page_sizes.len() > 1 {
-        state.page_sizes[1].1
+        state.get_page_size(1).1
     } else {
         cur_h_pt
     };
@@ -895,10 +985,12 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
             item.offset_y = cur_offset;
             item.width = pw;
             item.height = ph;
-            if let Some(cached) = state.cache.get(i as i32, state.zoom_level) {
+            if let Some(cached) = state.cache.get(i as i32, state.zoom_level, state.rotation) {
                 if let Some(img) = rgba_to_image(&cached.rgba, cached.width, cached.height) {
                     item.image = img;
                 }
+            } else {
+                item.image = slint::Image::default();
             }
             pages_model.set_row_data(i, item);
         }
@@ -915,8 +1007,9 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
     state.worker.set_current_generation(next_gen);
 
     // Check LRU cache for current page
-    let cached = state.cache.get(state.current_page, state.zoom_level).cloned();
+    let cached = state.cache.get(state.current_page, state.zoom_level, state.rotation).cloned();
 
+    let mut primary_needs_render = true;
     if let Some(cached_render) = cached {
         if let Some(img) = rgba_to_image(&cached_render.rgba, cached_render.width, cached_render.height) {
             ui.set_page_image(img.clone());
@@ -929,30 +1022,60 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
             }
         }
         if !cached_render.is_preview {
-            prefetch_neighbors(state, next_gen, actual_render_zoom);
-            return;
+            primary_needs_render = false;
         }
     }
 
-    // Step 1: Low-res preview first (0.25x)
-    let preview_zoom = (actual_render_zoom * 0.25).max(0.1);
-    let h_current = get_page_highlights(state, state.current_page);
-    state.worker.request_render(RenderRequest {
-        page: state.current_page,
-        zoom: preview_zoom,
-        generation: next_gen,
-        is_preview: true,
-        highlights: h_current.clone(),
-    });
+    if primary_needs_render {
+        // Step 1: Low-res preview first (0.25x)
+        let preview_zoom = (actual_render_zoom * 0.25).max(0.1);
+        let h_current = get_page_highlights(state, state.current_page);
+        state.worker.request_render(RenderRequest {
+            page: state.current_page,
+            zoom: preview_zoom,
+            generation: next_gen,
+            is_preview: true,
+            highlights: h_current.clone(),
+            rotation: state.rotation,
+        });
 
-    // Step 2: Full-res render for current page
-    state.worker.request_render(RenderRequest {
-        page: state.current_page,
-        zoom: actual_render_zoom,
-        generation: next_gen,
-        is_preview: false,
-        highlights: h_current,
-    });
+        // Step 2: Full-res render for current page
+        state.worker.request_render(RenderRequest {
+            page: state.current_page,
+            zoom: actual_render_zoom,
+            generation: next_gen,
+            is_preview: false,
+            highlights: h_current,
+            rotation: state.rotation,
+        });
+    }
+
+    // If dual-page spread, check and request companion page
+    if has_secondary {
+        let sec_page = state.current_page + 1;
+        let cached_sec = state.cache.get(sec_page, state.zoom_level, state.rotation).cloned();
+        let mut sec_needs_render = true;
+        if let Some(cached_render) = cached_sec {
+            if let Some(img) = rgba_to_image(&cached_render.rgba, cached_render.width, cached_render.height) {
+                ui.set_secondary_page_image(img);
+            }
+            if !cached_render.is_preview {
+                sec_needs_render = false;
+            }
+        }
+
+        if sec_needs_render {
+            let h_sec = get_page_highlights(state, sec_page);
+            state.worker.request_render(RenderRequest {
+                page: sec_page,
+                zoom: actual_render_zoom,
+                generation: next_gen,
+                is_preview: false,
+                highlights: h_sec,
+                rotation: state.rotation,
+            });
+        }
+    }
 
     // Step 3: Prefetch neighbors
     prefetch_neighbors(state, next_gen, actual_render_zoom);
@@ -968,7 +1091,7 @@ fn prefetch_neighbors(state: &mut AppState, generation: u64, zoom: f32) {
 
     for &p in &neighbors {
         if p >= 0 && p < state.total_pages {
-            if state.cache.get(p, state.zoom_level).is_none() {
+            if state.cache.get(p, state.zoom_level, state.rotation).is_none() {
                 let h_neighbor = get_page_highlights(state, p);
                 state.worker.request_render(RenderRequest {
                     page: p,
@@ -976,6 +1099,7 @@ fn prefetch_neighbors(state: &mut AppState, generation: u64, zoom: f32) {
                     generation,
                     is_preview: false,
                     highlights: h_neighbor,
+                    rotation: state.rotation,
                 });
             }
         }
@@ -990,7 +1114,7 @@ fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindo
     state.worker.set_current_generation(next_gen);
 
     // If cached, apply immediately
-    if let Some(cached) = state.cache.get(page_idx, state.zoom_level).cloned() {
+    if let Some(cached) = state.cache.get(page_idx, state.zoom_level, state.rotation).cloned() {
         if let Some(img) = rgba_to_image(&cached.rgba, cached.width, cached.height) {
             let pages_model = ui.get_scroll_pages();
             let idx = page_idx as usize;
@@ -1018,6 +1142,7 @@ fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindo
         generation: next_gen,
         is_preview: true,
         highlights: h_page.clone(),
+        rotation: state.rotation,
     });
 
     state.worker.request_render(RenderRequest {
@@ -1026,6 +1151,7 @@ fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindo
         generation: next_gen,
         is_preview: false,
         highlights: h_page,
+        rotation: state.rotation,
     });
 
     prefetch_neighbors(state, next_gen, actual_render_zoom);
@@ -1045,6 +1171,7 @@ fn trigger_scroll_page_render_direct(state: &mut AppState, page_idx: i32, ui: &A
         generation: next_gen,
         is_preview: false,
         highlights: h_page,
+        rotation: state.rotation,
     });
 }
 
@@ -1681,7 +1808,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 if let Some(s) = lock.as_mut() {
                     let zoom = s.zoom_level.max(0.1);
                     s.active_selection_page = page_no;
-                    s.sel_start_pt = (local_x / zoom, local_y / zoom);
+                    s.sel_start_pt = s.to_unrotated_pt(page_no, local_x / zoom, local_y / zoom);
                     s.active_selection_snippet.clear();
                     s.active_selection_line_rects.clear();
                     ensure_cached_text(s, page_no);
@@ -1710,8 +1837,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
                     let zoom = s.zoom_level.max(0.1);
-                    let pt_x = local_x / zoom;
-                    let pt_y = local_y / zoom;
+                    let (pt_x, pt_y) = s.to_unrotated_pt(page_no, local_x / zoom, local_y / zoom);
                     ensure_cached_text(s, page_no);
 
                     let (snippet, rects_pt) = pdf::compute_text_selection(
@@ -1727,12 +1853,14 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 
                     if !s.active_selection_line_rects.is_empty() {
                         has_sel = true;
-                        for (rx0, ry0, rx1, ry1) in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
+                        let (unrot_w, unrot_h) = s.get_unrotated_page_size(page_no);
+                        for orig_r in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
+                            let tr = transform_rect_for_rotation(orig_r, unrot_w, unrot_h, s.rotation);
                             line_rects_ui.push(SelectionRect {
-                                x: rx0 * zoom,
-                                y: ry0 * zoom,
-                                width: (rx1 - rx0) * zoom,
-                                height: (ry1 - ry0) * zoom,
+                                x: tr.0 * zoom,
+                                y: tr.1 * zoom,
+                                width: (tr.2 - tr.0) * zoom,
+                                height: (tr.3 - tr.1) * zoom,
                             });
                         }
                     }
@@ -1764,8 +1892,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
                     let zoom = s.zoom_level.max(0.1);
-                    let pt_x = local_x / zoom;
-                    let pt_y = local_y / zoom;
+                    let (pt_x, pt_y) = s.to_unrotated_pt(page_no, local_x / zoom, local_y / zoom);
                     ensure_cached_text(s, page_no);
 
                     let (snippet, rects_pt) = pdf::compute_text_selection(
@@ -1781,12 +1908,14 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 
                     if !s.active_selection_line_rects.is_empty() && !s.active_selection_snippet.trim().is_empty() {
                         has_sel = true;
-                        for (rx0, ry0, rx1, ry1) in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
+                        let (unrot_w, unrot_h) = s.get_unrotated_page_size(page_no);
+                        for orig_r in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
+                            let tr = transform_rect_for_rotation(orig_r, unrot_w, unrot_h, s.rotation);
                             line_rects_ui.push(SelectionRect {
-                                x: rx0 * zoom,
-                                y: ry0 * zoom,
-                                width: (rx1 - rx0) * zoom,
-                                height: (ry1 - ry0) * zoom,
+                                x: tr.0 * zoom,
+                                y: tr.1 * zoom,
+                                width: (tr.2 - tr.0) * zoom,
+                                height: (tr.3 - tr.1) * zoom,
                             });
                         }
                         if let Some(first) = line_rects_ui.first() {
@@ -1858,8 +1987,10 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             let rgb = get_highlight_blend_rgb(color_idx);
                             let adjusted_rects = adjust_line_rects_for_highlight(&s.active_selection_line_rects);
                             let (pw_pt, _) = s.get_page_size(target_page);
+                            let (unrot_w, unrot_h) = s.get_unrotated_page_size(target_page);
+                            let rotation = s.rotation;
 
-                            if let Some(cached) = s.cache.get_mut(target_page, s.zoom_level) {
+                            if let Some(cached) = s.cache.get_mut(target_page, s.zoom_level, rotation) {
                                 let w = cached.width;
                                 let h = cached.height;
                                 let zoom = w as f32 / pw_pt.max(1.0);
@@ -1870,10 +2001,11 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 
                                 let mut applied = vec![false; (w * h) as usize];
                                 for rect in &adjusted_rects {
-                                    let px0 = ((rect.0 * zoom).round() as usize).min(w as usize);
-                                    let py0 = ((rect.1 * zoom).round() as usize).min(h as usize);
-                                    let px1 = ((rect.2 * zoom).round() as usize).min(w as usize);
-                                    let py1 = ((rect.3 * zoom).round() as usize).min(h as usize);
+                                    let tr = transform_rect_for_rotation(*rect, unrot_w, unrot_h, rotation);
+                                    let px0 = ((tr.0 * zoom).round() as usize).min(w as usize);
+                                    let py0 = ((tr.1 * zoom).round() as usize).min(h as usize);
+                                    let px1 = ((tr.2 * zoom).round() as usize).min(w as usize);
+                                    let py1 = ((tr.3 * zoom).round() as usize).min(h as usize);
 
                                     for y in py0..py1 {
                                         let row_offset = y * (w as usize);
@@ -2514,6 +2646,9 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 if let Ok(mut lock) = state_lock.lock() {
                     if let Some(s) = lock.as_mut() {
                         s.is_scroll_view = is_scroll;
+                        if is_scroll {
+                            s.is_dual_page = false;
+                        }
                         s.current_page
                     } else {
                         0
@@ -2526,11 +2661,74 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             if let Some(ui) = app_weak.upgrade() {
                 ui.set_is_scroll_view(is_scroll);
                 if is_scroll {
+                    ui.set_is_dual_page(false);
                     ui.invoke_scroll_to_page(target_page);
                 } else {
                     update_view(&ui, &state_lock);
                 }
                 save_session();
+            }
+        });
+    }
+
+    // Dual Page Mode Toggle
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        let save_session = make_session_saver();
+        app.on_set_dual_page(move |is_dual| {
+            if let Ok(mut lock) = state_lock.lock() {
+                if let Some(s) = lock.as_mut() {
+                    s.is_dual_page = is_dual;
+                    if is_dual {
+                        s.is_scroll_view = false;
+                    }
+                }
+            }
+
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_is_dual_page(is_dual);
+                if is_dual {
+                    ui.set_is_scroll_view(false);
+                }
+                update_view(&ui, &state_lock);
+                save_session();
+            }
+        });
+    }
+
+    // Rotate Clockwise
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_rotate_clockwise(move || {
+            let (new_rot, current_page, is_scroll) = {
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        s.rotation = (s.rotation + 90) % 360;
+                        s.cache.clear();
+                        (s.rotation, s.current_page, s.is_scroll_view)
+                    } else {
+                        (0, 0, false)
+                    }
+                } else {
+                    (0, 0, false)
+                }
+            };
+
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_rotation(new_rot);
+                update_view(&ui, &state_lock);
+                if is_scroll {
+                    ui.set_suppress_page_change(true);
+                    ui.invoke_scroll_to_page(current_page);
+                    ui.set_suppress_page_change(false);
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            trigger_scroll_page_render(s, current_page, &ui);
+                        }
+                    }
+                }
             }
         });
     }
@@ -2582,8 +2780,9 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             let changed = {
                 if let Ok(mut lock) = state_lock.lock() {
                     if let Some(s) = lock.as_mut() {
+                        let step = if s.is_dual_page && !s.is_scroll_view { 2 } else { 1 };
                         if s.current_page > 0 {
-                            s.current_page -= 1;
+                            s.current_page = (s.current_page - step).max(0);
                             is_scroll = s.is_scroll_view;
                             new_page = s.current_page;
                             true
@@ -2630,8 +2829,14 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             let changed = {
                 if let Ok(mut lock) = state_lock.lock() {
                     if let Some(s) = lock.as_mut() {
-                        if s.current_page < s.total_pages - 1 {
-                            s.current_page += 1;
+                        let step = if s.is_dual_page && !s.is_scroll_view { 2 } else { 1 };
+                        if s.current_page + step < s.total_pages {
+                            s.current_page += step;
+                            is_scroll = s.is_scroll_view;
+                            new_page = s.current_page;
+                            true
+                        } else if s.current_page < s.total_pages - 1 {
+                            s.current_page = s.total_pages - 1;
                             is_scroll = s.is_scroll_view;
                             new_page = s.current_page;
                             true
@@ -2888,6 +3093,8 @@ mod tests {
             search_match_case: false,
             search_match_whole_word: false,
             toc: Vec::new(),
+            rotation: 0,
+            is_dual_page: false,
         };
 
         (state, test_pdf_path)
@@ -3105,6 +3312,56 @@ mod tests {
         };
         state.push_undo(UndoAction::Created(new_annot));
         assert_eq!(state.redo_stack.len(), 0);
+
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn test_page_size_rotation_swaps_paper_canvas() {
+        let (mut state, pdf_path) = setup_test_state();
+        // Base size 500x700
+        assert_eq!(state.get_page_size(0), (500.0, 700.0));
+
+        // 90 deg -> Paper rotates to landscape: 700x500
+        state.rotation = 90;
+        assert_eq!(state.get_page_size(0), (700.0, 500.0));
+
+        // 180 deg -> Paper returns to portrait: 500x700
+        state.rotation = 180;
+        assert_eq!(state.get_page_size(0), (500.0, 700.0));
+
+        // 270 deg -> Paper rotates to landscape: 700x500
+        state.rotation = 270;
+        assert_eq!(state.get_page_size(0), (700.0, 500.0));
+
+        // 360/0 deg -> 500x700
+        state.rotation = 0;
+        assert_eq!(state.get_page_size(0), (500.0, 700.0));
+
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn test_transform_rect_and_coordinate_roundtrip() {
+        let (mut state, pdf_path) = setup_test_state();
+        let (w, h) = state.get_unrotated_page_size(0); // 500 x 700
+        let orig_rect = (50.0, 100.0, 150.0, 120.0);
+
+        // At 0 deg: identical
+        assert_eq!(transform_rect_for_rotation(orig_rect, w, h, 0), orig_rect);
+
+        // At 90 deg: width becomes height, rect rotates
+        state.rotation = 90;
+        let rot_rect_90 = transform_rect_for_rotation(orig_rect, w, h, 90);
+        // x = 700 - 120 = 580, y = 50, x1 = 700 - 100 = 600, y1 = 150
+        assert_eq!(rot_rect_90, (580.0, 50.0, 600.0, 150.0));
+
+        // Coordinate inverse: center of rot_rect_90 maps back to center of orig_rect
+        let (cx_rot, cy_rot) = ((rot_rect_90.0 + rot_rect_90.2) / 2.0, (rot_rect_90.1 + rot_rect_90.3) / 2.0);
+        let (un_x, un_y) = state.to_unrotated_pt(0, cx_rot, cy_rot);
+        let (orig_cx, orig_cy) = ((orig_rect.0 + orig_rect.2) / 2.0, (orig_rect.1 + orig_rect.3) / 2.0);
+        assert!((un_x - orig_cx).abs() < 0.001);
+        assert!((un_y - orig_cy).abs() < 0.001);
 
         let _ = std::fs::remove_file(pdf_path);
     }

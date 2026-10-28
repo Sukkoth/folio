@@ -10,7 +10,7 @@ pub struct CachedRender {
 }
 
 pub struct PageCache {
-    cache: LruCache<(i32, u32), CachedRender>,
+    cache: LruCache<(i32, u32, i32), CachedRender>,
 }
 
 impl PageCache {
@@ -26,23 +26,23 @@ impl PageCache {
         (zoom * 100.0).round().max(1.0) as u32
     }
 
-    pub fn get(&mut self, page: i32, zoom: f32) -> Option<&CachedRender> {
-        self.cache.get(&(page, Self::zoom_bucket(zoom)))
+    pub fn get(&mut self, page: i32, zoom: f32, rotation: i32) -> Option<&CachedRender> {
+        self.cache.get(&(page, Self::zoom_bucket(zoom), rotation))
     }
 
-    pub fn get_mut(&mut self, page: i32, zoom: f32) -> Option<&mut CachedRender> {
-        self.cache.get_mut(&(page, Self::zoom_bucket(zoom)))
+    pub fn get_mut(&mut self, page: i32, zoom: f32, rotation: i32) -> Option<&mut CachedRender> {
+        self.cache.get_mut(&(page, Self::zoom_bucket(zoom), rotation))
     }
 
-    pub fn put(&mut self, page: i32, zoom: f32, entry: CachedRender) {
-        self.cache.put((page, Self::zoom_bucket(zoom)), entry);
+    pub fn put(&mut self, page: i32, zoom: f32, rotation: i32, entry: CachedRender) {
+        self.cache.put((page, Self::zoom_bucket(zoom), rotation), entry);
     }
 
     pub fn remove_page(&mut self, page: i32) {
         let keys_to_remove: Vec<_> = self
             .cache
             .iter()
-            .filter(|((p, _), _)| *p == page)
+            .filter(|((p, _, _), _)| *p == page)
             .map(|(k, _)| *k)
             .collect();
         for k in keys_to_remove {

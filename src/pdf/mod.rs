@@ -1444,4 +1444,43 @@ mod tests {
 
         let _ = std::fs::remove_file(test_pdf_path);
     }
+
+    #[test]
+    fn test_page_rotation() {
+        let ephesians_path = "/home/twof/Documents/The Message of Ephesians (John R. W. Stott) (z-library.sk, 1lib.sk, z-lib.sk).pdf";
+        if std::path::Path::new(ephesians_path).exists() {
+            let doc = mupdf::Document::open(ephesians_path).unwrap();
+            let page = doc.load_page(0).unwrap();
+
+            let m0 = mupdf::Matrix::new_scale(1.0, 1.0);
+            let pix0 = page.to_pixmap(&m0, &mupdf::Colorspace::device_rgb(), false, false).unwrap();
+            let (w0, h0) = (pix0.width(), pix0.height());
+            println!("0 deg dimensions: ({w0}, {h0})");
+
+            let mut m90 = mupdf::Matrix::new_scale(1.0, 1.0);
+            m90.rotate(90.0);
+            let pix90 = page.to_pixmap(&m90, &mupdf::Colorspace::device_rgb(), false, false).unwrap();
+            let (w90, h90) = (pix90.width(), pix90.height());
+            println!("90 deg dimensions: ({w90}, {h90})");
+
+            let mut m180 = mupdf::Matrix::new_scale(1.0, 1.0);
+            m180.rotate(180.0);
+            let pix180 = page.to_pixmap(&m180, &mupdf::Colorspace::device_rgb(), false, false).unwrap();
+            let (w180, h180) = (pix180.width(), pix180.height());
+            println!("180 deg dimensions: ({w180}, {h180})");
+
+            let mut m270 = mupdf::Matrix::new_scale(1.0, 1.0);
+            m270.rotate(270.0);
+            let pix270 = page.to_pixmap(&m270, &mupdf::Colorspace::device_rgb(), false, false).unwrap();
+            let (w270, h270) = (pix270.width(), pix270.height());
+            println!("270 deg dimensions: ({w270}, {h270})");
+
+            assert_eq!(w90, h0, "90 deg rotation width must equal 0 deg height");
+            assert_eq!(h90, w0, "90 deg rotation height must equal 0 deg width");
+            assert_eq!(w180, w0, "180 deg rotation width must equal 0 deg width");
+            assert_eq!(h180, h0, "180 deg rotation height must equal 0 deg height");
+            assert_eq!(w270, h0, "270 deg rotation width must equal 0 deg height");
+            assert_eq!(h270, w0, "270 deg rotation height must equal 0 deg width");
+        }
+    }
 }
