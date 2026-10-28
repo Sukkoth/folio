@@ -166,6 +166,22 @@ export component AppWindow inherits Window {
     in property <[SearchHighlight]> page-search-highlights;
     in property <[SearchHighlight]> scroll-search-highlights;
 
+    // Toast notification state
+    in-out property <string> toast-message: "";
+    in-out property <bool> show-toast: false;
+
+    // Zen / Fullscreen Mode state
+    in-out property <bool> is-zen-mode: false;
+    in-out property <bool> sidebar-was-open: false;
+
+    // Zen callbacks
+    callback toggle-zen-mode();
+    callback exit-zen-mode();
+
+    // Export callbacks
+    callback copy-annotations-markdown();
+    callback export-annotations-markdown();
+
     callback save-document();
     callback save-document-as();
     callback prev-page();
@@ -254,6 +270,11 @@ export component AppWindow inherits Window {
     keyboard-handler := FocusScope {
         init => { self.focus(); }
         key-pressed(event) => {
+            if (event.text == Key.F11) {
+                root.toggle-zen-mode();
+                return accept;
+            }
+
             if (event.modifiers.control || event.text == "\u{1a}" || event.text == "\u{13}" || event.text == "\u{19}" || event.text == "\u{15}" || event.text == "\u{2}" || event.text == "\u{14}" || event.text == "\u{6}") {
                 if (event.modifiers.shift || (event.modifiers.control && (event.text == "Z" || event.text == "S"))) {
                     // Ctrl + Shift + S: Save As
@@ -339,6 +360,10 @@ export component AppWindow inherits Window {
                         root.hovered-annotation-id = -1;
                         return accept;
                     }
+                    if (root.is-zen-mode) {
+                        root.exit-zen-mode();
+                        return accept;
+                    }
                 } else if (root.selected-annotation-id > 0) {
                     if (event.text == "1") { root.selected-color-index = 0; root.update-annotation-color(root.selected-annotation-id, 0); return accept; }
                     else if (event.text == "2") { root.selected-color-index = 1; root.update-annotation-color(root.selected-annotation-id, 1); return accept; }
@@ -374,7 +399,7 @@ export component AppWindow inherits Window {
             spacing: 0;
 
             // Top Toolbar (52px, #161a21)
-            Rectangle {
+            if !root.is-zen-mode: Rectangle {
                 height: 52px;
                 background: #161a21;
                 border-width: 0;
@@ -623,6 +648,13 @@ export component AppWindow inherits Window {
                             clicked => { root.toggle-search(); }
                         }
 
+                        IconButton {
+                            text: "⛶";
+                            active: root.is-zen-mode;
+                            y: (parent.height - self.height) / 2;
+                            clicked => { root.toggle-zen-mode(); }
+                        }
+
                         // Save Button (Appears when annotations are modified)
                         if root.is-dirty: Rectangle {
                             height: 30px;
@@ -689,7 +721,7 @@ export component AppWindow inherits Window {
             }
 
             // Top Search Bar (Appears when search is toggled)
-            if root.show-search: search-bar-container := Rectangle {
+            if !root.is-zen-mode && root.show-search: search-bar-container := Rectangle {
                 height: 42px;
                 background: #171b24;
                 border-width: 0;
@@ -825,7 +857,7 @@ export component AppWindow inherits Window {
 
                 // Sidebar (Contents, Highlights, Notes, Search)
                 sidebar := Rectangle {
-                    width: root.show-sidebar ? 310px : 0px;
+                    width: (root.show-sidebar && !root.is-zen-mode) ? 310px : 0px;
                     clip: true;
                     background: #13161e;
                     animate width { duration: 160ms; easing: ease-out; }
@@ -1025,10 +1057,19 @@ export component AppWindow inherits Window {
                                     }
                                 }
 
-                                IconButton {
-                                    text: "✕";
-                                    y: (parent.height - self.height) / 2;
-                                    clicked => { root.toggle-sidebar(); }
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    y: (parent.height - 32px) / 2;
+
+                                    if root.highlight-items.length > 0 || root.note-items.length > 0: IconButton {
+                                        text: "📋";
+                                        clicked => { root.copy-annotations-markdown(); }
+                                    }
+
+                                    IconButton {
+                                        text: "✕";
+                                        clicked => { root.toggle-sidebar(); }
+                                    }
                                 }
                             }
                         }
@@ -1133,6 +1174,89 @@ export component AppWindow inherits Window {
                                         color: #475569;
                                         horizontal-alignment: center;
                                         wrap: word-wrap;
+                                    }
+                                }
+                            }
+
+                            if root.highlight-items.length > 0: Rectangle {
+                                height: 34px;
+                                background: #141822;
+
+                                Rectangle {
+                                    y: parent.height - 1px;
+                                    height: 1px;
+                                    width: 100%;
+                                    background: #1f2533;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 12px;
+                                    alignment: space-between;
+
+                                    Text {
+                                        text: "\{root.highlight-items.length} Highlights";
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: #64748b;
+                                        vertical-alignment: center;
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        y: (parent.height - 24px) / 2;
+
+                                        Rectangle {
+                                            height: 24px;
+                                            border-radius: 4px;
+                                            background: copy-hl-ta.has-hover ? #283344 : #1c222e;
+                                            border-width: 1px;
+                                            border-color: #2b3648;
+
+                                            HorizontalLayout {
+                                                padding-left: 8px;
+                                                padding-right: 8px;
+                                                alignment: center;
+                                                Text {
+                                                    text: "📋 Copy MD";
+                                                    font-size: 10px;
+                                                    font-weight: 600;
+                                                    color: #cbd5e1;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+
+                                            copy-hl-ta := TouchArea {
+                                                clicked => { root.copy-annotations-markdown(); }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            height: 24px;
+                                            border-radius: 4px;
+                                            background: exp-hl-ta.has-hover ? #283344 : #1c222e;
+                                            border-width: 1px;
+                                            border-color: #2b3648;
+
+                                            HorizontalLayout {
+                                                padding-left: 8px;
+                                                padding-right: 8px;
+                                                alignment: center;
+                                                Text {
+                                                    text: "💾 Save .md";
+                                                    font-size: 10px;
+                                                    font-weight: 600;
+                                                    color: #cbd5e1;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+
+                                            exp-hl-ta := TouchArea {
+                                                clicked => { root.export-annotations-markdown(); }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1244,6 +1368,89 @@ export component AppWindow inherits Window {
                                         color: #475569;
                                         horizontal-alignment: center;
                                         wrap: word-wrap;
+                                    }
+                                }
+                            }
+
+                            if root.note-items.length > 0: Rectangle {
+                                height: 34px;
+                                background: #141822;
+
+                                Rectangle {
+                                    y: parent.height - 1px;
+                                    height: 1px;
+                                    width: 100%;
+                                    background: #1f2533;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 12px;
+                                    alignment: space-between;
+
+                                    Text {
+                                        text: "\{root.note-items.length} Notes";
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: #64748b;
+                                        vertical-alignment: center;
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        y: (parent.height - 24px) / 2;
+
+                                        Rectangle {
+                                            height: 24px;
+                                            border-radius: 4px;
+                                            background: copy-n-ta.has-hover ? #283344 : #1c222e;
+                                            border-width: 1px;
+                                            border-color: #2b3648;
+
+                                            HorizontalLayout {
+                                                padding-left: 8px;
+                                                padding-right: 8px;
+                                                alignment: center;
+                                                Text {
+                                                    text: "📋 Copy MD";
+                                                    font-size: 10px;
+                                                    font-weight: 600;
+                                                    color: #cbd5e1;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+
+                                            copy-n-ta := TouchArea {
+                                                clicked => { root.copy-annotations-markdown(); }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            height: 24px;
+                                            border-radius: 4px;
+                                            background: exp-n-ta.has-hover ? #283344 : #1c222e;
+                                            border-width: 1px;
+                                            border-color: #2b3648;
+
+                                            HorizontalLayout {
+                                                padding-left: 8px;
+                                                padding-right: 8px;
+                                                alignment: center;
+                                                Text {
+                                                    text: "💾 Save .md";
+                                                    font-size: 10px;
+                                                    font-weight: 600;
+                                                    color: #cbd5e1;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+
+                                            exp-n-ta := TouchArea {
+                                                clicked => { root.export-annotations-markdown(); }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2957,6 +3164,156 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // Top Hover Sensor to reveal Zen Controls in Zen Mode
+    top-sensor := TouchArea {
+        x: (parent.width - 440px) / 2;
+        y: 0;
+        width: 440px;
+        height: root.is-zen-mode ? 60px : 0px;
+        enabled: root.is-zen-mode;
+    }
+
+    // Floating Zen Mode Controls Bar
+    if root.is-zen-mode: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: top-sensor.has-hover ? 12px : -48px;
+        height: 40px;
+        border-radius: 20px;
+        background: #0f172ae8;
+        border-width: 1px;
+        border-color: #334155;
+        drop-shadow-blur: 20px;
+        drop-shadow-color: #000000a0;
+        animate y { duration: 160ms; easing: ease-out; }
+
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 10px;
+            alignment: center;
+
+            IconButton {
+                text: "‹";
+                enabled: root.can-prev;
+                y: (parent.height - self.height) / 2;
+                clicked => { root.prev-page(); }
+            }
+
+            Text {
+                text: root.page-display;
+                font-size: 12px;
+                font-weight: 600;
+                color: #e2e8f0;
+                vertical-alignment: center;
+            }
+
+            IconButton {
+                text: "›";
+                enabled: root.can-next;
+                y: (parent.height - self.height) / 2;
+                clicked => { root.next-page(); }
+            }
+
+            Rectangle {
+                width: 1px;
+                height: 16px;
+                y: (parent.height - self.height) / 2;
+                background: #334155;
+            }
+
+            IconButton {
+                text: "−";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.zoom-out(); }
+            }
+
+            Text {
+                text: root.zoom-display;
+                font-size: 11px;
+                font-weight: 600;
+                color: #94a3b8;
+                vertical-alignment: center;
+            }
+
+            IconButton {
+                text: "+";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.zoom-in(); }
+            }
+
+            IconButton {
+                text: "Fit";
+                y: (parent.height - self.height) / 2;
+                clicked => { root.zoom-fit(); }
+            }
+
+            Rectangle {
+                width: 1px;
+                height: 16px;
+                y: (parent.height - self.height) / 2;
+                background: #334155;
+            }
+
+            // Exit Zen Button
+            Rectangle {
+                height: 26px;
+                border-radius: 5px;
+                y: (parent.height - self.height) / 2;
+                background: exit-zen-ta.has-hover ? #ef444430 : #ef444415;
+                border-width: 1px;
+                border-color: #ef444450;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 4px;
+                    alignment: center;
+
+                    Text {
+                        text: "✕ Exit Zen (F11)";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: #f87171;
+                        vertical-alignment: center;
+                    }
+                }
+
+                exit-zen-ta := TouchArea {
+                    clicked => { root.exit-zen-mode(); }
+                    mouse-cursor: pointer;
+                }
+            }
+        }
+    }
+
+    // Floating Notification Toast
+    if root.show-toast: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - 56px;
+        height: 38px;
+        min-width: 220px;
+        border-radius: 19px;
+        background: #0f172aee;
+        border-width: 1px;
+        border-color: #38bdf888;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #000000a0;
+
+        HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            alignment: center;
+
+            Text {
+                text: root.toast-message;
+                font-size: 13px;
+                font-weight: 600;
+                color: #f8fafc;
+                vertical-alignment: center;
             }
         }
     }

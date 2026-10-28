@@ -8,6 +8,9 @@ crossbeam-channel = "0.5.17"
 lru = "0.19.0"
 mupdf = "0.8.0"
 rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+arboard = "3.4"
 slint = "1.18.1"
 
 [build-dependencies]

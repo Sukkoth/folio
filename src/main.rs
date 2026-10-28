@@ -1,3 +1,5 @@
+mod export;
+mod history;
 mod pdf;
 
 use pdf::{CachedRender, PageCache, PdfWorker, RenderRequest, RenderedPage};
@@ -162,6 +164,7 @@ struct AppState {
     search_matches: Vec<pdf::SearchHitResult>,
     active_search_index: i32,
     is_searching: bool,
+    pub toc: Vec<pdf::TocItem>,
 }
 
 impl AppState {
@@ -253,20 +256,36 @@ fn setup_document(
     // Default zoom value: 200% (2.0)
     let default_zoom = 2.0;
 
+    // Restore saved session history if available
+    let saved_session = history::load_document_session(&path_str);
+    let (initial_page, initial_zoom, initial_is_scroll, initial_scroll_y) = if let Some(ref s) = saved_session {
+        let p = s.page.clamp(0, (meta.page_count - 1).max(0));
+        let z = if s.zoom_level >= 0.5 && s.zoom_level <= 5.0 { s.zoom_level } else { default_zoom };
+        (p, z, s.is_scroll_view, s.scroll_y)
+    } else {
+        (0, default_zoom, true, 0.0)
+    };
+
     let (p0_w, p0_h) = meta.page_sizes.first().copied().unwrap_or((meta.initial_width_pt, meta.initial_height_pt));
     let standard_h = if meta.page_sizes.len() > 1 {
         meta.page_sizes[1].1
     } else {
         p0_h
     };
-    let card_w = p0_w * default_zoom;
-    let card_h = p0_h * default_zoom;
-    let scroll_item_h = standard_h * default_zoom + 24.0;
+    let card_w = p0_w * initial_zoom;
+    let card_h = p0_h * initial_zoom;
+    let scroll_item_h = standard_h * initial_zoom + 24.0;
 
     app.set_page_width(card_w);
     app.set_page_height(card_h);
     app.set_scroll_item_height(scroll_item_h);
-    app.set_is_scroll_view(true);
+    app.set_is_scroll_view(initial_is_scroll);
+    app.set_current_page(initial_page);
+    app.set_zoom_level(initial_zoom);
+    app.set_zoom_display(format!("{}%", (initial_zoom * 100.0).round() as i32).into());
+    app.set_page_display(format!("{} / {}", initial_page + 1, meta.page_count).into());
+    app.set_can_prev(initial_page > 0);
+    app.set_can_next(initial_page < meta.page_count - 1);
 
     // Initialize Table of Contents (Outline)
     let has_toc = !meta.toc.is_empty();
@@ -324,8 +343,8 @@ fn setup_document(
     let mut items = Vec::with_capacity(meta.page_count as usize);
     let mut cur_offset = 0.0f32;
     for (i, &(w_pt, h_pt)) in meta.page_sizes.iter().enumerate() {
-        let pw = w_pt * default_zoom;
-        let ph = h_pt * default_zoom;
+        let pw = w_pt * initial_zoom;
+        let ph = h_pt * initial_zoom;
         items.push(PageItemData {
             page_index: i as i32,
             offset_y: cur_offset,
@@ -356,10 +375,10 @@ fn setup_document(
 
     let app_state = AppState {
         file_path: path_str,
-        current_page: 0,
+        current_page: initial_page,
         total_pages: meta.page_count,
-        zoom_level: default_zoom,
-        is_scroll_view: true,
+        zoom_level: initial_zoom,
+        is_scroll_view: initial_is_scroll,
         page_width_pt: meta.initial_width_pt,
         page_height_pt: meta.initial_height_pt,
         page_sizes: meta.page_sizes,
@@ -380,6 +399,7 @@ fn setup_document(
         search_matches: Vec::new(),
         active_search_index: -1,
         is_searching: false,
+        toc: meta.toc,
     };
 
     if let Ok(mut lock) = state.lock() {
@@ -389,8 +409,22 @@ fn setup_document(
     // Set up UI callbacks
     setup_callbacks(app, &state);
 
-    // Initial render of page 1 at 200%
+    // Initial render of page
     update_view(app, &state);
+
+    // Restore exact scroll position or jump to page
+    if initial_is_scroll {
+        if initial_scroll_y != 0.0 {
+            app.set_scroll_content_y(initial_scroll_y);
+        } else if initial_page > 0 {
+            app.invoke_scroll_to_page(initial_page);
+        }
+        if let Ok(mut lock) = state.lock() {
+            if let Some(s) = lock.as_mut() {
+                trigger_scroll_page_render_direct(s, initial_page, app);
+            }
+        }
+    }
 
     Ok(())
 }
@@ -696,6 +730,28 @@ fn jump_to_search_match(
             update_view_with_state(s, ui);
         } else {
             sync_search_to_ui(s, ui);
+        }
+    }
+    save_current_session_direct(s, ui);
+}
+
+fn save_current_session_direct(s: &AppState, ui: &AppWindow) {
+    if !s.file_path.is_empty() {
+        let session = history::DocumentSession {
+            page: s.current_page,
+            scroll_y: ui.get_scroll_content_y(),
+            zoom_level: s.zoom_level,
+            is_scroll_view: s.is_scroll_view,
+            last_opened_at: 0,
+        };
+        history::save_document_session(&s.file_path, session);
+    }
+}
+
+fn save_current_session(state_lock: &Arc<Mutex<Option<AppState>>>, ui: &AppWindow) {
+    if let Ok(lock) = state_lock.lock() {
+        if let Some(s) = lock.as_ref() {
+            save_current_session_direct(s, ui);
         }
     }
 }
@@ -1208,10 +1264,75 @@ fn perform_redo(s: &mut AppState) -> Option<(bool, Option<i32>)> {
     Some((true, highlight_page_to_rerender))
 }
 
+fn trigger_toast(app: &AppWindow, message: &str) {
+    app.set_toast_message(message.into());
+    app.set_show_toast(true);
+    let app_weak = app.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(2200), move || {
+        if let Some(app) = app_weak.upgrade() {
+            app.set_show_toast(false);
+        }
+    });
+}
+
+fn build_annotations_markdown_from_state(s: &AppState) -> String {
+    let doc_title = Path::new(&s.file_path)
+        .file_stem()
+        .and_then(|st| st.to_str())
+        .unwrap_or("Document");
+
+    let export_annots: Vec<export::ExportAnnotation> = s
+        .annotations
+        .iter()
+        .map(|a| {
+            let min_y = a.line_rects_pt.first().map(|r| r.1).unwrap_or(0.0);
+            export::ExportAnnotation {
+                page: a.page,
+                kind: a.kind.clone(),
+                snippet: a.snippet.clone(),
+                comment: a.comment.clone(),
+                min_y_pt: min_y,
+            }
+        })
+        .collect();
+
+    export::generate_annotations_markdown(doc_title, &export_annots, &s.toc)
+}
+
 fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     let search_generation = Arc::new(AtomicU64::new(0));
     let search_debounce: std::rc::Rc<std::cell::RefCell<Option<slint::Timer>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
+
+    let session_save_timer: std::rc::Rc<std::cell::RefCell<Option<slint::Timer>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+
+    let make_session_saver = {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        let session_timer = std::rc::Rc::clone(&session_save_timer);
+        move || {
+            let state_lock_c = Arc::clone(&state_lock);
+            let app_weak_c = app_weak.clone();
+            let session_timer_c = std::rc::Rc::clone(&session_timer);
+            move || {
+                *session_timer_c.borrow_mut() = None;
+                let timer = slint::Timer::default();
+                let state_lock_inner = Arc::clone(&state_lock_c);
+                let app_weak_inner = app_weak_c.clone();
+                timer.start(
+                    slint::TimerMode::SingleShot,
+                    std::time::Duration::from_millis(400),
+                    move || {
+                        if let Some(ui) = app_weak_inner.upgrade() {
+                            save_current_session(&state_lock_inner, &ui);
+                        }
+                    },
+                );
+                *session_timer_c.borrow_mut() = Some(timer);
+            }
+        }
+    };
 
     // Toggle Search Bar
     {
@@ -1438,6 +1559,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
+        let save_session = make_session_saver();
         app.on_jump_to_page(move |target_page| {
             let mut is_scroll = false;
             let mut total_pages = 0;
@@ -1477,6 +1599,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     } else {
                         update_view(&ui, &state_lock);
                     }
+                    save_session();
                 }
             }
         });
@@ -2052,6 +2175,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     Ok(()) => {
                         ui.set_is_dirty(false);
                         ui.set_show_saved_badge(true);
+                        save_current_session(&state_lock, &ui);
 
                         let ui_weak = app_weak.clone();
                         slint::Timer::single_shot(
@@ -2145,10 +2269,146 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                                 s.worker.switch_document(new_path_str);
                             }
                         }
+                        save_current_session(&state_lock, &ui);
                     }
                     Err(e) => {
                         eprintln!("Failed to save PDF as: {e}");
                     }
+                }
+            }
+        });
+    }
+
+    // Copy Annotations Markdown (Clipboard)
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_copy_annotations_markdown(move || {
+            let (md, is_empty) = {
+                if let Ok(lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_ref() {
+                        if s.annotations.is_empty() {
+                            (String::new(), true)
+                        } else {
+                            (build_annotations_markdown_from_state(s), false)
+                        }
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            };
+
+            if let Some(ui) = app_weak.upgrade() {
+                if is_empty {
+                    trigger_toast(&ui, "No annotations to export");
+                    return;
+                }
+                match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(md)) {
+                    Ok(_) => trigger_toast(&ui, "✓ Copied annotations to clipboard"),
+                    Err(e) => trigger_toast(&ui, &format!("Failed to copy: {}", e)),
+                }
+            }
+        });
+    }
+
+    // Export Annotations Markdown (.md File)
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_export_annotations_markdown(move || {
+            let (md, is_empty, default_filename) = {
+                if let Ok(lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_ref() {
+                        if s.annotations.is_empty() {
+                            (String::new(), true, String::new())
+                        } else {
+                            let stem = Path::new(&s.file_path)
+                                .file_stem()
+                                .and_then(|st| st.to_str())
+                                .unwrap_or("document");
+                            (
+                                build_annotations_markdown_from_state(s),
+                                false,
+                                format!("{}_annotations.md", stem),
+                            )
+                        }
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            };
+
+            if let Some(ui) = app_weak.upgrade() {
+                if is_empty {
+                    trigger_toast(&ui, "No annotations to export");
+                    return;
+                }
+
+                if let Some(save_path) = rfd::FileDialog::new()
+                    .set_file_name(&default_filename)
+                    .add_filter("Markdown", &["md"])
+                    .save_file()
+                {
+                    match std::fs::write(&save_path, md) {
+                        Ok(_) => {
+                            let display_name = save_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("annotations.md");
+                            trigger_toast(&ui, &format!("✓ Saved to {}", display_name));
+                        }
+                        Err(e) => trigger_toast(&ui, &format!("Failed to save: {}", e)),
+                    }
+                }
+            }
+        });
+    }
+
+    // Zen Mode Toggle (F11)
+    {
+        let app_weak = app.as_weak();
+        app.on_toggle_zen_mode(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let was_zen = ui.get_is_zen_mode();
+                let new_zen = !was_zen;
+
+                if new_zen {
+                    let was_sidebar = ui.get_show_sidebar();
+                    ui.set_sidebar_was_open(was_sidebar);
+                    if was_sidebar {
+                        ui.set_show_sidebar(false);
+                    }
+                    ui.set_is_zen_mode(true);
+                    ui.window().set_fullscreen(true);
+                    trigger_toast(&ui, "Zen Mode: Press F11 or Esc to exit");
+                } else {
+                    ui.set_is_zen_mode(false);
+                    ui.window().set_fullscreen(false);
+                    if ui.get_sidebar_was_open() {
+                        ui.set_show_sidebar(true);
+                    }
+                    trigger_toast(&ui, "Exited Zen Mode");
+                }
+            }
+        });
+    }
+
+    // Exit Zen Mode (Esc)
+    {
+        let app_weak = app.as_weak();
+        app.on_exit_zen_mode(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                if ui.get_is_zen_mode() {
+                    ui.set_is_zen_mode(false);
+                    ui.window().set_fullscreen(false);
+                    if ui.get_sidebar_was_open() {
+                        ui.set_show_sidebar(true);
+                    }
+                    trigger_toast(&ui, "Exited Zen Mode");
                 }
             }
         });
@@ -2181,6 +2441,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
+        let save_session = make_session_saver();
         app.on_set_view_mode(move |is_scroll| {
             let target_page = {
                 if let Ok(mut lock) = state_lock.lock() {
@@ -2202,6 +2463,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 } else {
                     update_view(&ui, &state_lock);
                 }
+                save_session();
             }
         });
     }
@@ -2210,6 +2472,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
+        let save_session = make_session_saver();
         app.on_visible_page_changed(move |new_page| {
             let mut changed = false;
             if let Ok(mut lock) = state_lock.lock() {
@@ -2235,6 +2498,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             trigger_scroll_page_render(s, new_page, &ui);
                         }
                     }
+                    save_session();
                 }
             }
         });
@@ -2244,6 +2508,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
+        let save_session = make_session_saver();
         app.on_prev_page(move || {
             let mut is_scroll = false;
             let mut new_page = 0;
@@ -2281,6 +2546,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     } else {
                         update_view(&ui, &state_lock);
                     }
+                    save_session();
                 }
             }
         });
@@ -2290,6 +2556,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
+        let save_session = make_session_saver();
         app.on_next_page(move || {
             let mut is_scroll = false;
             let mut new_page = 0;
@@ -2327,6 +2594,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     } else {
                         update_view(&ui, &state_lock);
                     }
+                    save_session();
                 }
             }
         });
@@ -2483,6 +2751,7 @@ fn perform_zoom(
         }
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_suppress_page_change(false);
+            save_current_session(&state_lock_clone, &ui);
         }
     });
 }
@@ -2549,6 +2818,7 @@ mod tests {
             search_matches: Vec::new(),
             active_search_index: -1,
             is_searching: false,
+            toc: Vec::new(),
         };
 
         (state, test_pdf_path)
