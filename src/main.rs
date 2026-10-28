@@ -5,6 +5,7 @@ use slint::Model;
 use std::collections::VecDeque;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 slint::include_modules!();
@@ -156,6 +157,11 @@ struct AppState {
     active_selection_snippet: String,
     active_selection_line_rects: Vec<(f32, f32, f32, f32)>,
     is_zooming: bool,
+    // Search state
+    search_query: String,
+    search_matches: Vec<pdf::SearchHitResult>,
+    active_search_index: i32,
+    is_searching: bool,
 }
 
 impl AppState {
@@ -370,6 +376,10 @@ fn setup_document(
         active_selection_snippet: String::new(),
         active_selection_line_rects: Vec::new(),
         is_zooming: false,
+        search_query: String::new(),
+        search_matches: Vec::new(),
+        active_search_index: -1,
+        is_searching: false,
     };
 
     if let Ok(mut lock) = state.lock() {
@@ -558,15 +568,238 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
     ui.set_can_redo(!s.redo_stack.is_empty());
 }
 
+fn sync_search_to_ui(s: &AppState, ui: &AppWindow) {
+    let total = s.search_matches.len();
+    ui.set_total_search_matches(total as i32);
+    ui.set_active_search_index(s.active_search_index);
+    ui.set_is_searching(s.is_searching);
+
+    if total == 0 {
+        if s.search_query.trim().is_empty() {
+            ui.set_search_match_display("".into());
+        } else if s.is_searching {
+            ui.set_search_match_display("Searching...".into());
+        } else {
+            ui.set_search_match_display("0 results".into());
+        }
+        ui.set_search_results(std::rc::Rc::new(slint::VecModel::default()).into());
+        ui.set_page_search_highlights(std::rc::Rc::new(slint::VecModel::default()).into());
+        ui.set_scroll_search_highlights(std::rc::Rc::new(slint::VecModel::default()).into());
+        return;
+    }
+
+    let display = format!("{} of {}", s.active_search_index + 1, total);
+    ui.set_search_match_display(display.into());
+
+    let mut result_items = Vec::new();
+    let mut page_highlight_items = Vec::new();
+    let mut scroll_highlight_items = Vec::new();
+
+    // Precalculate scroll page offsets and widths
+    let mut page_offsets: Vec<(f32, f32)> = Vec::with_capacity(s.total_pages as usize);
+    let mut cur_offset = 0.0f32;
+    for i in 0..s.total_pages {
+        let (pw_pt, ph_pt) = s.get_page_size(i);
+        let pw = pw_pt * s.zoom_level;
+        let ph = ph_pt * s.zoom_level;
+        page_offsets.push((cur_offset, pw));
+        cur_offset += ph + 24.0;
+    }
+
+    for (idx, m) in s.search_matches.iter().enumerate() {
+        let is_active = (idx as i32) == s.active_search_index;
+        result_items.push(SearchResultItem {
+            id: idx as i32,
+            page: m.page,
+            display_page: m.page + 1,
+            snippet: m.snippet.clone().into(),
+            match_text: m.match_text.clone().into(),
+            is_active,
+        });
+
+        let (page_offset_y, page_w) = page_offsets
+            .get(m.page as usize)
+            .copied()
+            .unwrap_or((0.0, 595.0 * s.zoom_level));
+
+        for rect in &m.rects_pt {
+            let rx = rect.0 * s.zoom_level;
+            let ry = rect.1 * s.zoom_level;
+            let rw = (rect.2 - rect.0).max(2.0) * s.zoom_level;
+            let rh = (rect.3 - rect.1).max(2.0) * s.zoom_level;
+
+            // Single page view highlight (only if current page)
+            if m.page == s.current_page {
+                page_highlight_items.push(SearchHighlight {
+                    page: m.page,
+                    x: rx,
+                    y: ry,
+                    width: rw,
+                    height: rh,
+                    is_current: is_active,
+                    page_width: page_w,
+                });
+            }
+
+            // Continuous scroll view highlight (positioned in scroll content coordinates)
+            scroll_highlight_items.push(SearchHighlight {
+                page: m.page,
+                x: rx,
+                y: page_offset_y + 12.0 + ry,
+                width: rw,
+                height: rh,
+                is_current: is_active,
+                page_width: page_w,
+            });
+        }
+    }
+
+    ui.set_search_results(std::rc::Rc::new(slint::VecModel::from(result_items)).into());
+    ui.set_page_search_highlights(std::rc::Rc::new(slint::VecModel::from(page_highlight_items)).into());
+    ui.set_scroll_search_highlights(std::rc::Rc::new(slint::VecModel::from(scroll_highlight_items)).into());
+}
+
+fn jump_to_search_match(
+    s: &mut AppState,
+    ui: &AppWindow,
+    match_idx: i32,
+) {
+    if s.search_matches.is_empty() {
+        return;
+    }
+    let total = s.search_matches.len() as i32;
+    let clamped_idx = match_idx.rem_euclid(total);
+    s.active_search_index = clamped_idx;
+
+    let target_page = s.search_matches[clamped_idx as usize].page;
+    let target_first_rect = s.search_matches[clamped_idx as usize].rects_pt.first().cloned();
+
+    if s.is_scroll_view {
+        let mut target_scroll_y = 0.0f32;
+        if let Some(pages) = ui.get_scroll_pages().as_any().downcast_ref::<slint::VecModel<PageItemData>>() {
+            if let Some(p_item) = pages.row_data(target_page as usize) {
+                target_scroll_y = p_item.offset_y;
+                if let Some(rect) = target_first_rect {
+                    target_scroll_y += rect.1 * s.zoom_level - 120.0;
+                }
+            }
+        }
+        ui.set_scroll_content_y(-target_scroll_y.max(0.0));
+        ui.set_current_page(target_page);
+        s.current_page = target_page;
+        trigger_scroll_page_render_direct(s, target_page, ui);
+        sync_search_to_ui(s, ui);
+    } else {
+        if s.current_page != target_page {
+            s.current_page = target_page;
+            ui.set_current_page(target_page);
+            update_view_with_state(s, ui);
+        } else {
+            sync_search_to_ui(s, ui);
+        }
+    }
+}
+
+fn trigger_search(
+    query: String,
+    state_lock: Arc<Mutex<Option<AppState>>>,
+    ui_weak: slint::Weak<AppWindow>,
+    search_generation: Arc<AtomicU64>,
+) {
+    let query_trimmed = query.trim().to_string();
+    let current_gen = search_generation.fetch_add(1, Ordering::SeqCst) + 1;
+
+    if query_trimmed.is_empty() {
+        if let Ok(mut lock) = state_lock.lock() {
+            if let Some(s) = lock.as_mut() {
+                s.search_query.clear();
+                s.search_matches.clear();
+                s.active_search_index = -1;
+                s.is_searching = false;
+                if let Some(ui) = ui_weak.upgrade() {
+                    sync_search_to_ui(s, &ui);
+                }
+            }
+        }
+        return;
+    }
+
+    let file_path = if let Ok(lock) = state_lock.lock() {
+        if let Some(s) = lock.as_ref() {
+            s.file_path.clone()
+        } else {
+            return;
+        }
+    } else {
+        return;
+    };
+
+    let total_pages = if let Ok(mut lock) = state_lock.lock() {
+        if let Some(s) = lock.as_mut() {
+            s.search_query = query_trimmed.clone();
+            s.is_searching = true;
+            if let Some(ui) = ui_weak.upgrade() {
+                sync_search_to_ui(s, &ui);
+            }
+            s.total_pages
+        } else {
+            return;
+        }
+    } else {
+        return;
+    };
+
+    let search_gen_clone = Arc::clone(&search_generation);
+    std::thread::Builder::new()
+        .name("pdf-search".to_string())
+        .spawn(move || {
+            let hits = pdf::search_document(
+                &file_path,
+                total_pages,
+                &query_trimmed,
+                Some(Arc::clone(&search_gen_clone)),
+                current_gen,
+            );
+
+            if search_gen_clone.load(Ordering::SeqCst) != current_gen {
+                return;
+            }
+
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                if search_gen_clone.load(Ordering::SeqCst) != current_gen {
+                    return;
+                }
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        s.is_searching = false;
+                        s.search_matches = hits;
+                        if !s.search_matches.is_empty() {
+                            let cur_page = s.current_page;
+                            let first_on_cur = s.search_matches.iter().position(|m| m.page == cur_page);
+                            s.active_search_index = first_on_cur.unwrap_or(0) as i32;
+                            jump_to_search_match(s, &ui, s.active_search_index);
+                        } else {
+                            s.active_search_index = -1;
+                            sync_search_to_ui(s, &ui);
+                        }
+                    }
+                }
+            });
+        })
+        .ok();
+}
+
 fn update_view(ui: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     let mut lock = match state_lock.lock() {
         Ok(guard) => guard,
         Err(_) => return,
     };
-    let state = match lock.as_mut() {
-        Some(s) => s,
-        None => return,
-    };
+    if let Some(state) = lock.as_mut() {
+        update_view_with_state(state, ui);
+    }
+}
+
+fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
 
     let scale_factor = ui.window().scale_factor().max(1.0);
     let actual_render_zoom = (state.zoom_level * scale_factor).max(0.1);
@@ -618,6 +851,7 @@ fn update_view(ui: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 
     // Refresh annotation visual coordinates scaled to current zoom
     sync_annotations_to_ui(state, ui);
+    sync_search_to_ui(state, ui);
 
     // Bump generation counter
     let next_gen = state.worker.current_generation() + 1;
@@ -975,6 +1209,214 @@ fn perform_redo(s: &mut AppState) -> Option<(bool, Option<i32>)> {
 }
 
 fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
+    let search_generation = Arc::new(AtomicU64::new(0));
+    let search_debounce: std::rc::Rc<std::cell::RefCell<Option<slint::Timer>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+
+    // Toggle Search Bar
+    {
+        let app_weak = app.as_weak();
+        let state_lock = Arc::clone(state_lock);
+        let search_generation = Arc::clone(&search_generation);
+        let search_debounce = std::rc::Rc::clone(&search_debounce);
+        app.on_toggle_search(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let currently_showing = ui.get_show_search();
+                if currently_showing {
+                    *search_debounce.borrow_mut() = None;
+                    ui.set_show_search(false);
+                    ui.invoke_grab_focus();
+                } else {
+                    ui.set_show_search(true);
+                    ui.set_show_sidebar(true);
+                    ui.set_sidebar_tab(3); // Switch to Search tab
+                    let cur_query = ui.get_search_query().to_string();
+                    if !cur_query.trim().is_empty() {
+                        *search_debounce.borrow_mut() = None;
+                        trigger_search(
+                            cur_query,
+                            Arc::clone(&state_lock),
+                            app_weak.clone(),
+                            Arc::clone(&search_generation),
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    // Close Search Bar
+    {
+        let app_weak = app.as_weak();
+        let search_debounce = std::rc::Rc::clone(&search_debounce);
+        app.on_close_search(move || {
+            *search_debounce.borrow_mut() = None;
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_show_search(false);
+                ui.invoke_grab_focus();
+            }
+        });
+    }
+
+    // Search Query Changed (debounced by 250ms to prevent spamming search threads while typing)
+    {
+        let app_weak = app.as_weak();
+        let state_lock = Arc::clone(state_lock);
+        let search_generation = Arc::clone(&search_generation);
+        let search_debounce = std::rc::Rc::clone(&search_debounce);
+        app.on_search_query_changed(move |query| {
+            // Cancel any pending debounce timer
+            *search_debounce.borrow_mut() = None;
+
+            let query_str = query.to_string();
+            let query_trimmed = query_str.trim().to_string();
+
+            if query_trimmed.is_empty() {
+                trigger_search(
+                    String::new(),
+                    Arc::clone(&state_lock),
+                    app_weak.clone(),
+                    Arc::clone(&search_generation),
+                );
+                return;
+            }
+
+            // Immediately display "Searching..." so the UI responds instantly to keystrokes
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_is_searching(true);
+                ui.set_search_match_display("Searching...".into());
+            }
+
+            // Start 250ms debounce
+            let timer = slint::Timer::default();
+            let app_weak_c = app_weak.clone();
+            let state_lock_c = Arc::clone(&state_lock);
+            let search_gen_c = Arc::clone(&search_generation);
+            timer.start(
+                slint::TimerMode::SingleShot,
+                std::time::Duration::from_millis(250),
+                move || {
+                    trigger_search(
+                        query_str.clone(),
+                        Arc::clone(&state_lock_c),
+                        app_weak_c.clone(),
+                        Arc::clone(&search_gen_c),
+                    );
+                },
+            );
+            *search_debounce.borrow_mut() = Some(timer);
+        });
+    }
+
+    // Search Next (cycle forward, or trigger immediate search if Enter pressed before debounce)
+    {
+        let app_weak = app.as_weak();
+        let state_lock = Arc::clone(state_lock);
+        let search_generation = Arc::clone(&search_generation);
+        let search_debounce = std::rc::Rc::clone(&search_debounce);
+        app.on_search_next(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let cur_input = ui.get_search_query().to_string();
+                let cur_trimmed = cur_input.trim().to_string();
+
+                let needs_immediate_search = {
+                    if let Ok(lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_ref() {
+                            s.search_query != cur_trimmed || s.search_matches.is_empty()
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+
+                if needs_immediate_search && !cur_trimmed.is_empty() {
+                    // User pressed Enter: bypass debounce and trigger search immediately
+                    *search_debounce.borrow_mut() = None;
+                    trigger_search(
+                        cur_input,
+                        Arc::clone(&state_lock),
+                        app_weak.clone(),
+                        Arc::clone(&search_generation),
+                    );
+                    return;
+                }
+
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        if !s.search_matches.is_empty() {
+                            let next_idx = s.active_search_index + 1;
+                            jump_to_search_match(s, &ui, next_idx);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Search Previous (cycle backward, or trigger immediate search if Shift+Enter pressed)
+    {
+        let app_weak = app.as_weak();
+        let state_lock = Arc::clone(state_lock);
+        let search_generation = Arc::clone(&search_generation);
+        let search_debounce = std::rc::Rc::clone(&search_debounce);
+        app.on_search_prev(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let cur_input = ui.get_search_query().to_string();
+                let cur_trimmed = cur_input.trim().to_string();
+
+                let needs_immediate_search = {
+                    if let Ok(lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_ref() {
+                            s.search_query != cur_trimmed || s.search_matches.is_empty()
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+
+                if needs_immediate_search && !cur_trimmed.is_empty() {
+                    // User pressed Shift+Enter: bypass debounce and trigger search immediately
+                    *search_debounce.borrow_mut() = None;
+                    trigger_search(
+                        cur_input,
+                        Arc::clone(&state_lock),
+                        app_weak.clone(),
+                        Arc::clone(&search_generation),
+                    );
+                    return;
+                }
+
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        if !s.search_matches.is_empty() {
+                            let prev_idx = s.active_search_index - 1;
+                            jump_to_search_match(s, &ui, prev_idx);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Select Search Result (from Sidebar)
+    {
+        let app_weak = app.as_weak();
+        let state_lock = Arc::clone(state_lock);
+        app.on_select_search_result(move |match_id| {
+            if let Some(ui) = app_weak.upgrade() {
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        jump_to_search_match(s, &ui, match_id);
+                    }
+                }
+            }
+        });
+    }
+
     // Toggle Sidebar
     {
         let app_weak = app.as_weak();
@@ -2097,6 +2539,10 @@ mod tests {
             active_selection_snippet: String::new(),
             active_selection_line_rects: Vec::new(),
             is_zooming: false,
+            search_query: String::new(),
+            search_matches: Vec::new(),
+            active_search_index: -1,
+            is_searching: false,
         };
 
         (state, test_pdf_path)

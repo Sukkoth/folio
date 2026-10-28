@@ -78,6 +78,25 @@ export struct AnnotationVisual {
     show-note-icon: bool,
 }
 
+export struct SearchResultItem {
+    id: int,
+    page: int,
+    display-page: int,
+    snippet: string,
+    match-text: string,
+    is-active: bool,
+}
+
+export struct SearchHighlight {
+    page: int,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    is-current: bool,
+    page-width: length,
+}
+
 export component AppWindow inherits Window {
     title: file-title != "" ? "\{file-title} - Folio" : "Folio";
     min-width: 720px;
@@ -136,6 +155,17 @@ export component AppWindow inherits Window {
     in property <bool> has-error: false;
     in property <string> error-message: "";
 
+    // Search state
+    in-out property <bool> show-search: false;
+    in-out property <string> search-query: "";
+    in property <bool> is-searching: false;
+    in property <int> active-search-index: -1;
+    in property <int> total-search-matches: 0;
+    in property <string> search-match-display: "";
+    in property <[SearchResultItem]> search-results;
+    in property <[SearchHighlight]> page-search-highlights;
+    in property <[SearchHighlight]> scroll-search-highlights;
+
     callback save-document();
     callback save-document-as();
     callback prev-page();
@@ -150,6 +180,14 @@ export component AppWindow inherits Window {
     callback visible-page-changed(int);
     callback toggle-sidebar();
     callback jump-to-page(int);
+
+    // Search callbacks
+    callback toggle-search();
+    callback close-search();
+    callback search-query-changed(string);
+    callback search-next();
+    callback search-prev();
+    callback select-search-result(int);
 
     // Text selection & annotation callbacks
     callback selection-started(int, length, length); // (page, x, y)
@@ -204,10 +242,16 @@ export component AppWindow inherits Window {
         }
     }
 
+    changed show-search => {
+        if (!root.show-search) {
+            keyboard-handler.focus();
+        }
+    }
+
     keyboard-handler := FocusScope {
         init => { self.focus(); }
         key-pressed(event) => {
-            if (event.modifiers.control || event.text == "\u{1a}" || event.text == "\u{13}" || event.text == "\u{19}" || event.text == "\u{15}" || event.text == "\u{2}" || event.text == "\u{14}") {
+            if (event.modifiers.control || event.text == "\u{1a}" || event.text == "\u{13}" || event.text == "\u{19}" || event.text == "\u{15}" || event.text == "\u{2}" || event.text == "\u{14}" || event.text == "\u{6}") {
                 if (event.modifiers.shift || (event.modifiers.control && (event.text == "Z" || event.text == "S"))) {
                     // Ctrl + Shift + S: Save As
                     if (event.text == "s" || event.text == "S" || event.text == "\u{13}") {
@@ -234,8 +278,12 @@ export component AppWindow inherits Window {
                         }
                     }
                 } else {
+                    // Ctrl + F: Toggle Search
+                    if (event.text == "f" || event.text == "F" || event.text == "\u{6}") {
+                        root.toggle-search();
+                        return accept;
                     // Ctrl + S: Save Document
-                    if (event.text == "s" || event.text == "S" || event.text == "\u{13}") {
+                    } else if (event.text == "s" || event.text == "S" || event.text == "\u{13}") {
                         root.save-document();
                         return accept;
                     // Ctrl + Z: Undo
@@ -277,6 +325,10 @@ export component AppWindow inherits Window {
                 }
             } else {
                 if (event.text == Key.Escape) {
+                    if (root.show-search) {
+                        root.close-search();
+                        return accept;
+                    }
                     if (root.show-popup || root.has-selection || root.selected-annotation-id > 0) {
                         root.clear-selection();
                         root.show-popup = false;
@@ -561,6 +613,13 @@ export component AppWindow inherits Window {
                             clicked => { root.zoom-fit(); }
                         }
 
+                        IconButton {
+                            text: "🔍";
+                            active: root.show-search;
+                            y: (parent.height - self.height) / 2;
+                            clicked => { root.toggle-search(); }
+                        }
+
                         // Save Button (Appears when annotations are modified)
                         if root.is-dirty: Rectangle {
                             height: 30px;
@@ -626,14 +685,144 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // Top Search Bar (Appears when search is toggled)
+            if root.show-search: search-bar-container := Rectangle {
+                height: 42px;
+                background: #171b24;
+                border-width: 0;
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    width: 100%;
+                    background: #232936;
+                }
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 10px;
+                    alignment: end;
+
+                    Text {
+                        text: "🔍";
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+
+                    // Search input
+                    search-box := Rectangle {
+                        height: 28px;
+                        width: 250px;
+                        background: #10141c;
+                        border-radius: 5px;
+                        border-width: 1px;
+                        border-color: search-input.has-focus ? #3b82f6 : #2a3342;
+                        animate border-color { duration: 100ms; }
+                        y: (parent.height - self.height) / 2;
+
+                        TouchArea {
+                            clicked => { search-input.focus(); }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+
+                            search-input := TextInput {
+                                init => { self.focus(); }
+                                text <=> root.search-query;
+                                font-size: 12px;
+                                color: #f1f5f9;
+                                vertical-alignment: center;
+                                single-line: true;
+
+                                edited => {
+                                    root.search-query-changed(self.text);
+                                }
+
+                                key-pressed(event) => {
+                                    if (event.text == Key.Return) {
+                                        if (event.modifiers.shift) {
+                                            root.search-prev();
+                                        } else {
+                                            root.search-next();
+                                        }
+                                        return accept;
+                                    } else if (event.text == Key.Escape) {
+                                        root.close-search();
+                                        return accept;
+                                    }
+                                    return reject;
+                                }
+                            }
+                        }
+                    }
+
+                    // Match count indicator badge
+                    Rectangle {
+                        height: 24px;
+                        min-width: 68px;
+                        background: root.total-search-matches > 0 ? #3b82f615 : #1e2430;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: root.total-search-matches > 0 ? #3b82f640 : #2b3342;
+                        y: (parent.height - self.height) / 2;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            alignment: center;
+
+                            Text {
+                                text: root.search-match-display != "" ? root.search-match-display : (root.is-searching ? "Searching..." : (root.search-query != "" ? "0 results" : ""));
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: root.total-search-matches > 0 ? #60a5fa : #64748b;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Navigation buttons: Previous (▲) and Next (▼)
+                    IconButton {
+                        text: "▲";
+                        enabled: root.total-search-matches > 0;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.search-prev(); }
+                    }
+
+                    IconButton {
+                        text: "▼";
+                        enabled: root.total-search-matches > 0;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.search-next(); }
+                    }
+
+                    Rectangle {
+                        width: 1px;
+                        height: 18px;
+                        y: (parent.height - self.height) / 2;
+                        background: #232936;
+                    }
+
+                    // Close search button (✕)
+                    IconButton {
+                        text: "✕";
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.close-search(); }
+                    }
+                }
+            }
+
             // Main Workspace Area (Sidebar + Document Viewport)
             HorizontalLayout {
                 spacing: 0;
                 padding: 0;
 
-                // Sidebar (Contents, Highlights, Notes)
+                // Sidebar (Contents, Highlights, Notes, Search)
                 sidebar := Rectangle {
-                    width: root.show-sidebar ? 290px : 0px;
+                    width: root.show-sidebar ? 310px : 0px;
                     clip: true;
                     background: #13161e;
                     animate width { duration: 160ms; easing: ease-out; }
@@ -646,12 +835,12 @@ export component AppWindow inherits Window {
                     }
 
                     VerticalLayout {
-                        width: 290px;
+                        width: 310px;
                         height: 100%;
                         padding: 0;
                         spacing: 0;
 
-                        // Sidebar Tab Switcher (Contents | Highlights | Notes)
+                        // Sidebar Tab Switcher (Contents | Highlights | Notes | Search)
                         Rectangle {
                             height: 44px;
                             background: #171b24;
@@ -676,7 +865,7 @@ export component AppWindow inherits Window {
                                     // Tab 0: Outline
                                     Rectangle {
                                         height: 28px;
-                                        min-width: 68px;
+                                        min-width: 54px;
                                         y: (parent.height - self.height) / 2;
                                         border-radius: 5px;
                                         background: root.sidebar-tab == 0 ? #2b3648 : tab0-ta.has-hover ? #1c222e : transparent;
@@ -700,7 +889,7 @@ export component AppWindow inherits Window {
                                     // Tab 1: Highlights
                                     Rectangle {
                                         height: 28px;
-                                        min-width: 76px;
+                                        min-width: 64px;
                                         y: (parent.height - self.height) / 2;
                                         border-radius: 5px;
                                         background: root.sidebar-tab == 1 ? #2b3648 : tab1-ta.has-hover ? #1c222e : transparent;
@@ -745,7 +934,7 @@ export component AppWindow inherits Window {
                                     // Tab 2: Notes
                                     Rectangle {
                                         height: 28px;
-                                        min-width: 64px;
+                                        min-width: 52px;
                                         y: (parent.height - self.height) / 2;
                                         border-radius: 5px;
                                         background: root.sidebar-tab == 2 ? #2b3648 : tab2-ta.has-hover ? #1c222e : transparent;
@@ -783,6 +972,51 @@ export component AppWindow inherits Window {
 
                                         tab2-ta := TouchArea {
                                             clicked => { root.sidebar-tab = 2; }
+                                            mouse-cursor: pointer;
+                                        }
+                                    }
+
+                                    // Tab 3: Search
+                                    Rectangle {
+                                        height: 28px;
+                                        min-width: 56px;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 5px;
+                                        background: root.sidebar-tab == 3 ? #2b3648 : tab3-ta.has-hover ? #1c222e : transparent;
+                                        animate background { duration: 100ms; }
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            spacing: 4px;
+
+                                            Text {
+                                                text: "Search";
+                                                font-size: 11px;
+                                                font-weight: root.sidebar-tab == 3 ? 700 : 500;
+                                                color: root.sidebar-tab == 3 ? #ffffff : #94a3b8;
+                                                vertical-alignment: center;
+                                            }
+
+                                            if root.search-results.length > 0: Rectangle {
+                                                width: 16px;
+                                                height: 16px;
+                                                border-radius: 8px;
+                                                background: #f59e0b30;
+                                                y: (parent.height - self.height) / 2;
+
+                                                Text {
+                                                    text: root.search-results.length;
+                                                    font-size: 9px;
+                                                    font-weight: 700;
+                                                    color: #f59e0b;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        tab3-ta := TouchArea {
+                                            clicked => { root.sidebar-tab = 3; }
                                             mouse-cursor: pointer;
                                         }
                                     }
@@ -1107,6 +1341,159 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+
+                        // Tab 3 Body: Search Results
+                        if root.sidebar-tab == 3: VerticalLayout {
+                            vertical-stretch: 1;
+
+                            // Header count summary
+                            if root.search-results.length > 0: Rectangle {
+                                height: 32px;
+                                background: #141822;
+
+                                Rectangle {
+                                    y: parent.height - 1px;
+                                    height: 1px;
+                                    width: 100%;
+                                    background: #1f2533;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    alignment: space-between;
+
+                                    Text {
+                                        text: "\{root.search-results.length} matches found";
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: #94a3b8;
+                                        vertical-alignment: center;
+                                    }
+
+                                    if root.active-search-index >= 0: Text {
+                                        text: "Match \{root.active-search-index + 1} of \{root.search-results.length}";
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                        color: #f59e0b;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            if root.search-results.length == 0: Rectangle {
+                                vertical-stretch: 1;
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 8px;
+                                    padding: 24px;
+
+                                    Text {
+                                        text: root.is-searching ? "Searching..." : (root.search-query != "" ? "No Matches Found" : "Search in Document");
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                        color: #64748b;
+                                        horizontal-alignment: center;
+                                    }
+                                    Text {
+                                        text: root.is-searching ? "Scanning pages for matches..." : (root.search-query != "" ? "No matches found for \"" + root.search-query + "\"." : "Enter a word or phrase in the search bar above to find all matches.");
+                                        font-size: 12px;
+                                        color: #475569;
+                                        horizontal-alignment: center;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+
+                            if root.search-results.length > 0: ListView {
+                                vertical-stretch: 1;
+
+                                for item in root.search-results: s-card := Rectangle {
+                                    height: 64px;
+                                    width: parent.width;
+                                    background: item.is-active ? #1e2535 : (s-ta.has-hover ? #171d29 : #131720);
+                                    animate background { duration: 100ms; }
+
+                                    Rectangle {
+                                        y: parent.height - 1px;
+                                        height: 1px;
+                                        width: 100%;
+                                        background: #1f2533;
+                                    }
+
+                                    // Left active amber accent bar
+                                    Rectangle {
+                                        x: 0;
+                                        width: item.is-active ? 3px : 0px;
+                                        height: 100%;
+                                        background: #f59e0b;
+                                    }
+
+                                    s-ta := TouchArea {
+                                        x: 0;
+                                        y: 0;
+                                        width: parent.width;
+                                        height: parent.height;
+                                        clicked => {
+                                            root.select-search-result(item.id);
+                                        }
+                                        mouse-cursor: pointer;
+                                    }
+
+                                    VerticalLayout {
+                                        padding-left: 14px;
+                                        padding-right: 14px;
+                                        padding-top: 8px;
+                                        padding-bottom: 8px;
+                                        alignment: center;
+                                        spacing: 4px;
+
+                                        HorizontalLayout {
+                                            spacing: 6px;
+                                            alignment: space-between;
+
+                                            Rectangle {
+                                                height: 18px;
+                                                border-radius: 4px;
+                                                background: item.is-active ? #f59e0b25 : #33415540;
+                                                border-width: 1px;
+                                                border-color: item.is-active ? #f59e0b60 : #47556940;
+
+                                                HorizontalLayout {
+                                                    padding-left: 6px;
+                                                    padding-right: 6px;
+                                                    alignment: center;
+
+                                                    Text {
+                                                        text: "Page \{item.display-page}";
+                                                        font-size: 10px;
+                                                        font-weight: 700;
+                                                        color: item.is-active ? #fbbf24 : #94a3b8;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+
+                                            if item.is-active: Text {
+                                                text: "● Current";
+                                                font-size: 10px;
+                                                font-weight: 700;
+                                                color: #f59e0b;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: item.snippet;
+                                            font-size: 12px;
+                                            color: item.is-active ? #ffffff : #cbd5e1;
+                                            overflow: elide;
+                                            max-width: parent.width - 28px;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1235,6 +1622,20 @@ export component AppWindow inherits Window {
                                         height: sel-r.height;
                                         background: #3b82f640;
                                         border-radius: 2px;
+                                    }
+                                }
+
+                                // Search Match Highlights on Document Paper (Single Page View)
+                                if root.show-search: Rectangle {
+                                    for hl in root.page-search-highlights: Rectangle {
+                                        x: hl.x;
+                                        y: hl.y;
+                                        width: hl.width;
+                                        height: hl.height;
+                                        background: hl.is-current ? #f59e0b35 : #fde04730;
+                                        border-radius: 2px;
+                                        border-width: hl.is-current ? 1.5px : 0px;
+                                        border-color: hl.is-current ? #ea580c : transparent;
                                     }
                                 }
 
@@ -1913,6 +2314,8 @@ export component AppWindow inherits Window {
                                     }
                                 }
 
+
+
                                 page-scroll-ta := TouchArea {
                                     width: 100%;
                                     height: 100%;
@@ -2530,6 +2933,23 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                 }
+                            }
+                        }
+
+                        // Flattened Search Match Highlights across entire continuous document
+                        if root.show-search: Rectangle {
+                            width: 100%;
+                            height: root.total-scroll-height;
+
+                            for hl in root.scroll-search-highlights: Rectangle {
+                                x: max(32px, (parent.width - hl.page-width) / 2) + hl.x;
+                                y: hl.y;
+                                width: hl.width;
+                                height: hl.height;
+                                background: hl.is-current ? #f59e0b35 : #fde04730;
+                                border-radius: 2px;
+                                border-width: hl.is-current ? 1.5px : 0px;
+                                border-color: hl.is-current ? #ea580c : transparent;
                             }
                         }
                     }

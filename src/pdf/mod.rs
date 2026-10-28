@@ -3,6 +3,8 @@ pub mod worker;
 
 pub use cache::{CachedRender, PageCache};
 pub use worker::{PdfWorker, RenderRequest, RenderedPage};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct TocItem {
@@ -494,6 +496,249 @@ pub fn extract_text_for_rects(
     }
 
     line_texts.join(" ")
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchHitResult {
+    pub page: i32,
+    pub snippet: String,
+    pub match_text: String,
+    pub rects_pt: Vec<(f32, f32, f32, f32)>,
+}
+
+fn merge_quads_to_line_rects(quads: &[mupdf::Quad]) -> Vec<(f32, f32, f32, f32)> {
+    if quads.is_empty() {
+        return Vec::new();
+    }
+
+    let mut line_rects: Vec<(f32, f32, f32, f32)> = Vec::new();
+
+    for q in quads {
+        let qx0 = q.ul.x.min(q.ll.x);
+        let qx1 = q.ur.x.max(q.lr.x);
+        let qy0 = q.ul.y.min(q.ur.y);
+        let qy1 = q.ll.y.max(q.lr.y);
+
+        let mut merged = false;
+        if let Some(last) = line_rects.last_mut() {
+            let last_mid_y = (last.1 + last.3) * 0.5;
+            let q_mid_y = (qy0 + qy1) * 0.5;
+            let line_h = (last.3 - last.1).max(qy1 - qy0);
+            if (last_mid_y - q_mid_y).abs() <= line_h * 0.6 {
+                last.0 = last.0.min(qx0);
+                last.1 = last.1.min(qy0);
+                last.2 = last.2.max(qx1);
+                last.3 = last.3.max(qy1);
+                merged = true;
+            }
+        }
+
+        if !merged {
+            line_rects.push((qx0, qy0, qx1, qy1));
+        }
+    }
+
+    line_rects
+}
+
+/// Searches the entire PDF document for a query string, returning all matches with exact bounding rects
+/// and context snippets. Searches pages in parallel across worker threads and supports cooperative cancellation.
+pub fn search_document(
+    file_path: &str,
+    total_pages: i32,
+    needle: &str,
+    cancel_gen: Option<Arc<AtomicU64>>,
+    current_gen: u64,
+) -> Vec<SearchHitResult> {
+    let needle_trimmed = needle.trim();
+    if needle_trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let num_pages = if total_pages > 0 {
+        total_pages
+    } else {
+        match mupdf::Document::open(file_path) {
+            Ok(d) => d.page_count().unwrap_or(0),
+            Err(_) => return Vec::new(),
+        }
+    };
+
+    if num_pages <= 0 {
+        return Vec::new();
+    }
+
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 8);
+
+    if num_pages <= 4 || num_threads <= 1 {
+        return search_document_range(
+            file_path,
+            0,
+            num_pages,
+            needle_trimmed,
+            cancel_gen.as_ref(),
+            current_gen,
+        );
+    }
+
+    let chunk_size = (num_pages as usize + num_threads - 1) / num_threads;
+    let mut handles = Vec::new();
+
+    for t in 0..num_threads {
+        let start_p = (t * chunk_size) as i32;
+        let end_p = ((t + 1) * chunk_size).min(num_pages as usize) as i32;
+        if start_p >= end_p {
+            break;
+        }
+
+        let file_path = file_path.to_string();
+        let needle = needle_trimmed.to_string();
+        let cancel_gen = cancel_gen.clone();
+
+        if let Ok(handle) = std::thread::Builder::new()
+            .name(format!("pdf-search-{t}"))
+            .spawn(move || {
+                search_document_range(
+                    &file_path,
+                    start_p,
+                    end_p,
+                    &needle,
+                    cancel_gen.as_ref(),
+                    current_gen,
+                )
+            })
+        {
+            handles.push(handle);
+        }
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        if let Ok(thread_hits) = handle.join() {
+            results.extend(thread_hits);
+        }
+    }
+
+    if let Some(ref cg) = cancel_gen {
+        if cg.load(Ordering::Relaxed) != current_gen {
+            return Vec::new();
+        }
+    }
+
+    // Sort results by page and then by vertical position
+    results.sort_by(|a, b| {
+        if a.page != b.page {
+            a.page.cmp(&b.page)
+        } else {
+            let ya = a.rects_pt.first().map(|r| r.1).unwrap_or(0.0);
+            let yb = b.rects_pt.first().map(|r| r.1).unwrap_or(0.0);
+            ya.partial_cmp(&yb).unwrap_or(std::cmp::Ordering::Equal)
+        }
+    });
+
+    results
+}
+
+fn search_document_range(
+    file_path: &str,
+    start_page: i32,
+    end_page: i32,
+    needle_trimmed: &str,
+    cancel_gen: Option<&Arc<AtomicU64>>,
+    current_gen: u64,
+) -> Vec<SearchHitResult> {
+    let doc = match mupdf::Document::open(file_path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let mut results = Vec::new();
+
+    for p in start_page..end_page {
+        if let Some(cg) = cancel_gen {
+            if cg.load(Ordering::Relaxed) != current_gen {
+                return Vec::new();
+            }
+        }
+
+        let page = match doc.load_page(p) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        let tp = match page.to_text_page(mupdf::TextPageFlags::ACCURATE_BBOXES) {
+            Ok(tp) => tp,
+            Err(_) => continue,
+        };
+
+        let mut page_hits: Vec<Vec<(f32, f32, f32, f32)>> = Vec::new();
+        let _ = tp.search_cb(needle_trimmed, &mut page_hits, |acc, quads| {
+            let line_rects = merge_quads_to_line_rects(quads);
+            if !line_rects.is_empty() {
+                acc.push(line_rects);
+            }
+            mupdf::text_page::SearchHitResponse::ContinueSearch
+        });
+
+        // Fast path: if this page has 0 matches, skip expensive block/line/char parsing!
+        if page_hits.is_empty() {
+            continue;
+        }
+
+        // Only parse text blocks and lines when matches exist on this page
+        let mut line_texts_with_bounds: Vec<(f32, f32, String)> = Vec::new();
+        for block in tp.blocks() {
+            if block.r#type() != mupdf::text_page::TextBlockType::Text {
+                continue;
+            }
+            for line in block.lines() {
+                let mut line_str = String::new();
+                let b = line.bounds();
+                for ch in line.chars() {
+                    if let Some(c) = ch.char() {
+                        line_str.push(c);
+                    }
+                }
+                let trimmed = line_str.trim().to_string();
+                if !trimmed.is_empty() {
+                    line_texts_with_bounds.push((b.y0, b.y1, trimmed));
+                }
+            }
+        }
+
+        for hit_rects in page_hits {
+            let mid_y = (hit_rects[0].1 + hit_rects[0].3) * 0.5;
+            let mut best_snippet = String::new();
+            let mut min_dist = f32::MAX;
+
+            for (y0, y1, text) in &line_texts_with_bounds {
+                if mid_y >= (*y0 - 2.0) && mid_y <= (*y1 + 2.0) {
+                    best_snippet = text.clone();
+                    break;
+                }
+                let dist = if mid_y < *y0 { *y0 - mid_y } else { mid_y - *y1 };
+                if dist < min_dist {
+                    min_dist = dist;
+                    best_snippet = text.clone();
+                }
+            }
+
+            if best_snippet.is_empty() {
+                best_snippet = needle_trimmed.to_string();
+            }
+
+            results.push(SearchHitResult {
+                page: p,
+                snippet: best_snippet,
+                match_text: needle_trimmed.to_string(),
+                rects_pt: hit_rects,
+            });
+        }
+    }
+
+    results
 }
 
 #[derive(Debug, Clone)]
@@ -1061,6 +1306,33 @@ mod tests {
         save_document_annotations(path_str, &to_save).unwrap();
         let extracted2 = extract_document_annotations(path_str);
         assert_eq!(extracted2.len(), 2, "Re-saving must not create duplicate annotations");
+
+        let _ = std::fs::remove_file(test_pdf_path);
+    }
+
+    #[test]
+    fn test_search_document() {
+        let test_pdf_path = "/tmp/folio_search_test.pdf";
+        let path_str = test_pdf_path;
+        {
+            let mut doc = mupdf::pdf::PdfDocument::new();
+            doc.new_page((500.0, 700.0)).unwrap();
+            doc.save(path_str).unwrap();
+        }
+
+        let hits = search_document(path_str, 1, "test", None, 0);
+        assert_eq!(hits.len(), 0);
+
+        let ephesians_path = "/home/twof/Documents/The Message of Ephesians (John R. W. Stott) (z-library.sk, 1lib.sk, z-lib.sk).pdf";
+        if std::path::Path::new(ephesians_path).exists() {
+            let start = std::time::Instant::now();
+            let ephesians_hits = search_document(ephesians_path, 273, "Ephesians", None, 0);
+            let elapsed = start.elapsed();
+            println!("Found {} occurrences of 'Ephesians' across all 273 pages in {:?}", ephesians_hits.len(), elapsed);
+            assert!(!ephesians_hits.is_empty(), "Should find 'Ephesians'");
+            assert!(!ephesians_hits[0].snippet.is_empty());
+            assert_eq!(ephesians_hits[0].rects_pt.len(), 1, "Word on one line must be merged into 1 single bounding block");
+        }
 
         let _ = std::fs::remove_file(test_pdf_path);
     }
