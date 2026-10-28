@@ -164,6 +164,8 @@ struct AppState {
     search_matches: Vec<pdf::SearchHitResult>,
     active_search_index: i32,
     is_searching: bool,
+    search_match_case: bool,
+    search_match_whole_word: bool,
     pub toc: Vec<pdf::TocItem>,
 }
 
@@ -399,6 +401,8 @@ fn setup_document(
         search_matches: Vec::new(),
         active_search_index: -1,
         is_searching: false,
+        search_match_case: false,
+        search_match_whole_word: false,
         toc: meta.toc,
     };
 
@@ -780,24 +784,19 @@ fn trigger_search(
         return;
     }
 
-    let file_path = if let Ok(lock) = state_lock.lock() {
-        if let Some(s) = lock.as_ref() {
-            s.file_path.clone()
-        } else {
-            return;
-        }
-    } else {
-        return;
-    };
-
-    let total_pages = if let Ok(mut lock) = state_lock.lock() {
+    let (file_path, total_pages, match_case, match_whole_word) = if let Ok(mut lock) = state_lock.lock() {
         if let Some(s) = lock.as_mut() {
             s.search_query = query_trimmed.clone();
             s.is_searching = true;
             if let Some(ui) = ui_weak.upgrade() {
                 sync_search_to_ui(s, &ui);
             }
-            s.total_pages
+            (
+                s.file_path.clone(),
+                s.total_pages,
+                s.search_match_case,
+                s.search_match_whole_word,
+            )
         } else {
             return;
         }
@@ -813,6 +812,8 @@ fn trigger_search(
                 &file_path,
                 total_pages,
                 &query_trimmed,
+                match_case,
+                match_whole_word,
                 Some(Arc::clone(&search_gen_clone)),
                 current_gen,
             );
@@ -1539,6 +1540,72 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     if let Some(s) = lock.as_mut() {
                         jump_to_search_match(s, &ui, match_id);
                     }
+                }
+            }
+        });
+    }
+
+    // Toggle Search Match Case (Aa)
+    {
+        let app_weak = app.as_weak();
+        let state_lock = Arc::clone(state_lock);
+        let search_generation = Arc::clone(&search_generation);
+        app.on_toggle_search_match_case(move || {
+            let (new_val, query) = {
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        s.search_match_case = !s.search_match_case;
+                        (s.search_match_case, s.search_query.clone())
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            };
+
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_search_match_case(new_val);
+                if !query.is_empty() {
+                    trigger_search(
+                        query,
+                        Arc::clone(&state_lock),
+                        app_weak.clone(),
+                        Arc::clone(&search_generation),
+                    );
+                }
+            }
+        });
+    }
+
+    // Toggle Search Match Whole Word ([W])
+    {
+        let app_weak = app.as_weak();
+        let state_lock = Arc::clone(state_lock);
+        let search_generation = Arc::clone(&search_generation);
+        app.on_toggle_search_match_whole_word(move || {
+            let (new_val, query) = {
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        s.search_match_whole_word = !s.search_match_whole_word;
+                        (s.search_match_whole_word, s.search_query.clone())
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            };
+
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_search_match_whole_word(new_val);
+                if !query.is_empty() {
+                    trigger_search(
+                        query,
+                        Arc::clone(&state_lock),
+                        app_weak.clone(),
+                        Arc::clone(&search_generation),
+                    );
                 }
             }
         });
@@ -2818,6 +2885,8 @@ mod tests {
             search_matches: Vec::new(),
             active_search_index: -1,
             is_searching: false,
+            search_match_case: false,
+            search_match_whole_word: false,
             toc: Vec::new(),
         };
 

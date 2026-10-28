@@ -158,6 +158,8 @@ export component AppWindow inherits Window {
     // Search state
     in-out property <bool> show-search: false;
     in-out property <string> search-query: "";
+    in-out property <bool> search-match-case: false;
+    in-out property <bool> search-match-whole-word: false;
     in property <bool> is-searching: false;
     in property <int> active-search-index: -1;
     in property <int> total-search-matches: 0;
@@ -200,6 +202,8 @@ export component AppWindow inherits Window {
     // Search callbacks
     callback toggle-search();
     callback close-search();
+    callback toggle-search-match-case();
+    callback toggle-search-match-whole-word();
     callback search-query-changed(string);
     callback search-next();
     callback search-prev();
@@ -777,7 +781,13 @@ export component AppWindow inherits Window {
                                 }
 
                                 key-pressed(event) => {
-                                    if (event.text == Key.Return) {
+                                    if (event.modifiers.alt && (event.text == "c" || event.text == "C")) {
+                                        root.toggle-search-match-case();
+                                        return accept;
+                                    } else if (event.modifiers.alt && (event.text == "w" || event.text == "W")) {
+                                        root.toggle-search-match-whole-word();
+                                        return accept;
+                                    } else if (event.text == Key.Return) {
                                         if (event.modifiers.shift) {
                                             root.search-prev();
                                         } else {
@@ -791,6 +801,60 @@ export component AppWindow inherits Window {
                                     return reject;
                                 }
                             }
+                        }
+                    }
+
+                    // Modifier: Match Case (Aa)
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 5px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.search-match-case ? #3b82f630 : mc-ta.has-hover ? #1f2735 : #10141c;
+                        border-width: 1px;
+                        border-color: root.search-match-case ? #3b82f6 : #2a3342;
+                        animate background { duration: 100ms; }
+                        animate border-color { duration: 100ms; }
+
+                        Text {
+                            text: "Aa";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: root.search-match-case ? #60a5fa : mc-ta.has-hover ? #cbd5e1 : #64748b;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        mc-ta := TouchArea {
+                            clicked => { root.toggle-search-match-case(); }
+                            mouse-cursor: pointer;
+                        }
+                    }
+
+                    // Modifier: Match Whole Word ([W])
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 5px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.search-match-whole-word ? #3b82f630 : ww-ta.has-hover ? #1f2735 : #10141c;
+                        border-width: 1px;
+                        border-color: root.search-match-whole-word ? #3b82f6 : #2a3342;
+                        animate background { duration: 100ms; }
+                        animate border-color { duration: 100ms; }
+
+                        Text {
+                            text: "[W]";
+                            font-size: 10px;
+                            font-weight: 700;
+                            color: root.search-match-whole-word ? #60a5fa : ww-ta.has-hover ? #cbd5e1 : #64748b;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        ww-ta := TouchArea {
+                            clicked => { root.toggle-search-match-whole-word(); }
+                            mouse-cursor: pointer;
                         }
                     }
 

@@ -542,11 +542,14 @@ fn merge_quads_to_line_rects(quads: &[mupdf::Quad]) -> Vec<(f32, f32, f32, f32)>
 }
 
 /// Searches the entire PDF document for a query string, returning all matches with exact bounding rects
-/// and context snippets. Searches pages in parallel across worker threads and supports cooperative cancellation.
+/// and context snippets. Searches pages in parallel across worker threads and supports cooperative cancellation,
+/// case-sensitivity (`match_case`), and whole-word matching (`match_whole_word`).
 pub fn search_document(
     file_path: &str,
     total_pages: i32,
     needle: &str,
+    match_case: bool,
+    match_whole_word: bool,
     cancel_gen: Option<Arc<AtomicU64>>,
     current_gen: u64,
 ) -> Vec<SearchHitResult> {
@@ -579,6 +582,8 @@ pub fn search_document(
             0,
             num_pages,
             needle_trimmed,
+            match_case,
+            match_whole_word,
             cancel_gen.as_ref(),
             current_gen,
         );
@@ -606,6 +611,8 @@ pub fn search_document(
                     start_p,
                     end_p,
                     &needle,
+                    match_case,
+                    match_whole_word,
                     cancel_gen.as_ref(),
                     current_gen,
                 )
@@ -642,11 +649,20 @@ pub fn search_document(
     results
 }
 
+struct SearchLineInfo {
+    y0: f32,
+    y1: f32,
+    text: String,
+    chars: Vec<(char, f32, f32, f32)>, // (c, cx0, cx1, cy)
+}
+
 fn search_document_range(
     file_path: &str,
     start_page: i32,
     end_page: i32,
     needle_trimmed: &str,
+    match_case: bool,
+    match_whole_word: bool,
     cancel_gen: Option<&Arc<AtomicU64>>,
     current_gen: u64,
 ) -> Vec<SearchHitResult> {
@@ -688,7 +704,7 @@ fn search_document_range(
         }
 
         // Only parse text blocks and lines when matches exist on this page
-        let mut line_texts_with_bounds: Vec<(f32, f32, String)> = Vec::new();
+        let mut lines_info: Vec<SearchLineInfo> = Vec::new();
         for block in tp.blocks() {
             if block.r#type() != mupdf::text_page::TextBlockType::Text {
                 continue;
@@ -696,32 +712,52 @@ fn search_document_range(
             for line in block.lines() {
                 let mut line_str = String::new();
                 let b = line.bounds();
+                let mut line_chars = Vec::new();
                 for ch in line.chars() {
                     if let Some(c) = ch.char() {
                         line_str.push(c);
+                        let q = ch.quad();
+                        let cx0 = q.ul.x.min(q.ll.x);
+                        let cx1 = q.ur.x.max(q.lr.x);
+                        let cy0 = q.ul.y.min(q.ur.y);
+                        let cy1 = q.ll.y.max(q.lr.y);
+                        line_chars.push((c, cx0, cx1, (cy0 + cy1) * 0.5));
                     }
                 }
                 let trimmed = line_str.trim().to_string();
                 if !trimmed.is_empty() {
-                    line_texts_with_bounds.push((b.y0, b.y1, trimmed));
+                    lines_info.push(SearchLineInfo {
+                        y0: b.y0,
+                        y1: b.y1,
+                        text: trimmed,
+                        chars: line_chars,
+                    });
                 }
             }
         }
 
         for hit_rects in page_hits {
+            if hit_rects.is_empty() {
+                continue;
+            }
+
             let mid_y = (hit_rects[0].1 + hit_rects[0].3) * 0.5;
+            let hit_x0 = hit_rects[0].0;
             let mut best_snippet = String::new();
             let mut min_dist = f32::MAX;
+            let mut best_line_idx = None;
 
-            for (y0, y1, text) in &line_texts_with_bounds {
-                if mid_y >= (*y0 - 2.0) && mid_y <= (*y1 + 2.0) {
-                    best_snippet = text.clone();
+            for (idx, line) in lines_info.iter().enumerate() {
+                if mid_y >= (line.y0 - 2.0) && mid_y <= (line.y1 + 2.0) {
+                    best_snippet = line.text.clone();
+                    best_line_idx = Some(idx);
                     break;
                 }
-                let dist = if mid_y < *y0 { *y0 - mid_y } else { mid_y - *y1 };
+                let dist = if mid_y < line.y0 { line.y0 - mid_y } else { mid_y - line.y1 };
                 if dist < min_dist {
                     min_dist = dist;
-                    best_snippet = text.clone();
+                    best_snippet = line.text.clone();
+                    best_line_idx = Some(idx);
                 }
             }
 
@@ -729,10 +765,68 @@ fn search_document_range(
                 best_snippet = needle_trimmed.to_string();
             }
 
+            let needle_char_count = needle_trimmed.chars().count();
+            let mut matched_text = needle_trimmed.to_string();
+            let mut matched_line_and_range = None;
+
+            if let Some(line_idx) = best_line_idx {
+                let line = &lines_info[line_idx];
+                // Find character in line closest to hit_x0
+                let mut best_char_idx = None;
+                let mut min_x_diff = f32::MAX;
+
+                for (ci, &(_c, cx0, _, _)) in line.chars.iter().enumerate() {
+                    let diff = (cx0 - hit_x0).abs();
+                    if diff < min_x_diff {
+                        min_x_diff = diff;
+                        best_char_idx = Some(ci);
+                    }
+                }
+
+                if let Some(start_ci) = best_char_idx {
+                    if start_ci + needle_char_count <= line.chars.len() {
+                        let candidate: String = line.chars[start_ci..start_ci + needle_char_count]
+                            .iter()
+                            .map(|c| c.0)
+                            .collect();
+                        if candidate.eq_ignore_ascii_case(needle_trimmed) {
+                            matched_text = candidate;
+                            matched_line_and_range = Some((line_idx, start_ci, start_ci + needle_char_count));
+                        }
+                    }
+                }
+            }
+
+            // Check Case Sensitivity modifier
+            if match_case && matched_text != needle_trimmed {
+                continue;
+            }
+
+            // Check Whole Word modifier
+            if match_whole_word {
+                if let Some((line_idx, start_ci, end_ci)) = matched_line_and_range {
+                    let line = &lines_info[line_idx];
+                    // Preceding character check
+                    if start_ci > 0 {
+                        let prev_c = line.chars[start_ci - 1].0;
+                        if prev_c.is_alphanumeric() || prev_c == '_' {
+                            continue;
+                        }
+                    }
+                    // Trailing character check
+                    if end_ci < line.chars.len() {
+                        let next_c = line.chars[end_ci].0;
+                        if next_c.is_alphanumeric() || next_c == '_' {
+                            continue;
+                        }
+                    }
+                }
+            }
+
             results.push(SearchHitResult {
                 page: p,
                 snippet: best_snippet,
-                match_text: needle_trimmed.to_string(),
+                match_text: matched_text,
                 rects_pt: hit_rects,
             });
         }
@@ -1320,18 +1414,32 @@ mod tests {
             doc.save(path_str).unwrap();
         }
 
-        let hits = search_document(path_str, 1, "test", None, 0);
+        let hits = search_document(path_str, 1, "test", false, false, None, 0);
         assert_eq!(hits.len(), 0);
 
         let ephesians_path = "/home/twof/Documents/The Message of Ephesians (John R. W. Stott) (z-library.sk, 1lib.sk, z-lib.sk).pdf";
         if std::path::Path::new(ephesians_path).exists() {
             let start = std::time::Instant::now();
-            let ephesians_hits = search_document(ephesians_path, 273, "Ephesians", None, 0);
+            let ephesians_hits = search_document(ephesians_path, 273, "Ephesians", false, false, None, 0);
             let elapsed = start.elapsed();
             println!("Found {} occurrences of 'Ephesians' across all 273 pages in {:?}", ephesians_hits.len(), elapsed);
             assert!(!ephesians_hits.is_empty(), "Should find 'Ephesians'");
             assert!(!ephesians_hits[0].snippet.is_empty());
             assert_eq!(ephesians_hits[0].rects_pt.len(), 1, "Word on one line must be merged into 1 single bounding block");
+
+            // Test case-sensitive search
+            let case_hits = search_document(ephesians_path, 273, "ephesians", true, false, None, 0);
+            assert_eq!(case_hits.len(), 20, "Should find 20 lowercase 'ephesians' occurrences");
+            for h in &case_hits {
+                assert_eq!(h.match_text, "ephesians");
+            }
+
+            // Test whole-word search vs substring
+            let whole_hits = search_document(ephesians_path, 273, "plan", false, true, None, 0);
+            let sub_hits = search_document(ephesians_path, 273, "plan", false, false, None, 0);
+            assert_eq!(whole_hits.len(), 28, "Should find 28 whole-word 'plan' occurrences");
+            assert_eq!(sub_hits.len(), 51, "Should find 51 substring 'plan' occurrences");
+            assert!(whole_hits.len() <= sub_hits.len(), "Whole word matches should be a subset of substring matches");
         }
 
         let _ = std::fs::remove_file(test_pdf_path);
