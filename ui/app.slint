@@ -244,6 +244,9 @@ export component AppWindow inherits Window {
 
     changed show-search => {
         if (!root.show-search) {
+            if (root.sidebar-tab == 3) {
+                root.sidebar-tab = root.toc-items.length > 0 ? 0 : 1;
+            }
             keyboard-handler.focus();
         }
     }
@@ -976,8 +979,8 @@ export component AppWindow inherits Window {
                                         }
                                     }
 
-                                    // Tab 3: Search
-                                    Rectangle {
+                                    // Tab 3: Search (Only visible when search bar is active)
+                                    if root.show-search: Rectangle {
                                         height: 28px;
                                         min-width: 56px;
                                         y: (parent.height - self.height) / 2;
@@ -1342,8 +1345,8 @@ export component AppWindow inherits Window {
                             }
                         }
 
-                        // Tab 3 Body: Search Results
-                        if root.sidebar-tab == 3: VerticalLayout {
+                        // Tab 3 Body: Search Results (Only shown when search bar is active)
+                        if root.show-search && root.sidebar-tab == 3: VerticalLayout {
                             vertical-stretch: 1;
 
                             // Header count summary

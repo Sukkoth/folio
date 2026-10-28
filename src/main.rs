@@ -1225,6 +1225,9 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 if currently_showing {
                     *search_debounce.borrow_mut() = None;
                     ui.set_show_search(false);
+                    if ui.get_sidebar_tab() == 3 {
+                        ui.set_sidebar_tab(0);
+                    }
                     ui.invoke_grab_focus();
                 } else {
                     ui.set_show_search(true);
@@ -1253,6 +1256,9 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             *search_debounce.borrow_mut() = None;
             if let Some(ui) = app_weak.upgrade() {
                 ui.set_show_search(false);
+                if ui.get_sidebar_tab() == 3 {
+                    ui.set_sidebar_tab(0);
+                }
                 ui.invoke_grab_focus();
             }
         });
