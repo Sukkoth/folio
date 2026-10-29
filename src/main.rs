@@ -380,10 +380,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .unwrap_or("document.pdf")
                         .to_string();
                     let _ = setup_document(&ui, &path, display_name);
+                    update_recent_books_model(&ui);
                 }
             }
         });
     }
+
+    {
+        let app_weak = app.as_weak();
+        app.on_open_recent_book(move |path_str| {
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_show_recent_books(false);
+                let path = PathBuf::from(path_str.as_str());
+                if path.exists() {
+                    let display_name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("document.pdf")
+                        .to_string();
+                    let _ = setup_document(&ui, &path, display_name);
+                    update_recent_books_model(&ui);
+                } else {
+                    trigger_toast(&ui, "File not found");
+                }
+            }
+        });
+    }
+
+    update_recent_books_model(&app);
 
     let pdf_path_arg = env::args().nth(1);
 
@@ -634,7 +658,27 @@ fn setup_document(
         }
     }
 
+    if let Ok(lock) = state.lock() {
+        if let Some(s) = lock.as_ref() {
+            save_current_session_direct(s, app);
+        }
+    }
+    update_recent_books_model(app);
+
     Ok(())
+}
+
+fn update_recent_books_model(ui: &AppWindow) {
+    let recents = history::get_recent_documents(10);
+    let items: Vec<RecentBookItem> = recents
+        .into_iter()
+        .map(|r| RecentBookItem {
+            filename: slint::SharedString::from(r.filename),
+            path: slint::SharedString::from(r.path),
+            page: r.page + 1,
+        })
+        .collect();
+    ui.set_recent_books(slint::ModelRc::new(slint::VecModel::from(items)));
 }
 
 fn handle_rendered_page(

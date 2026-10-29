@@ -55,8 +55,10 @@ pub fn save_document_session(file_path: &str, session: DocumentSession) {
 }
 
 pub fn save_document_session_to(file_path: &str, mut session: DocumentSession, history_path: &Path) {
-    if let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) {
-        session.last_opened_at = now.as_secs();
+    if session.last_opened_at == 0 {
+        if let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) {
+            session.last_opened_at = now.as_secs();
+        }
     }
 
     let mut store = if history_path.exists() {
@@ -91,6 +93,55 @@ pub fn save_document_session_to(file_path: &str, mut session: DocumentSession, h
     if let Ok(json) = serde_json::to_string_pretty(&store) {
         let _ = fs::write(history_path, json);
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecentDocument {
+    pub path: String,
+    pub filename: String,
+    pub page: i32,
+    pub last_opened_at: u64,
+}
+
+pub fn get_recent_documents(limit: usize) -> Vec<RecentDocument> {
+    if let Some(p) = history_file_path() {
+        get_recent_documents_from(&p, limit)
+    } else {
+        Vec::new()
+    }
+}
+
+pub fn get_recent_documents_from(history_path: &Path, limit: usize) -> Vec<RecentDocument> {
+    if !history_path.exists() {
+        return Vec::new();
+    }
+    let data = match fs::read_to_string(history_path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let store: HistoryStore = match serde_json::from_str(&data) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let mut list: Vec<RecentDocument> = store
+        .documents
+        .into_iter()
+        .map(|(path, sess)| {
+            let filename = Path::new(&path)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone());
+            RecentDocument {
+                path,
+                filename,
+                page: sess.page,
+                last_opened_at: sess.last_opened_at,
+            }
+        })
+        .collect();
+    list.sort_by(|a, b| b.last_opened_at.cmp(&a.last_opened_at));
+    list.truncate(limit);
+    list
 }
 
 #[cfg(test)]
@@ -160,6 +211,45 @@ mod tests {
         assert_eq!(loaded.zoom_level, 1.8);
         assert!(loaded.is_scroll_view);
         assert!(loaded.last_opened_at > 0);
+
+        let _ = fs::remove_file(&test_history_path);
+    }
+
+    #[test]
+    fn test_get_recent_documents_order() {
+        let temp_dir = std::env::temp_dir();
+        let test_history_path = temp_dir.join("folio_test_history_recents.json");
+        let _ = fs::remove_file(&test_history_path);
+
+        save_document_session_to(
+            "/path/to/old.pdf",
+            DocumentSession {
+                page: 2,
+                scroll_y: 0.0,
+                zoom_level: 1.0,
+                is_scroll_view: false,
+                last_opened_at: 1000,
+            },
+            &test_history_path,
+        );
+
+        save_document_session_to(
+            "/path/to/newest.pdf",
+            DocumentSession {
+                page: 15,
+                scroll_y: 0.0,
+                zoom_level: 1.0,
+                is_scroll_view: false,
+                last_opened_at: 5000,
+            },
+            &test_history_path,
+        );
+
+        let recents = get_recent_documents_from(&test_history_path, 10);
+        assert_eq!(recents.len(), 2);
+        assert_eq!(recents[0].filename, "newest.pdf");
+        assert_eq!(recents[0].page, 15);
+        assert_eq!(recents[1].filename, "old.pdf");
 
         let _ = fs::remove_file(&test_history_path);
     }

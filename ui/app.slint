@@ -237,6 +237,12 @@ export struct PageItemData {
     image: image,
 }
 
+export struct RecentBookItem {
+    path: string,
+    filename: string,
+    page: int,
+}
+
 export struct TocItemData {
     title: string,
     page: int,
@@ -328,6 +334,9 @@ export component AppWindow inherits Window {
 
     in property <string> file-title: "";
     in property <string> file-path: "";
+    in property <[RecentBookItem]> recent-books: [];
+    in-out property <bool> show-recent-books: false;
+    callback open-recent-book(string);
     in property <string> page-display: "1 / 1";
     in property <string> zoom-display: "200%";
     in property <float> zoom-level: 2.0;
@@ -653,23 +662,24 @@ VerticalLayout {
                     spacing: 12px;
                     alignment: space-between;
 
-                    // Left Group: Document Chip & History Undo/Redo
+                    // Left Group: Document Chip, Open PDF, Save, & History Undo/Redo
                     HorizontalLayout {
                         spacing: 8px;
                         alignment: start;
 
-                        // Document File Chip
+                        // Document File Chip (Click to toggle Recent Books list)
                         Rectangle {
                             height: 34px;
                             border-radius: 17px;
-                            background: Theme.surface-subtle;
+                            background: chip-ta.has-hover ? Theme.hover-bg : Theme.surface-subtle;
                             border-width: 1px;
-                            border-color: Theme.border-subtle;
+                            border-color: chip-ta.has-hover ? Theme.border : Theme.border-subtle;
+                            animate background { duration: 100ms; }
                             y: (parent.height - self.height) / 2;
 
                             HorizontalLayout {
                                 padding-left: 12px;
-                                padding-right: 14px;
+                                padding-right: 10px;
                                 spacing: 8px;
                                 alignment: center;
 
@@ -690,6 +700,101 @@ VerticalLayout {
                                     vertical-alignment: center;
                                     overflow: elide;
                                     max-width: 180px;
+                                }
+
+                                Image {
+                                    source: @image-url("../assets/icons/chevron-down.svg");
+                                    width: 12px;
+                                    height: 12px;
+                                    colorize: Theme.text-secondary;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+
+                            chip-ta := TouchArea {
+                                clicked => { root.show-recent-books = !root.show-recent-books; }
+                                mouse-cursor: pointer;
+                            }
+                        }
+
+                        // Signature Accent Button: Open PDF (before undo/redo)
+                        SignaturePillButton {
+                            icon: @image-url("../assets/icons/folder-open.svg");
+                            text: "Open PDF";
+                            y: (parent.height - self.height) / 2;
+                            clicked => { root.open-document(); }
+                        }
+
+                        // Save Button (when dirty, after Open PDF)
+                        if root.is-dirty: Rectangle {
+                            height: 34px;
+                            border-radius: 17px;
+                            background: save-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                            border-width: 1px;
+                            border-color: Theme.accent-border;
+                            animate background { duration: 100ms; }
+                            y: (parent.height - self.height) / 2;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 6px;
+                                alignment: center;
+
+                                Image {
+                                    source: @image-url("../assets/icons/check.svg");
+                                    width: 14px;
+                                    height: 14px;
+                                    colorize: Theme.on-accent;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                Text {
+                                    text: root.is-saving ? "Saving..." : "Save";
+                                    font-family: "Inter";
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    color: Theme.on-accent;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            save-ta := TouchArea {
+                                clicked => { root.save-document(); }
+                                mouse-cursor: pointer;
+                            }
+                        }
+
+                        // Saved Confirmation Badge
+                        if !root.is-dirty && root.show-saved-badge: Rectangle {
+                            height: 34px;
+                            border-radius: 17px;
+                            background: Theme.surface-subtle;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            y: (parent.height - self.height) / 2;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 5px;
+                                alignment: center;
+
+                                Image {
+                                    source: @image-url("../assets/icons/check.svg");
+                                    width: 14px;
+                                    height: 14px;
+                                    colorize: Theme.text-primary;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                Text {
+                                    text: "Saved";
+                                    font-family: "Inter";
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    color: Theme.text-primary;
+                                    vertical-alignment: center;
                                 }
                             }
                         }
@@ -872,12 +977,21 @@ VerticalLayout {
                                 }
 
                                 IconButton {
-                                    icon: @image-url("../assets/icons/maximize.svg");
+                                    icon: @image-url("../assets/icons/fit-to-page.svg");
                                     size: 26px;
                                     icon-size: 14px;
                                     border-radius: 13px;
                                     y: (parent.height - self.height) / 2;
                                     clicked => { root.zoom-fit(); }
+                                }
+
+                                IconButton {
+                                    icon: root.is-zen-mode ? @image-url("../assets/icons/minimize-2.svg") : @image-url("../assets/icons/maximize-2.svg");
+                                    size: 26px;
+                                    icon-size: 14px;
+                                    border-radius: 13px;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.toggle-zen-mode(); }
                                 }
 
                                 Rectangle {
@@ -896,88 +1010,6 @@ VerticalLayout {
                                     clicked => { root.rotate-clockwise(); }
                                 }
                             }
-                        }
-
-                        // Save Button (when dirty)
-                        if root.is-dirty: Rectangle {
-                            height: 34px;
-                            border-radius: 17px;
-                            background: save-ta.has-hover ? Theme.accent-hover : Theme.accent;
-                            border-width: 1px;
-                            border-color: Theme.accent-border;
-                            animate background { duration: 100ms; }
-                            y: (parent.height - self.height) / 2;
-
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                spacing: 6px;
-                                alignment: center;
-
-                                Image {
-                                    source: @image-url("../assets/icons/check.svg");
-                                    width: 14px;
-                                    height: 14px;
-                                    colorize: Theme.on-accent;
-                                    y: (parent.height - self.height) / 2;
-                                }
-
-                                Text {
-                                    text: root.is-saving ? "Saving..." : "Save";
-                                    font-family: "Inter";
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                    color: Theme.on-accent;
-                                    vertical-alignment: center;
-                                }
-                            }
-
-                            save-ta := TouchArea {
-                                clicked => { root.save-document(); }
-                                mouse-cursor: pointer;
-                            }
-                        }
-
-                        // Saved Confirmation Badge
-                        if !root.is-dirty && root.show-saved-badge: Rectangle {
-                            height: 34px;
-                            border-radius: 17px;
-                            background: Theme.surface-subtle;
-                            border-width: 1px;
-                            border-color: Theme.border;
-                            y: (parent.height - self.height) / 2;
-
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                spacing: 5px;
-                                alignment: center;
-
-                                Image {
-                                    source: @image-url("../assets/icons/check.svg");
-                                    width: 14px;
-                                    height: 14px;
-                                    colorize: Theme.text-primary;
-                                    y: (parent.height - self.height) / 2;
-                                }
-
-                                Text {
-                                    text: "Saved";
-                                    font-family: "Inter";
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                    color: Theme.text-primary;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-
-                        // Signature Accent Button: Open PDF (styled like New Chat + in reference image)
-                        SignaturePillButton {
-                            icon: @image-url("../assets/icons/folder-open.svg");
-                            text: "Open PDF";
-                            y: (parent.height - self.height) / 2;
-                            clicked => { root.open-document(); }
                         }
                     }
                 }
@@ -1093,7 +1125,7 @@ VerticalLayout {
                             }
                         }
 
-                        // Bottom Group: Theme Toggle & Zen Mode
+                        // Bottom Group: Theme Toggle
                         VerticalLayout {
                             spacing: 10px;
                             alignment: end;
@@ -1102,14 +1134,6 @@ VerticalLayout {
                                 icon: Theme.dark ? @image-url("../assets/icons/sun.svg") : @image-url("../assets/icons/moon.svg");
                                 clicked => {
                                     root.toggle-theme();
-                                }
-                            }
-
-                            NavRailButton {
-                                icon: @image-url("../assets/icons/maximize-2.svg");
-                                active: root.is-zen-mode;
-                                clicked => {
-                                    root.toggle-zen-mode();
                                 }
                             }
                         }
@@ -2030,9 +2054,9 @@ VerticalLayout {
                                 border-radius: 4px;
                                 border-width: 1px;
                                 border-color: Theme.border;
-                                drop-shadow-blur: Theme.dark ? 16px : 10px;
-                                drop-shadow-offset-y: Theme.dark ? 4px : 2px;
-                                drop-shadow-color: Theme.dark ? #00000050 : #00000012;
+                                drop-shadow-blur: Theme.dark ? 16px : 0px;
+                                drop-shadow-offset-y: Theme.dark ? 4px : 0px;
+                                drop-shadow-color: Theme.dark ? #00000050 : #00000000;
 
                                 Image {
                                     width: 100%;
@@ -2800,9 +2824,9 @@ VerticalLayout {
                                 border-radius: 4px;
                                 border-width: 1px;
                                 border-color: Theme.border;
-                                drop-shadow-blur: Theme.dark ? 16px : 10px;
-                                drop-shadow-offset-y: Theme.dark ? 4px : 2px;
-                                drop-shadow-color: Theme.dark ? #00000050 : #00000012;
+                                drop-shadow-blur: Theme.dark ? 16px : 0px;
+                                drop-shadow-offset-y: Theme.dark ? 4px : 0px;
+                                drop-shadow-color: Theme.dark ? #00000050 : #00000000;
 
                                 Image {
                                     width: 100%;
@@ -2881,9 +2905,9 @@ VerticalLayout {
                                 border-radius: 4px;
                                 border-width: 1px;
                                 border-color: Theme.border;
-                                drop-shadow-blur: Theme.dark ? 16px : 10px;
-                                drop-shadow-offset-y: Theme.dark ? 4px : 2px;
-                                drop-shadow-color: Theme.dark ? #00000050 : #00000012;
+                                drop-shadow-blur: Theme.dark ? 16px : 0px;
+                                drop-shadow-offset-y: Theme.dark ? 4px : 0px;
+                                drop-shadow-color: Theme.dark ? #00000050 : #00000000;
 
                                 Image {
                                     width: 100%;
@@ -3803,18 +3827,20 @@ VerticalLayout {
 
     // Floating Notification Toast
     if root.show-toast: Rectangle {
+        width: toast-hl.preferred-width;
+        height: 38px;
         x: (parent.width - self.width) / 2;
         y: parent.height - 56px;
-        height: 38px;
-        min-width: 220px;
+        z: 200;
         border-radius: 19px;
         background: Theme.card-bg;
         border-width: 1px;
         border-color: Theme.accent-border;
-        drop-shadow-blur: 20px;
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 2px;
         drop-shadow-color: Theme.dark ? #00000070 : #00000018;
 
-        HorizontalLayout {
+        toast-hl := HorizontalLayout {
             padding-left: 18px;
             padding-right: 18px;
             spacing: 8px;
@@ -3835,6 +3861,172 @@ VerticalLayout {
                 font-weight: 600;
                 color: Theme.text-primary;
                 vertical-alignment: center;
+            }
+        }
+    }
+
+    // Dismiss overlay for Recent Books menu
+    if root.show-recent-books: TouchArea {
+        width: 100%;
+        height: 100%;
+        z: 90;
+        clicked => {
+            root.show-recent-books = false;
+        }
+    }
+
+    // Recent Books Dropdown Popover
+    if root.show-recent-books: Rectangle {
+        x: 16px;
+        y: 46px;
+        width: 320px;
+        height: recent-vl.preferred-height;
+        z: 100;
+        background: Theme.card-bg;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: Theme.dark ? #00000080 : #00000015;
+
+        recent-vl := VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+            alignment: start;
+
+            // Header
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                alignment: space-between;
+
+                Text {
+                    text: "RECENT BOOKS";
+                    font-family: "Inter";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
+            if root.recent-books.length == 0: Rectangle {
+                height: 44px;
+                Text {
+                    text: "No recent books yet";
+                    font-family: "Inter";
+                    font-size: 12px;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            for item in root.recent-books: Rectangle {
+                height: 38px;
+                border-radius: 8px;
+                background: item-ta.has-hover ? Theme.hover-bg : transparent;
+                animate background { duration: 80ms; }
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        Image {
+                            source: @image-url("../assets/icons/book-open.svg");
+                            width: 14px;
+                            height: 14px;
+                            colorize: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                        Text {
+                            text: item.filename;
+                            font-family: "Inter";
+                            font-size: 12px;
+                            font-weight: 500;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            max-width: 210px;
+                        }
+                    }
+
+                    Text {
+                        text: "p. \{item.page}";
+                        font-family: "Inter";
+                        font-size: 11px;
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                }
+
+                item-ta := TouchArea {
+                    clicked => {
+                        root.show-recent-books = false;
+                        root.open-recent-book(item.path);
+                    }
+                    mouse-cursor: pointer;
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
+            // Bottom action: Open PDF
+            Rectangle {
+                height: 36px;
+                border-radius: 8px;
+                background: open-other-ta.has-hover ? Theme.hover-bg : transparent;
+                animate background { duration: 80ms; }
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    Image {
+                        source: @image-url("../assets/icons/folder-open.svg");
+                        width: 14px;
+                        height: 14px;
+                        colorize: Theme.text-primary;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: "Open other file...";
+                        font-family: "Inter";
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                    }
+                }
+
+                open-other-ta := TouchArea {
+                    clicked => {
+                        root.show-recent-books = false;
+                        root.open-document();
+                    }
+                    mouse-cursor: pointer;
+                }
             }
         }
     }
