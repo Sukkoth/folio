@@ -655,7 +655,7 @@ fn setup_document(
         }
         if let Ok(mut lock) = state.lock() {
             if let Some(s) = lock.as_mut() {
-                trigger_scroll_page_render_direct(s, initial_page, app);
+                trigger_scroll_page_render(s, initial_page, app);
             }
         }
     }
@@ -1491,14 +1491,16 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
 }
 
 fn prefetch_neighbors(state: &mut AppState, generation: u64, zoom: f32) {
-    if state.zoom_level > 2.0 {
-        // At high zoom, focus all worker resources on the active page
-        return;
-    }
-    let neighbors = [
-        state.current_page + 1,
-        state.current_page - 1,
-    ];
+    let neighbors = if state.zoom_level > 3.0 {
+        vec![state.current_page + 1, state.current_page - 1]
+    } else {
+        vec![
+            state.current_page + 1,
+            state.current_page - 1,
+            state.current_page + 2,
+            state.current_page - 2,
+        ]
+    };
 
     for &p in &neighbors {
         if p >= 0 && p < state.total_pages {
@@ -3513,20 +3515,20 @@ fn perform_zoom(
         ui.set_suppress_page_change(true);
         update_view(ui, state_lock);
         ui.set_scroll_content_y(new_y);
+        ui.set_suppress_page_change(false);
     } else {
         update_view(ui, state_lock);
     }
 
     let state_lock_clone = Arc::clone(state_lock);
     let ui_weak = ui.as_weak();
-    slint::Timer::single_shot(std::time::Duration::from_millis(200), move || {
+    slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
         if let Ok(mut lock) = state_lock_clone.lock() {
             if let Some(s) = lock.as_mut() {
                 s.is_zooming = false;
             }
         }
         if let Some(ui) = ui_weak.upgrade() {
-            ui.set_suppress_page_change(false);
             save_current_session(&state_lock_clone, &ui);
         }
     });
