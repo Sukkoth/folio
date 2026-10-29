@@ -240,6 +240,37 @@ impl AppState {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = AppWindow::new()?;
 
+    // Register global UI callbacks (Theme toggle & Open document)
+    {
+        let app_weak = app.as_weak();
+        app.on_toggle_theme(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let current = ui.get_dark_mode();
+                ui.set_dark_mode(!current);
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        app.on_open_document(move || {
+            let res = rfd::FileDialog::new()
+                .add_filter("PDF document (*.pdf)", &["pdf"])
+                .pick_file();
+
+            if let Some(path) = res {
+                if let Some(ui) = app_weak.upgrade() {
+                    let display_name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("document.pdf")
+                        .to_string();
+                    let _ = setup_document(&ui, &path, display_name);
+                }
+            }
+        });
+    }
+
     let pdf_path_arg = env::args().nth(1);
 
     match pdf_path_arg {
@@ -248,7 +279,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.set_file_path("No PDF file specified".into());
             app.set_has_error(true);
             app.set_error_message(
-                "Please specify a PDF file path on the command line:\n\ncargo run --release -- path/to/document.pdf"
+                "Open a PDF document to begin reading with rich annotations and dual-page view."
                     .into(),
             );
         }
@@ -1470,10 +1501,11 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
         let search_debounce = std::rc::Rc::clone(&search_debounce);
         app.on_toggle_search(move || {
             if let Some(ui) = app_weak.upgrade() {
-                let currently_showing = ui.get_show_search();
+                let currently_showing = ui.get_show_search() && ui.get_show_sidebar() && ui.get_sidebar_tab() == 3;
                 if currently_showing {
                     *search_debounce.borrow_mut() = None;
                     ui.set_show_search(false);
+                    ui.set_show_sidebar(false);
                     if ui.get_sidebar_tab() == 3 {
                         ui.set_sidebar_tab(0);
                     }
@@ -1505,6 +1537,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             *search_debounce.borrow_mut() = None;
             if let Some(ui) = app_weak.upgrade() {
                 ui.set_show_search(false);
+                ui.set_show_sidebar(false);
                 if ui.get_sidebar_tab() == 3 {
                     ui.set_sidebar_tab(0);
                 }
@@ -3098,6 +3131,16 @@ mod tests {
         };
 
         (state, test_pdf_path)
+    }
+
+    #[test]
+    fn test_theme_toggle_and_defaults() {
+        let app = AppWindow::new().unwrap();
+        assert_eq!(app.get_dark_mode(), true);
+        app.set_dark_mode(false);
+        assert_eq!(app.get_dark_mode(), false);
+        app.set_dark_mode(true);
+        assert_eq!(app.get_dark_mode(), true);
     }
 
     #[test]
