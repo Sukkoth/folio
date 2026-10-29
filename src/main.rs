@@ -595,6 +595,13 @@ fn setup_document(
     })
     .map_err(|e| format!("Failed to spawn worker: {e}"))?;
 
+    let initial_collapsed_ids: std::collections::HashSet<i32> = meta
+        .toc
+        .iter()
+        .filter(|item| item.has_children)
+        .map(|item| item.id)
+        .collect();
+
     let app_state = AppState {
         file_path: path_str,
         current_page: initial_page,
@@ -627,7 +634,7 @@ fn setup_document(
         search_match_case: false,
         search_match_whole_word: false,
         toc: meta.toc,
-        collapsed_toc_ids: std::collections::HashSet::new(),
+        collapsed_toc_ids: initial_collapsed_ids,
         page_links_cache: std::collections::HashMap::new(),
         rotation: 0,
         is_dual_page: false,
@@ -4156,38 +4163,43 @@ mod tests {
             pdf::TocItem { id: 3, title: "Section 1.2".into(), page: 3, depth: 1, has_children: false },
             pdf::TocItem { id: 4, title: "Chapter 2".into(), page: 4, depth: 0, has_children: false },
         ];
-        let mut collapsed = std::collections::HashSet::new();
 
-        // 1. Initially all expanded
-        let visible = super::compute_visible_toc_items(&toc, &collapsed);
-        assert_eq!(visible.len(), 5);
+        // 1. By default all nodes with children start collapsed
+        let mut collapsed: std::collections::HashSet<i32> = toc
+            .iter()
+            .filter(|item| item.has_children)
+            .map(|item| item.id)
+            .collect();
 
-        // 2. Collapse Section 1.1 (id 1)
-        collapsed.insert(1);
         let visible = super::compute_visible_toc_items(&toc, &collapsed);
-        // Visible items: Chapter 1, Section 1.1, Section 1.2, Chapter 2 (Sub 1.1.1 hidden)
-        assert_eq!(visible.len(), 4);
-        let titles: Vec<String> = visible.iter().map(|item| item.title.to_string()).collect();
-        assert_eq!(titles, vec!["Chapter 1", "Section 1.1", "Section 1.2", "Chapter 2"]);
-
-        // 3. Collapse Chapter 1 (id 0)
-        collapsed.insert(0);
-        let visible = super::compute_visible_toc_items(&toc, &collapsed);
-        // Visible items: Chapter 1, Chapter 2 (all descendants of Chapter 1 hidden)
+        // Initially visible: Chapter 1, Chapter 2 (all sub-levels collapsed)
         assert_eq!(visible.len(), 2);
         let titles: Vec<String> = visible.iter().map(|item| item.title.to_string()).collect();
         assert_eq!(titles, vec!["Chapter 1", "Chapter 2"]);
 
-        // 4. Expand Chapter 1 (id 0 removed from collapsed)
+        // 2. Expand Chapter 1 (id 0 removed from collapsed)
         collapsed.remove(&0);
         let visible = super::compute_visible_toc_items(&toc, &collapsed);
         // Section 1.1 is still collapsed, so: Chapter 1, Section 1.1, Section 1.2, Chapter 2
         assert_eq!(visible.len(), 4);
+        let titles: Vec<String> = visible.iter().map(|item| item.title.to_string()).collect();
+        assert_eq!(titles, vec!["Chapter 1", "Section 1.1", "Section 1.2", "Chapter 2"]);
 
-        // 5. Expand Section 1.1 (id 1 removed)
+        // 3. Expand Section 1.1 (id 1 removed)
         collapsed.remove(&1);
         let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        // All items now visible
         assert_eq!(visible.len(), 5);
+
+        // 4. Re-collapse Section 1.1 (id 1)
+        collapsed.insert(1);
+        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        assert_eq!(visible.len(), 4);
+
+        // 5. Re-collapse Chapter 1 (id 0)
+        collapsed.insert(0);
+        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        assert_eq!(visible.len(), 2);
     }
 
     #[test]
