@@ -50,6 +50,20 @@ global Theme {
     out property <color> rail-active-icon: root.dark ? #DADBD6 : #10110C;
     out property <color> text-disabled: root.dark ? #4A4D43 : #B0B4A8;
     out property <color> accent-subtle: root.dark ? #DADBD6.transparentize(86%) : #10110C.transparentize(90%);
+
+    // Annotation Highlight Colors (Soft pastel blend matching PDF text highlighting)
+    out property <color> hl-yellow: #fef08a;
+    out property <color> hl-green: #bbf7d0;
+    out property <color> hl-blue: #bfdbfe;
+    out property <color> hl-pink: #fbcfe8;
+    out property <color> hl-orange: #fed7aa;
+
+    // Annotation Vibrant Colors (Underline, Note, Strikethrough)
+    out property <color> annot-yellow: #facc15;
+    out property <color> annot-green: #4ade80;
+    out property <color> annot-blue: #60a5fa;
+    out property <color> annot-pink: #f472b6;
+    out property <color> annot-orange: #fb923c;
 }
 
 component IconButton inherits Rectangle {
@@ -231,6 +245,7 @@ export struct TocItemData {
 }
 
 export struct SelectionRect {
+    page: int,
     x: length,
     y: length,
     width: length,
@@ -340,10 +355,14 @@ export component AppWindow inherits Window {
     in property <[SelectionRect]> selection-rects;
     in-out property <bool> has-selection: false;
     in-out property <bool> show-popup: false;
+    in-out property <int> popup-page: 0;
     in-out property <length> popup-x: 0px;
     in-out property <length> popup-y: 0px;
+    in-out property <length> popup-grab-x: 0px;
+    in-out property <length> popup-grab-y: 0px;
     in-out property <int> selected-color-index: 0; // 0=Yellow, 1=Green, 2=Blue, 3=Pink, 4=Orange
     in-out property <int> selected-annotation-id: -1;
+    in-out property <string> selected-annotation-kind: "";
     in-out property <int> hovered-annotation-id: -1;
     in-out property <bool> show-note-input: false;
     in-out property <string> current-note-text: "";
@@ -571,6 +590,7 @@ keyboard-handler := FocusScope {
                         root.clear-selection();
                         root.show-popup = false;
                         root.selected-annotation-id = -1;
+                        root.selected-annotation-kind = "";
                         root.hovered-annotation-id = -1;
                         return accept;
                     }
@@ -588,6 +608,7 @@ keyboard-handler := FocusScope {
                         root.delete-annotation(root.selected-annotation-id);
                         root.show-popup = false;
                         root.selected-annotation-id = -1;
+                        root.selected-annotation-kind = "";
                         root.hovered-annotation-id = -1;
                         return accept;
                     }
@@ -2028,12 +2049,14 @@ VerticalLayout {
                                 // Interactive Text Selection Highlights directly on actual text
                                 if root.has-selection: Rectangle {
                                     for sel-r in root.selection-rects: Rectangle {
-                                        x: sel-r.x;
-                                        y: sel-r.y;
-                                        width: sel-r.width;
-                                        height: sel-r.height;
-                                        background: #3b82f640;
-                                        border-radius: 2px;
+                                        if sel-r.page == root.current-page: Rectangle {
+                                            x: sel-r.x;
+                                            y: sel-r.y;
+                                            width: sel-r.width;
+                                            height: sel-r.height;
+                                            background: #3b82f640;
+                                            border-radius: 2px;
+                                        }
                                     }
                                 }
 
@@ -2064,6 +2087,7 @@ VerticalLayout {
                                             if (event.kind == PointerEventKind.down) {
                                                 keyboard-handler.focus();
                                                 root.selected-annotation-id = -1;
+                                                root.selected-annotation-kind = "";
                                                 root.current-note-text = "";
                                                 root.show-note-input = false;
                                                 root.selection-started(root.current-page, page-ta.mouse-x, page-ta.mouse-y);
@@ -2090,14 +2114,14 @@ VerticalLayout {
                                         width: annot.w;
                                         height: annot.h;
 
-                                        // Hover & Selection visual recognition feedback rectangle
+                                        // Selection visual recognition feedback rectangle (clean, non-obscuring)
                                         Rectangle {
                                             width: 100%;
                                             height: 100%;
                                             border-radius: 3px;
-                                            background: root.selected-annotation-id == annot.id ? #3b82f628 : ((root.hovered-annotation-id == annot.id || annot-ta.has-hover) ? #ffffff22 : transparent);
-                                            border-width: (root.selected-annotation-id == annot.id || root.hovered-annotation-id == annot.id || annot-ta.has-hover) ? 1.5px : 0px;
-                                            border-color: root.selected-annotation-id == annot.id ? #3b82f6 : annot.color;
+                                            background: root.selected-annotation-id == annot.id ? #3b82f618 : transparent;
+                                            border-width: root.selected-annotation-id == annot.id ? 1px : 0px;
+                                            border-color: root.selected-annotation-id == annot.id ? #3b82f680 : transparent;
                                         }
 
                                         // Underline (anchored with breathing space below character baseline, scaling with zoom)
@@ -2149,15 +2173,17 @@ VerticalLayout {
                                                 }
                                                 clicked => {
                                                     keyboard-handler.focus();
+                                                    root.popup-page = root.current-page;
                                                     root.selected-annotation-id = annot.id;
+                                                    root.selected-annotation-kind = annot.kind;
                                                     root.selected-color-index = annot.color-index;
                                                     root.has-selection = false;
                                                     root.current-note-text = annot.comment;
                                                     root.show-note-input = true;
-                                                    let p_width = 290px;
-                                                    let p_height = 108px;
-                                                    root.popup-x = max(8px, min(root.page-width - p_width - 8px, root.page-width - p_width - 16px));
-                                                    root.popup-y = annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px;
+                                                    let p_width = max(root.note-input-width + 16px, 320px);
+                                                    let p_height = root.note-input-height + 66px;
+                                                    root.popup-x = round(max(8px, min(root.page-width - p_width - 8px, root.page-width - p_width - 16px)) / 1px) * 1px;
+                                                    root.popup-y = round((annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px) / 1px) * 1px;
                                                     root.show-popup = true;
                                                 }
                                             }
@@ -2176,15 +2202,17 @@ VerticalLayout {
 
                                             clicked => {
                                                 keyboard-handler.focus();
+                                                root.popup-page = root.current-page;
                                                 root.selected-annotation-id = annot.id;
+                                                root.selected-annotation-kind = annot.kind;
                                                 root.selected-color-index = annot.color-index;
                                                 root.has-selection = false;
                                                 root.current-note-text = annot.comment;
                                                 root.show-note-input = annot.comment != "" || annot.kind == "note";
-                                                let p_width = root.show-note-input ? 290px : 224px;
-                                                let p_height = root.show-note-input ? 108px : 40px;
-                                                root.popup-x = max(8px, min(root.page-width - p_width - 8px, annot.x + (annot.w - p_width) / 2));
-                                                root.popup-y = annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px;
+                                                let p_width = root.show-note-input ? max(root.note-input-width + 16px, 320px) : 256px;
+                                                let p_height = root.show-note-input ? (root.note-input-height + 66px) : 54px;
+                                                root.popup-x = round(max(8px, min(root.page-width - p_width - 8px, annot.x + (annot.w - p_width) / 2)) / 1px) * 1px;
+                                                root.popup-y = round((annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px) / 1px) * 1px;
                                                 root.show-popup = true;
                                             }
                                         }
@@ -2192,26 +2220,64 @@ VerticalLayout {
                                 }
 
                                 // Floating Annotation Icon Popup
-                                if root.show-popup: popup := Rectangle {
-                                    x: root.popup-x;
-                                    y: root.popup-y;
-                                    width: root.show-note-input ? max(root.note-input-width + 12px, 320px) : (root.selected-annotation-id > 0 ? 250px : 290px);
-                                    height: root.show-note-input ? (root.note-input-height + 46px) : 40px;
-                                    border-radius: 14px;
+                                if root.show-popup && root.popup-page == root.current-page: popup := Rectangle {
+                                    x: round(root.popup-x / 1px) * 1px;
+                                    y: round(root.popup-y / 1px) * 1px;
+                                    width: root.show-note-input ? max(root.note-input-width + 16px, 320px) : (root.selected-annotation-id > 0 ? 256px : 296px);
+                                    height: root.show-note-input ? (root.note-input-height + 66px) : 54px;
+                                    border-radius: 12px;
                                     background: Theme.card-bg;
                                     border-width: 1px;
                                     border-color: Theme.border;
-                                    drop-shadow-blur: 20px;
-                                    drop-shadow-color: Theme.dark ? #00000070 : #00000015;
+                                    drop-shadow-blur: 10px;
+                                    drop-shadow-offset-y: 3px;
+                                    drop-shadow-color: Theme.dark ? #00000088 : #00000022;
                                     animate height { duration: 120ms; }
                                     animate width { duration: 120ms; }
 
                                     VerticalLayout {
-                                        padding: 6px;
-                                        spacing: 6px;
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        padding-top: 5px;
+                                        padding-bottom: 7px;
+                                        spacing: 5px;
+
+                                        // Drag Grip Handle Bar (allows dragging anywhere on the paper)
+                                        Rectangle {
+                                            height: 6px;
+                                            width: 100%;
+
+                                            Rectangle {
+                                                width: 32px;
+                                                height: 3px;
+                                                border-radius: 1.5px;
+                                                background: drag-ta.has-hover ? Theme.text-secondary : Theme.border-subtle;
+                                                x: (parent.width - self.width) / 2;
+                                                y: 1px;
+                                            }
+
+                                            drag-ta := TouchArea {
+                                                mouse-cursor: move;
+                                                pointer-event(event) => {
+                                                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                                                        root.popup-grab-x = self.mouse-x;
+                                                        root.popup-grab-y = self.mouse-y;
+                                                    }
+                                                }
+                                                moved => {
+                                                    if (self.pressed) {
+                                                        let max-w = max(8px, root.page-width - popup.width - 8px);
+                                                        let max-h = max(8px, root.page-height - popup.height - 8px);
+                                                        root.popup-x = round(max(8px, min(max-w, root.popup-x + self.mouse-x - root.popup-grab-x)) / 1px) * 1px;
+                                                        root.popup-y = round(max(8px, min(max-h, root.popup-y + self.mouse-y - root.popup-grab-y)) / 1px) * 1px;
+                                                    }
+                                                }
+                                            }
+                                        }
 
                                         // UPDATE MODE: When existing annotation recognized
                                         if root.selected-annotation-id > 0: HorizontalLayout {
+                                            height: 28px;
                                             spacing: 6px;
                                             alignment: space-between;
 
@@ -2224,10 +2290,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #facc15;
+                                                    background: root.selected-annotation-kind == "highlight" ? Theme.hl-yellow : Theme.annot-yellow;
                                                     border-width: root.selected-color-index == 0 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 0 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => {
                                                             root.selected-color-index = 0;
@@ -2241,10 +2307,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #4ade80;
+                                                    background: root.selected-annotation-kind == "highlight" ? Theme.hl-green : Theme.annot-green;
                                                     border-width: root.selected-color-index == 1 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 1 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => {
                                                             root.selected-color-index = 1;
@@ -2258,10 +2324,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #60a5fa;
+                                                    background: root.selected-annotation-kind == "highlight" ? Theme.hl-blue : Theme.annot-blue;
                                                     border-width: root.selected-color-index == 2 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 2 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => {
                                                             root.selected-color-index = 2;
@@ -2275,10 +2341,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #f472b6;
+                                                    background: root.selected-annotation-kind == "highlight" ? Theme.hl-pink : Theme.annot-pink;
                                                     border-width: root.selected-color-index == 3 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 3 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => {
                                                             root.selected-color-index = 3;
@@ -2292,10 +2358,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #fb923c;
+                                                    background: root.selected-annotation-kind == "highlight" ? Theme.hl-orange : Theme.annot-orange;
                                                     border-width: root.selected-color-index == 4 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 4 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => {
                                                             root.selected-color-index = 4;
@@ -2311,7 +2377,7 @@ VerticalLayout {
                                                 width: 1px;
                                                 height: 18px;
                                                 background: Theme.border;
-                                                y: (parent.height - self.height) / 2;
+                                                y: 5px;
                                             }
 
                                             // Actions
@@ -2320,17 +2386,17 @@ VerticalLayout {
                                                 alignment: end;
 
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: root.show-note-input ? Theme.active-bg : note-ta-edit.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/message-square.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: root.show-note-input ? Theme.accent : Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     note-ta-edit := TouchArea {
                                                         clicked => { root.show-note-input = !root.show-note-input; }
@@ -2340,8 +2406,8 @@ VerticalLayout {
 
                                                 // Done Button (active when note input is open)
                                                 if root.show-note-input: Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: note-save-ta-update.has-hover ? Theme.accent-hover : Theme.accent;
                                                     border-width: 1px;
@@ -2349,11 +2415,11 @@ VerticalLayout {
 
                                                     Image {
                                                         source: @image-url("../assets/icons/check.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.on-accent;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
 
                                                     note-save-ta-update := TouchArea {
@@ -2361,29 +2427,31 @@ VerticalLayout {
                                                             root.update-annotation-note(root.selected-annotation-id, root.current-note-text);
                                                             root.show-popup = false;
                                                             root.selected-annotation-id = -1;
+                                                            root.selected-annotation-kind = "";
                                                         }
                                                         mouse-cursor: pointer;
                                                     }
                                                 }
 
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: del-ta.has-hover ? #ef444425 : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/trash.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: #ef4444;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     del-ta := TouchArea {
                                                         clicked => {
                                                             root.delete-annotation(root.selected-annotation-id);
                                                             root.show-popup = false;
                                                             root.selected-annotation-id = -1;
+                                                            root.selected-annotation-kind = "";
                                                             root.hovered-annotation-id = -1;
                                                         }
                                                         mouse-cursor: pointer;
@@ -2391,22 +2459,23 @@ VerticalLayout {
                                                 }
 
                                                 Rectangle {
-                                                    width: 24px;
-                                                    height: 26px;
+                                                    width: 26px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: cls-ta-edit.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/x.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.text-secondary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 5px;
+                                                        y: 6px;
                                                     }
                                                     cls-ta-edit := TouchArea {
                                                         clicked => {
                                                             root.show-popup = false;
                                                             root.selected-annotation-id = -1;
+                                                            root.selected-annotation-kind = "";
                                                         }
                                                         mouse-cursor: pointer;
                                                     }
@@ -2416,6 +2485,7 @@ VerticalLayout {
 
                                         // CREATE MODE: When text selection is active
                                         if root.selected-annotation-id <= 0: HorizontalLayout {
+                                            height: 28px;
                                             spacing: 6px;
                                             alignment: space-between;
 
@@ -2428,10 +2498,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #facc15;
+                                                    background: Theme.hl-yellow;
                                                     border-width: root.selected-color-index == 0 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 0 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => { root.selected-color-index = 0; }
                                                         mouse-cursor: pointer;
@@ -2442,10 +2512,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #4ade80;
+                                                    background: Theme.hl-green;
                                                     border-width: root.selected-color-index == 1 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 1 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => { root.selected-color-index = 1; }
                                                         mouse-cursor: pointer;
@@ -2456,10 +2526,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #60a5fa;
+                                                    background: Theme.hl-blue;
                                                     border-width: root.selected-color-index == 2 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 2 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => { root.selected-color-index = 2; }
                                                         mouse-cursor: pointer;
@@ -2470,10 +2540,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #f472b6;
+                                                    background: Theme.hl-pink;
                                                     border-width: root.selected-color-index == 3 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 3 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => { root.selected-color-index = 3; }
                                                         mouse-cursor: pointer;
@@ -2484,10 +2554,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #fb923c;
+                                                    background: Theme.hl-orange;
                                                     border-width: root.selected-color-index == 4 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 4 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => { root.selected-color-index = 4; }
                                                         mouse-cursor: pointer;
@@ -2500,7 +2570,7 @@ VerticalLayout {
                                                 width: 1px;
                                                 height: 18px;
                                                 background: Theme.border;
-                                                y: (parent.height - self.height) / 2;
+                                                y: 5px;
                                             }
 
                                             // 4 Action Icons + Done Button (if note active) + Close Button
@@ -2510,17 +2580,17 @@ VerticalLayout {
 
                                                 // Highlight Icon
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: hl-ta.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/highlighter.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     hl-ta := TouchArea {
                                                         clicked => { root.create-annotation("highlight", root.selected-color-index); }
@@ -2530,17 +2600,17 @@ VerticalLayout {
 
                                                 // Underline Icon
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: ul-ta.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/underline.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     ul-ta := TouchArea {
                                                         clicked => { root.create-annotation("underline", root.selected-color-index); }
@@ -2550,17 +2620,17 @@ VerticalLayout {
 
                                                 // Strikethrough Icon
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: st-ta.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/strikethrough.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     st-ta := TouchArea {
                                                         clicked => { root.create-annotation("strikethrough", root.selected-color-index); }
@@ -2570,17 +2640,17 @@ VerticalLayout {
 
                                                 // Note Icon
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: root.show-note-input ? Theme.active-bg : note-ta.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/message-square.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: root.show-note-input ? Theme.accent : Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     note-ta := TouchArea {
                                                         clicked => {
@@ -2595,8 +2665,8 @@ VerticalLayout {
 
                                                 // Done Button between Note and X (active when note input is open)
                                                 if root.show-note-input: Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: note-save-ta-create.has-hover ? Theme.accent-hover : Theme.accent;
                                                     border-width: 1px;
@@ -2604,11 +2674,11 @@ VerticalLayout {
 
                                                     Image {
                                                         source: @image-url("../assets/icons/check.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.on-accent;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
 
                                                     note-save-ta-create := TouchArea {
@@ -2621,17 +2691,17 @@ VerticalLayout {
 
                                                 // Close Icon
                                                 Rectangle {
-                                                    width: 24px;
-                                                    height: 26px;
+                                                    width: 26px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: cls-ta-new.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/x.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.text-secondary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 5px;
+                                                        y: 6px;
                                                     }
                                                     cls-ta-new := TouchArea {
                                                         clicked => { root.clear-selection(); }
@@ -2745,6 +2815,20 @@ VerticalLayout {
                                         easing: ease-out;
                                     }
                                 }
+
+                                // Interactive Text Selection Highlights on Secondary Page
+                                if root.has-selection: Rectangle {
+                                    for sel-r in root.selection-rects: Rectangle {
+                                        if sel-r.page == root.current-page + 1: Rectangle {
+                                            x: sel-r.x;
+                                            y: sel-r.y;
+                                            width: sel-r.width;
+                                            height: sel-r.height;
+                                            background: #3b82f640;
+                                            border-radius: 2px;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -2809,14 +2893,16 @@ VerticalLayout {
                                 }
 
                                 // Interactive Text Selection Highlights directly on actual text
-                                if root.has-selection && root.current-page == page-item.page-index: Rectangle {
+                                if root.has-selection: Rectangle {
                                     for sel-r in root.selection-rects: Rectangle {
-                                        x: sel-r.x;
-                                        y: sel-r.y;
-                                        width: sel-r.width;
-                                        height: sel-r.height;
-                                        background: #3b82f640;
-                                        border-radius: 2px;
+                                        if sel-r.page == page-item.page-index: Rectangle {
+                                            x: sel-r.x;
+                                            y: sel-r.y;
+                                            width: sel-r.width;
+                                            height: sel-r.height;
+                                            background: #3b82f640;
+                                            border-radius: 2px;
+                                        }
                                     }
                                 }
 
@@ -2847,6 +2933,7 @@ VerticalLayout {
                                             if (event.kind == PointerEventKind.down) {
                                                 keyboard-handler.focus();
                                                 root.selected-annotation-id = -1;
+                                                root.selected-annotation-kind = "";
                                                 root.current-note-text = "";
                                                 root.show-note-input = false;
                                                 root.current-page = page-item.page-index;
@@ -2874,14 +2961,14 @@ VerticalLayout {
                                         width: annot.w;
                                         height: annot.h;
 
-                                        // Hover & Selection visual recognition feedback rectangle
+                                        // Selection visual recognition feedback rectangle (clean, non-obscuring)
                                         Rectangle {
                                             width: 100%;
                                             height: 100%;
                                             border-radius: 3px;
-                                            background: root.selected-annotation-id == annot.id ? #3b82f628 : ((root.hovered-annotation-id == annot.id || annot-ta2.has-hover) ? #ffffff22 : transparent);
-                                            border-width: (root.selected-annotation-id == annot.id || root.hovered-annotation-id == annot.id || annot-ta2.has-hover) ? 1.5px : 0px;
-                                            border-color: root.selected-annotation-id == annot.id ? #3b82f6 : annot.color;
+                                            background: root.selected-annotation-id == annot.id ? #3b82f618 : transparent;
+                                            border-width: root.selected-annotation-id == annot.id ? 1px : 0px;
+                                            border-color: root.selected-annotation-id == annot.id ? #3b82f680 : transparent;
                                         }
 
                                         // Underline (anchored with breathing space below character baseline, scaling with zoom)
@@ -2934,15 +3021,17 @@ VerticalLayout {
                                                 clicked => {
                                                     keyboard-handler.focus();
                                                     root.current-page = page-item.page-index;
+                                                    root.popup-page = page-item.page-index;
                                                     root.selected-annotation-id = annot.id;
+                                                    root.selected-annotation-kind = annot.kind;
                                                     root.selected-color-index = annot.color-index;
                                                     root.has-selection = false;
                                                     root.current-note-text = annot.comment;
                                                     root.show-note-input = true;
-                                                    let p_width = 290px;
-                                                    let p_height = 108px;
-                                                    root.popup-x = max(8px, min(page-item.width - p_width - 8px, page-item.width - p_width - 16px));
-                                                    root.popup-y = annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px;
+                                                    let p_width = max(root.note-input-width + 16px, 320px);
+                                                    let p_height = root.note-input-height + 66px;
+                                                    root.popup-x = round(max(8px, min(page-item.width - p_width - 8px, page-item.width - p_width - 16px)) / 1px) * 1px;
+                                                    root.popup-y = round((annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px) / 1px) * 1px;
                                                     root.show-popup = true;
                                                 }
                                             }
@@ -2962,15 +3051,17 @@ VerticalLayout {
                                             clicked => {
                                                 keyboard-handler.focus();
                                                 root.current-page = page-item.page-index;
+                                                root.popup-page = page-item.page-index;
                                                 root.selected-annotation-id = annot.id;
+                                                root.selected-annotation-kind = annot.kind;
                                                 root.selected-color-index = annot.color-index;
                                                 root.has-selection = false;
                                                 root.current-note-text = annot.comment;
                                                 root.show-note-input = annot.comment != "" || annot.kind == "note";
-                                                let p_width = root.show-note-input ? 290px : 224px;
-                                                let p_height = root.show-note-input ? 108px : 40px;
-                                                root.popup-x = max(8px, min(page-item.width - p_width - 8px, annot.x + (annot.w - p_width) / 2));
-                                                root.popup-y = annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px;
+                                                let p_width = root.show-note-input ? max(root.note-input-width + 16px, 320px) : 256px;
+                                                let p_height = root.show-note-input ? (root.note-input-height + 66px) : 54px;
+                                                root.popup-x = round(max(8px, min(page-item.width - p_width - 8px, annot.x + (annot.w - p_width) / 2)) / 1px) * 1px;
+                                                root.popup-y = round((annot.y > (p_height + 8px) ? annot.y - (p_height + 4px) : annot.y + annot.h + 8px) / 1px) * 1px;
                                                 root.show-popup = true;
                                             }
                                         }
@@ -2978,26 +3069,64 @@ VerticalLayout {
                                 }
 
                                 // Floating Annotation Icon Popup in Scroll View
-                                if root.show-popup && root.current-page == page-item.page-index: Rectangle {
-                                    x: root.popup-x;
-                                    y: root.popup-y;
-                                    width: root.show-note-input ? max(root.note-input-width + 12px, 320px) : (root.selected-annotation-id > 0 ? 250px : 290px);
-                                    height: root.show-note-input ? (root.note-input-height + 46px) : 40px;
-                                    border-radius: 14px;
+                                if root.show-popup && root.popup-page == page-item.page-index: popup2 := Rectangle {
+                                    x: round(root.popup-x / 1px) * 1px;
+                                    y: round(root.popup-y / 1px) * 1px;
+                                    width: root.show-note-input ? max(root.note-input-width + 16px, 320px) : (root.selected-annotation-id > 0 ? 256px : 296px);
+                                    height: root.show-note-input ? (root.note-input-height + 66px) : 54px;
+                                    border-radius: 12px;
                                     background: Theme.card-bg;
                                     border-width: 1px;
                                     border-color: Theme.border;
-                                    drop-shadow-blur: 20px;
-                                    drop-shadow-color: Theme.dark ? #00000070 : #00000015;
+                                    drop-shadow-blur: 10px;
+                                    drop-shadow-offset-y: 3px;
+                                    drop-shadow-color: Theme.dark ? #00000088 : #00000022;
                                     animate height { duration: 120ms; }
                                     animate width { duration: 120ms; }
 
                                     VerticalLayout {
-                                        padding: 6px;
-                                        spacing: 6px;
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        padding-top: 5px;
+                                        padding-bottom: 7px;
+                                        spacing: 5px;
+
+                                        // Drag Grip Handle Bar (allows dragging anywhere on the paper)
+                                        Rectangle {
+                                            height: 6px;
+                                            width: 100%;
+
+                                            Rectangle {
+                                                width: 32px;
+                                                height: 3px;
+                                                border-radius: 1.5px;
+                                                background: drag-ta2.has-hover ? Theme.text-secondary : Theme.border-subtle;
+                                                x: (parent.width - self.width) / 2;
+                                                y: 1px;
+                                            }
+
+                                            drag-ta2 := TouchArea {
+                                                mouse-cursor: move;
+                                                pointer-event(event) => {
+                                                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                                                        root.popup-grab-x = self.mouse-x;
+                                                        root.popup-grab-y = self.mouse-y;
+                                                    }
+                                                }
+                                                moved => {
+                                                    if (self.pressed) {
+                                                        let max-w = max(8px, page-item.width - popup2.width - 8px);
+                                                        let max-h = max(8px, page-item.height - popup2.height - 8px);
+                                                        root.popup-x = round(max(8px, min(max-w, root.popup-x + self.mouse-x - root.popup-grab-x)) / 1px) * 1px;
+                                                        root.popup-y = round(max(8px, min(max-h, root.popup-y + self.mouse-y - root.popup-grab-y)) / 1px) * 1px;
+                                                    }
+                                                }
+                                            }
+                                        }
 
                                         // UPDATE MODE: When existing annotation recognized
                                         if root.selected-annotation-id > 0: HorizontalLayout {
+                                            height: 28px;
                                             spacing: 6px;
                                             alignment: space-between;
 
@@ -3010,10 +3139,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #facc15;
+                                                    background: root.selected-annotation-kind == "highlight" ? Theme.hl-yellow : Theme.annot-yellow;
                                                     border-width: root.selected-color-index == 0 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 0 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => {
                                                             root.selected-color-index = 0;
@@ -3027,10 +3156,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #4ade80;
+                                                    background: root.selected-annotation-kind == "highlight" ? Theme.hl-green : Theme.annot-green;
                                                     border-width: root.selected-color-index == 1 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 1 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => {
                                                             root.selected-color-index = 1;
@@ -3044,10 +3173,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #60a5fa;
+                                                    background: root.selected-annotation-kind == "highlight" ? Theme.hl-blue : Theme.annot-blue;
                                                     border-width: root.selected-color-index == 2 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 2 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => {
                                                             root.selected-color-index = 2;
@@ -3061,10 +3190,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #f472b6;
+                                                    background: root.selected-annotation-kind == "highlight" ? Theme.hl-pink : Theme.annot-pink;
                                                     border-width: root.selected-color-index == 3 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 3 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => {
                                                             root.selected-color-index = 3;
@@ -3078,10 +3207,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #fb923c;
+                                                    background: root.selected-annotation-kind == "highlight" ? Theme.hl-orange : Theme.annot-orange;
                                                     border-width: root.selected-color-index == 4 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 4 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => {
                                                             root.selected-color-index = 4;
@@ -3097,7 +3226,7 @@ VerticalLayout {
                                                 width: 1px;
                                                 height: 18px;
                                                 background: Theme.border;
-                                                y: (parent.height - self.height) / 2;
+                                                y: 5px;
                                             }
 
                                             // Actions
@@ -3106,17 +3235,17 @@ VerticalLayout {
                                                 alignment: end;
 
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: root.show-note-input ? Theme.active-bg : note-ta-edit2.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/message-square.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: root.show-note-input ? Theme.accent : Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     note-ta-edit2 := TouchArea {
                                                         clicked => { root.show-note-input = !root.show-note-input; }
@@ -3126,8 +3255,8 @@ VerticalLayout {
 
                                                 // Done Button (active when note input is open)
                                                 if root.show-note-input: Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: note-save-ta-update2.has-hover ? Theme.accent-hover : Theme.accent;
                                                     border-width: 1px;
@@ -3135,11 +3264,11 @@ VerticalLayout {
 
                                                     Image {
                                                         source: @image-url("../assets/icons/check.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.on-accent;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
 
                                                     note-save-ta-update2 := TouchArea {
@@ -3147,29 +3276,31 @@ VerticalLayout {
                                                             root.update-annotation-note(root.selected-annotation-id, root.current-note-text);
                                                             root.show-popup = false;
                                                             root.selected-annotation-id = -1;
+                                                            root.selected-annotation-kind = "";
                                                         }
                                                         mouse-cursor: pointer;
                                                     }
                                                 }
 
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: del-ta2.has-hover ? #ef444425 : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/trash.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: #ef4444;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     del-ta2 := TouchArea {
                                                         clicked => {
                                                             root.delete-annotation(root.selected-annotation-id);
                                                             root.show-popup = false;
                                                             root.selected-annotation-id = -1;
+                                                            root.selected-annotation-kind = "";
                                                             root.hovered-annotation-id = -1;
                                                         }
                                                         mouse-cursor: pointer;
@@ -3177,22 +3308,23 @@ VerticalLayout {
                                                 }
 
                                                 Rectangle {
-                                                    width: 24px;
-                                                    height: 26px;
+                                                    width: 26px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: cls-ta-edit2.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/x.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.text-secondary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 5px;
+                                                        y: 6px;
                                                     }
                                                     cls-ta-edit2 := TouchArea {
                                                         clicked => {
                                                             root.show-popup = false;
                                                             root.selected-annotation-id = -1;
+                                                            root.selected-annotation-kind = "";
                                                         }
                                                         mouse-cursor: pointer;
                                                     }
@@ -3202,6 +3334,7 @@ VerticalLayout {
 
                                         // CREATE MODE: When text selection is active
                                         if root.selected-annotation-id <= 0: HorizontalLayout {
+                                            height: 28px;
                                             spacing: 6px;
                                             alignment: space-between;
 
@@ -3214,10 +3347,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #facc15;
+                                                    background: Theme.hl-yellow;
                                                     border-width: root.selected-color-index == 0 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 0 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => { root.selected-color-index = 0; }
                                                         mouse-cursor: pointer;
@@ -3228,10 +3361,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #4ade80;
+                                                    background: Theme.hl-green;
                                                     border-width: root.selected-color-index == 1 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 1 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => { root.selected-color-index = 1; }
                                                         mouse-cursor: pointer;
@@ -3242,10 +3375,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #60a5fa;
+                                                    background: Theme.hl-blue;
                                                     border-width: root.selected-color-index == 2 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 2 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => { root.selected-color-index = 2; }
                                                         mouse-cursor: pointer;
@@ -3256,10 +3389,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #f472b6;
+                                                    background: Theme.hl-pink;
                                                     border-width: root.selected-color-index == 3 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 3 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => { root.selected-color-index = 3; }
                                                         mouse-cursor: pointer;
@@ -3270,10 +3403,10 @@ VerticalLayout {
                                                     width: 18px;
                                                     height: 18px;
                                                     border-radius: 9px;
-                                                    background: #fb923c;
+                                                    background: Theme.hl-orange;
                                                     border-width: root.selected-color-index == 4 ? 2px : 1px;
                                                     border-color: root.selected-color-index == 4 ? #ffffff : #00000040;
-                                                    y: (parent.height - self.height) / 2;
+                                                    y: 5px;
                                                     TouchArea {
                                                         clicked => { root.selected-color-index = 4; }
                                                         mouse-cursor: pointer;
@@ -3286,7 +3419,7 @@ VerticalLayout {
                                                 width: 1px;
                                                 height: 18px;
                                                 background: Theme.border;
-                                                y: (parent.height - self.height) / 2;
+                                                y: 5px;
                                             }
 
                                             // 4 Action Icons + Done Button (if note active) + Close Button
@@ -3296,17 +3429,17 @@ VerticalLayout {
 
                                                 // Highlight Icon
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: hl-ta2.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/highlighter.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     hl-ta2 := TouchArea {
                                                         clicked => { root.create-annotation("highlight", root.selected-color-index); }
@@ -3316,17 +3449,17 @@ VerticalLayout {
 
                                                 // Underline Icon
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: ul-ta2.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/underline.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     ul-ta2 := TouchArea {
                                                         clicked => { root.create-annotation("underline", root.selected-color-index); }
@@ -3336,17 +3469,17 @@ VerticalLayout {
 
                                                 // Strikethrough Icon
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: st-ta2.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/strikethrough.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     st-ta2 := TouchArea {
                                                         clicked => { root.create-annotation("strikethrough", root.selected-color-index); }
@@ -3356,17 +3489,17 @@ VerticalLayout {
 
                                                 // Note Icon
                                                 Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: root.show-note-input ? Theme.active-bg : note-ta2.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/message-square.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: root.show-note-input ? Theme.accent : Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
                                                     note-ta2 := TouchArea {
                                                         clicked => {
@@ -3381,8 +3514,8 @@ VerticalLayout {
 
                                                 // Done Button between Note and X (active when note input is open)
                                                 if root.show-note-input: Rectangle {
-                                                    width: 26px;
-                                                    height: 26px;
+                                                    width: 28px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: note-save-ta-create2.has-hover ? Theme.accent-hover : Theme.accent;
                                                     border-width: 1px;
@@ -3390,11 +3523,11 @@ VerticalLayout {
 
                                                     Image {
                                                         source: @image-url("../assets/icons/check.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.on-accent;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 6px;
+                                                        y: 6px;
                                                     }
 
                                                     note-save-ta-create2 := TouchArea {
@@ -3407,17 +3540,17 @@ VerticalLayout {
 
                                                 // Close Icon
                                                 Rectangle {
-                                                    width: 24px;
-                                                    height: 26px;
+                                                    width: 26px;
+                                                    height: 28px;
                                                     border-radius: 6px;
                                                     background: cls-ta-new2.has-hover ? Theme.hover-bg : transparent;
                                                     Image {
                                                         source: @image-url("../assets/icons/x.svg");
-                                                        width: 14px;
-                                                        height: 14px;
+                                                        width: 16px;
+                                                        height: 16px;
                                                         colorize: Theme.text-secondary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
+                                                        x: 5px;
+                                                        y: 6px;
                                                     }
                                                     cls-ta-new2 := TouchArea {
                                                         clicked => { root.clear-selection(); }

@@ -203,16 +203,34 @@ pub fn extract_page_text_data(file_path: &str, page_no: i32) -> PageTextData {
         }
     }
 
+    // Sort lines in natural reading order: top-to-bottom, left-to-right
+    lines.sort_by(|a, b| {
+        let a_mid = (a.y0 + a.y1) / 2.0;
+        let b_mid = (b.y0 + b.y1) / 2.0;
+        let v_overlap = a.y0.max(b.y0) < a.y1.min(b.y1);
+        if v_overlap {
+            a.x0.partial_cmp(&b.x0).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            a_mid.partial_cmp(&b_mid).unwrap_or(std::cmp::Ordering::Equal)
+        }
+    });
+
     PageTextData { lines }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PageBoundary {
+    Point(f32, f32),
+    StartOfPage,
+    EndOfPage,
+}
+
 /// Computes selected text snippet and exact sub-word per-line bounding boxes in PDF points
-pub fn compute_text_selection(
+/// according to natural reading stream order (never 2D rectangular slicing).
+pub fn compute_page_selection(
     text_data: &PageTextData,
-    x_s: f32,
-    y_s: f32,
-    x_e: f32,
-    y_e: f32,
+    from: PageBoundary,
+    to: PageBoundary,
 ) -> (String, Vec<(f32, f32, f32, f32)>) {
     if text_data.lines.is_empty() {
         return (String::new(), Vec::new());
@@ -220,132 +238,131 @@ pub fn compute_text_selection(
 
     let lines = &text_data.lines;
 
-    // Helper to find nearest line to a point (x, y) with tight tolerance
-    let find_line = |_px: f32, py: f32| -> Option<usize> {
-        // Direct vertical hit (with 2pt tolerance)
+    // Helper to map any (x, y) point to (line_idx, char_idx) in text stream
+    let find_line_and_char = |px: f32, py: f32| -> (usize, usize) {
+        if py < lines[0].y0 {
+            return (0, 0);
+        }
+        if py > lines.last().unwrap().y1 {
+            let last_idx = lines.len() - 1;
+            return (last_idx, lines[last_idx].chars.len());
+        }
+
+        // Find line with minimum vertical distance
+        let mut best_line = 0;
+        let mut min_dist_y = f32::MAX;
+        let mut min_dist_x = f32::MAX;
+
         for (i, l) in lines.iter().enumerate() {
-            if py >= l.y0 - 2.0 && py <= l.y1 + 2.0 {
-                return Some(i);
+            let dist_y = if py < l.y0 {
+                l.y0 - py
+            } else if py > l.y1 {
+                py - l.y1
+            } else {
+                0.0
+            };
+
+            let dist_x = if px < l.x0 {
+                l.x0 - px
+            } else if px > l.x1 {
+                px - l.x1
+            } else {
+                0.0
+            };
+
+            if dist_y < min_dist_y - 0.5 {
+                min_dist_y = dist_y;
+                min_dist_x = dist_x;
+                best_line = i;
+            } else if (dist_y - min_dist_y).abs() <= 0.5 && dist_x < min_dist_x {
+                min_dist_x = dist_x;
+                best_line = i;
             }
         }
-        // Vertical proximity (clamped to max 12pt so we don't jump across sections/paragraphs)
-        let mut best = None;
-        let mut min_d = f32::MAX;
-        for (i, l) in lines.iter().enumerate() {
-            let mid_y = (l.y0 + l.y1) / 2.0;
-            let d = (py - mid_y).abs();
-            if d < min_d {
-                min_d = d;
-                best = Some(i);
+
+        // Now find char on best_line
+        let line = &lines[best_line];
+        if line.chars.is_empty() || px <= line.chars[0].x0 {
+            return (best_line, 0);
+        }
+        if px >= line.chars.last().unwrap().x1 {
+            return (best_line, line.chars.len());
+        }
+
+        for (j, ch) in line.chars.iter().enumerate() {
+            let mid_x = (ch.x0 + ch.x1) / 2.0;
+            if px <= mid_x {
+                return (best_line, j);
             }
         }
-        if min_d <= 12.0 {
-            best
-        } else {
-            None
-        }
+
+        (best_line, line.chars.len())
     };
 
-    let start_line = find_line(x_s, y_s);
-    let end_line = find_line(x_e, y_e);
-
-    // Selected characters grouped by line index
-    let mut selected_per_line: Vec<(usize, Vec<&PageChar>)> = Vec::new();
-
-    if let (Some(l_s), Some(l_e)) = (start_line, end_line) {
-        if l_s == l_e {
-            let line = &lines[l_s];
-            let x_min = x_s.min(x_e);
-            let x_max = x_s.max(x_e);
-            if (x_max - x_min) >= 1.5 {
-                let mut line_chars = Vec::new();
-                for ch in &line.chars {
-                    // Character overlaps drag range if character spans into [x_min, x_max]
-                    if ch.x1 >= x_min && ch.x0 <= x_max {
-                        line_chars.push(ch);
-                    }
-                }
-                if !line_chars.is_empty() {
-                    selected_per_line.push((l_s, line_chars));
-                }
-            }
-        } else if l_s < l_e {
-            // Dragging downwards across lines
-            let start = &lines[l_s];
-            let mut start_chars = Vec::new();
-            for ch in &start.chars {
-                if ch.x1 >= x_s {
-                    start_chars.push(ch);
-                }
-            }
-            if !start_chars.is_empty() {
-                selected_per_line.push((l_s, start_chars));
-            }
-
-            for mid_idx in (l_s + 1)..l_e {
-                let mid = &lines[mid_idx];
-                selected_per_line.push((mid_idx, mid.chars.iter().collect()));
-            }
-
-            let end = &lines[l_e];
-            let mut end_chars = Vec::new();
-            for ch in &end.chars {
-                if ch.x0 <= x_e {
-                    end_chars.push(ch);
-                }
-            }
-            if !end_chars.is_empty() {
-                selected_per_line.push((l_e, end_chars));
-            }
-        } else {
-            // Dragging upwards across lines
-            let top = &lines[l_e];
-            let mut top_chars = Vec::new();
-            for ch in &top.chars {
-                if ch.x1 >= x_e {
-                    top_chars.push(ch);
-                }
-            }
-            if !top_chars.is_empty() {
-                selected_per_line.push((l_e, top_chars));
-            }
-
-            for mid_idx in (l_e + 1)..l_s {
-                let mid = &lines[mid_idx];
-                selected_per_line.push((mid_idx, mid.chars.iter().collect()));
-            }
-
-            let bottom = &lines[l_s];
-            let mut bottom_chars = Vec::new();
-            for ch in &bottom.chars {
-                if ch.x0 <= x_s {
-                    bottom_chars.push(ch);
-                }
-            }
-            if !bottom_chars.is_empty() {
-                selected_per_line.push((l_s, bottom_chars));
-            }
+    let (l_s, c_s) = match from {
+        PageBoundary::StartOfPage => (0, 0),
+        PageBoundary::EndOfPage => {
+            let last_idx = lines.len() - 1;
+            (last_idx, lines[last_idx].chars.len())
         }
+        PageBoundary::Point(x, y) => find_line_and_char(x, y),
+    };
+
+    let (l_e, c_e) = match to {
+        PageBoundary::StartOfPage => (0, 0),
+        PageBoundary::EndOfPage => {
+            let last_idx = lines.len() - 1;
+            (last_idx, lines[last_idx].chars.len())
+        }
+        PageBoundary::Point(x, y) => find_line_and_char(x, y),
+    };
+
+    // Determine stream direction
+    let is_backward = (l_s > l_e) || (l_s == l_e && c_s > c_e);
+    let (start_line, start_char, end_line, end_char) = if is_backward {
+        (l_e, c_e, l_s, c_s)
+    } else {
+        (l_s, c_s, l_e, c_e)
+    };
+
+    if start_line == end_line && start_char == end_char {
+        return (String::new(), Vec::new());
     }
 
-    // Fallback: 2D bounding box intersection if linear selection found no characters
-    if selected_per_line.is_empty() {
-        let x_min = x_s.min(x_e);
-        let x_max = x_s.max(x_e);
-        let y_min = y_s.min(y_e);
-        let y_max = y_s.max(y_e);
-        if (x_max - x_min) >= 3.0 && (y_max - y_min) >= 3.0 {
-            for (l_idx, line) in lines.iter().enumerate() {
-                let mut line_chars = Vec::new();
-                for ch in &line.chars {
-                    if ch.x0 < x_max && ch.x1 > x_min && ch.y0 < y_max && ch.y1 > y_min {
-                        line_chars.push(ch);
-                    }
-                }
-                if !line_chars.is_empty() {
-                    selected_per_line.push((l_idx, line_chars));
-                }
+    let mut selected_per_line: Vec<(usize, Vec<&PageChar>)> = Vec::new();
+
+    if start_line == end_line {
+        let line = &lines[start_line];
+        let end_idx = end_char.min(line.chars.len());
+        let start_idx = start_char.min(end_idx);
+        let slice = line.chars[start_idx..end_idx].iter().collect::<Vec<_>>();
+        if !slice.is_empty() {
+            selected_per_line.push((start_line, slice));
+        }
+    } else {
+        // First line: from start_char to end of line
+        let first_line = &lines[start_line];
+        let s_idx = start_char.min(first_line.chars.len());
+        let first_slice = first_line.chars[s_idx..].iter().collect::<Vec<_>>();
+        if !first_slice.is_empty() {
+            selected_per_line.push((start_line, first_slice));
+        }
+
+        // Full intermediate lines
+        for mid_idx in (start_line + 1)..end_line {
+            let mid_line = &lines[mid_idx];
+            let mid_slice = mid_line.chars.iter().collect::<Vec<_>>();
+            if !mid_slice.is_empty() {
+                selected_per_line.push((mid_idx, mid_slice));
             }
+        }
+
+        // Last line: from beginning to end_char
+        let last_line = &lines[end_line];
+        let e_idx = end_char.min(last_line.chars.len());
+        let last_slice = last_line.chars[..e_idx].iter().collect::<Vec<_>>();
+        if !last_slice.is_empty() {
+            selected_per_line.push((end_line, last_slice));
         }
     }
 
@@ -388,6 +405,21 @@ pub fn compute_text_selection(
 
     let snippet = snippet_parts.join(" ");
     (snippet, line_rects)
+}
+
+/// Computes selected text snippet and exact sub-word per-line bounding boxes in PDF points
+pub fn compute_text_selection(
+    text_data: &PageTextData,
+    x_s: f32,
+    y_s: f32,
+    x_e: f32,
+    y_e: f32,
+) -> (String, Vec<(f32, f32, f32, f32)>) {
+    compute_page_selection(
+        text_data,
+        PageBoundary::Point(x_s, y_s),
+        PageBoundary::Point(x_e, y_e),
+    )
 }
 
 /// Adjusts raw line rectangles for highlights with vertical ascender/descender padding
@@ -1255,6 +1287,63 @@ fn set_crisp_rectangular_highlight_appearance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_stream_based_selection_downward() {
+        fn make_test_line(text: &str, y0: f32, y1: f32, start_x: f32) -> PageLine {
+            let mut chars = Vec::new();
+            let mut cur_x = start_x;
+            for c in text.chars() {
+                let char_w = 6.0;
+                chars.push(PageChar {
+                    ch: c,
+                    x0: cur_x,
+                    x1: cur_x + char_w,
+                    y0,
+                    y1,
+                    baseline_y: y1 - 2.0,
+                });
+                cur_x += char_w;
+            }
+            PageLine {
+                x0: start_x,
+                x1: cur_x,
+                y0,
+                y1,
+                baseline_y: y1 - 2.0,
+                chars,
+            }
+        }
+
+        let l0 = make_test_line("which is paralleled exactly in Colossians 1:4. Every Christian both believes", 100.0, 115.0, 50.0);
+        let l1 = make_test_line("and loves. Faith and love are basic Christian graces, as also is hope, the", 120.0, 135.0, 50.0);
+        let l2 = make_test_line("third member of the triad, which has already been mentioned in verse 12", 140.0, 155.0, 50.0);
+        let l3 = make_test_line("too, in this case Jews and Gentiles without distinction).", 160.0, 175.0, 50.0);
+        let l4 = make_test_line("1 Barth, Ephesians, I, p. 146.", 220.0, 235.0, 50.0); // Footnote
+
+        let text_data = PageTextData {
+            lines: vec![l0, l1, l2, l3, l4],
+        };
+
+        // User starts at "which" (x = 52.0, y = 105.0) and drags STRAIGHT DOWN to "Jews and" (x = 210.0, y = 168.0)
+        let (snippet, rects) = compute_text_selection(&text_data, 52.0, 105.0, 210.0, 168.0);
+
+        // 1. Footnote (line 4) must NOT be selected
+        assert_eq!(rects.len(), 4);
+        assert!(!snippet.contains("Barth"));
+
+        // 2. Line 0 must be selected through to the end of the line
+        assert!(snippet.contains("in Colossians 1:4"));
+        assert!(snippet.contains("both believes"));
+
+        // 3. Middle lines (1 and 2) must be 100% fully selected
+        assert!(snippet.contains("and loves. Faith and love are basic Christian graces, as also is hope, the"));
+        assert!(snippet.contains("third member of the triad, which has already been mentioned in verse 12"));
+
+        // 4. Line 3 must end at "Jews and" and NOT include "without distinction"
+        assert!(snippet.contains("too, in this case Jews and"));
+        assert!(!snippet.contains("without distinction"));
+    }
 
     #[test]
     fn test_inspect_annot_ap() {

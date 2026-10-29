@@ -135,6 +135,13 @@ enum UndoAction {
     },
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageSelection {
+    pub page: i32,
+    pub snippet: String,
+    pub line_rects_pt: Vec<(f32, f32, f32, f32)>,
+}
+
 struct AppState {
     file_path: String,
     current_page: i32, // 0-indexed
@@ -153,8 +160,11 @@ struct AppState {
     // Cached character-level text geometry for sub-word selection
     cached_text_page: i32,
     cached_text: pdf::PageTextData,
+    page_text_cache: std::collections::HashMap<i32, pdf::PageTextData>,
+    sel_start_page: i32,
     sel_start_pt: (f32, f32),
     // Current active selection state in PDF points
+    active_selections: Vec<PageSelection>,
     active_selection_page: i32,
     active_selection_snippet: String,
     active_selection_line_rects: Vec<(f32, f32, f32, f32)>,
@@ -237,7 +247,111 @@ impl AppState {
     }
 }
 
+pub fn parse_primary_monitor_scale(xml: &str) -> Option<f32> {
+    let mut first_scale: Option<f32> = None;
+
+    // Split by <logicalmonitor> blocks
+    for block in xml.split("<logicalmonitor>") {
+        if let Some(end_idx) = block.find("</logicalmonitor>") {
+            let lm_body = &block[..end_idx];
+            let mut block_scale = None;
+            let mut block_primary = false;
+
+            if let Some(s_start) = lm_body.find("<scale>") {
+                let rest = &lm_body[s_start + 7..];
+                if let Some(s_end) = rest.find("</scale>") {
+                    if let Ok(val) = rest[..s_end].trim().parse::<f32>() {
+                        block_scale = Some(val);
+                    }
+                }
+            }
+
+            if lm_body.contains("<primary>yes</primary>") {
+                block_primary = true;
+            }
+
+            if first_scale.is_none() && block_scale.is_some() {
+                first_scale = block_scale;
+            }
+
+            if block_primary && block_scale.is_some() {
+                return block_scale;
+            }
+        }
+    }
+
+    first_scale
+}
+
+fn detect_system_scale_factor() -> Option<f32> {
+    // 1. If explicit environment variable is already set, respect it
+    if let Ok(val) = env::var("SLINT_SCALE_FACTOR") {
+        if let Ok(scale) = val.parse::<f32>() {
+            if scale > 0.1 {
+                return Some(scale);
+            }
+        }
+    }
+
+    // 2. Check GDK_SCALE / QT_SCALE_FACTOR
+    for var in &["GDK_SCALE", "QT_SCALE_FACTOR"] {
+        if let Ok(val) = env::var(var) {
+            if let Ok(scale) = val.parse::<f32>() {
+                if scale > 0.1 {
+                    return Some(scale);
+                }
+            }
+        }
+    }
+
+    // 3. GNOME / Wayland / Mutter monitor configuration (~/.config/monitors.xml)
+    if let Ok(home) = env::var("HOME") {
+        let monitors_path = Path::new(&home).join(".config/monitors.xml");
+        if let Ok(content) = std::fs::read_to_string(monitors_path) {
+            if let Some(scale) = parse_primary_monitor_scale(&content) {
+                if scale > 0.1 {
+                    return Some(scale);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn init_display_environment() {
+    // 1. On Wayland desktops, ensure winit connects directly via Wayland backend
+    if env::var("WAYLAND_DISPLAY").is_ok() && env::var("WINIT_UNIX_BACKEND").is_err() {
+        // Safe: called synchronously at program startup before any worker threads are created.
+        unsafe {
+            env::set_var("WINIT_UNIX_BACKEND", "wayland");
+        }
+    }
+
+    // 2. Auto-detect display scaling (e.g. 1.25 on fractional Wayland displays)
+    // and set SLINT_SCALE_FACTOR before the window backend initializes.
+    if env::var("SLINT_SCALE_FACTOR").is_err() {
+        if let Some(scale) = detect_system_scale_factor() {
+            if (scale - 1.0).abs() > 0.01 {
+                // Safe: called synchronously at program startup before any worker threads are created.
+                unsafe {
+                    env::set_var("SLINT_SCALE_FACTOR", scale.to_string());
+                }
+            }
+        }
+    }
+}
+
+pub fn compute_actual_render_zoom(zoom_level: f32, scale_factor: f32) -> f32 {
+    // Standard PDF points are 72 DPI while UI logical pixels assume 96 DPI (1.33x ratio).
+    // Applying a 2.0x supersampling factor ensures font glyphs, vectors, and formulas are
+    // rasterized at native screen density and crisply downsampled into the page card container,
+    // avoiding blurry/480p rendering on both fractional and high-DPI monitors.
+    (zoom_level * scale_factor * 2.0).clamp(0.2, 6.0)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_display_environment();
     let app = AppWindow::new()?;
 
     // Register global UI callbacks (Theme toggle & Open document)
@@ -473,7 +587,10 @@ fn setup_document(
         redo_stack: VecDeque::new(),
         cached_text_page: -1,
         cached_text: pdf::PageTextData::default(),
+        page_text_cache: std::collections::HashMap::new(),
+        sel_start_page: 0,
         sel_start_pt: (0.0, 0.0),
+        active_selections: Vec::new(),
         active_selection_page: 0,
         active_selection_snippet: String::new(),
         active_selection_line_rects: Vec::new(),
@@ -586,10 +703,197 @@ fn handle_rendered_page(
 }
 
 fn ensure_cached_text(state: &mut AppState, page: i32) {
-    if state.cached_text_page != page || state.cached_text.lines.is_empty() {
-        state.cached_text_page = page;
-        state.cached_text = pdf::extract_page_text_data(&state.file_path, page);
+    if !state.page_text_cache.contains_key(&page) {
+        let extracted = pdf::extract_page_text_data(&state.file_path, page);
+        state.page_text_cache.insert(page, extracted);
     }
+    if state.cached_text_page != page {
+        state.cached_text_page = page;
+        if let Some(t) = state.page_text_cache.get(&page) {
+            state.cached_text = t.clone();
+        }
+    }
+}
+
+fn get_cached_or_load_text<'a>(
+    page_text_cache: &'a mut std::collections::HashMap<i32, pdf::PageTextData>,
+    file_path: &str,
+    page: i32,
+) -> &'a pdf::PageTextData {
+    page_text_cache.entry(page).or_insert_with(|| pdf::extract_page_text_data(file_path, page))
+}
+
+fn resolve_scroll_drag_position(state: &AppState, origin_page: i32, local_x: f32, local_y: f32) -> (i32, f32, f32) {
+    if !state.is_scroll_view || state.total_pages <= 1 {
+        return (origin_page, local_x, local_y);
+    }
+
+    let mut page_offsets: Vec<(f32, f32)> = Vec::with_capacity(state.total_pages as usize);
+    let mut cur_offset = 0.0f32;
+    for i in 0..state.total_pages {
+        let (pw_pt, ph_pt) = state.get_page_size(i);
+        let pw = pw_pt * state.zoom_level;
+        let ph = ph_pt * state.zoom_level;
+        page_offsets.push((cur_offset, pw));
+        cur_offset += ph + 24.0;
+    }
+
+    let origin_top = page_offsets.get(origin_page as usize).map(|o| o.0).unwrap_or(0.0) + 12.0;
+    let global_y = origin_top + local_y;
+
+    for i in 0..state.total_pages {
+        let (cur_top, pw) = page_offsets[i as usize];
+        let card_top = cur_top + 12.0;
+        let ph = state.get_page_size(i).1 * state.zoom_level;
+        let card_bottom = card_top + ph;
+
+        if i == 0 && global_y < card_top {
+            return (0, local_x.clamp(0.0, pw), 0.0);
+        }
+
+        if global_y >= card_top && global_y <= card_bottom {
+            return (i, local_x.clamp(0.0, pw), global_y - card_top);
+        }
+
+        if global_y > card_bottom {
+            if i == state.total_pages - 1 {
+                return (i, local_x.clamp(0.0, pw), ph);
+            }
+            let next_card_top = page_offsets[(i + 1) as usize].0 + 12.0;
+            if global_y < next_card_top {
+                // In the 24px gap between page i and page i + 1
+                if global_y - card_bottom < (next_card_top - card_bottom) / 2.0 {
+                    return (i, local_x.clamp(0.0, pw), ph);
+                } else {
+                    let next_pw = page_offsets[(i + 1) as usize].1;
+                    return (i + 1, local_x.clamp(0.0, next_pw), 0.0);
+                }
+            }
+        }
+    }
+
+    let last_idx = state.total_pages - 1;
+    let (pw, ph) = (
+        state.get_page_size(last_idx).0 * state.zoom_level,
+        state.get_page_size(last_idx).1 * state.zoom_level,
+    );
+    (last_idx, local_x.clamp(0.0, pw), ph)
+}
+
+fn compute_multipage_selection(
+    state: &mut AppState,
+    start_page: i32,
+    start_pt: (f32, f32),
+    end_page: i32,
+    end_pt: (f32, f32),
+) -> Vec<PageSelection> {
+    let mut results = Vec::new();
+
+    if start_page == end_page {
+        let text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, start_page);
+        let (snippet, rects) = pdf::compute_text_selection(text, start_pt.0, start_pt.1, end_pt.0, end_pt.1);
+        if !rects.is_empty() && !snippet.trim().is_empty() {
+            results.push(PageSelection {
+                page: start_page,
+                snippet,
+                line_rects_pt: rects,
+            });
+        }
+    } else if start_page < end_page {
+        // Page start_page: from start_pt to EndOfPage
+        let p_start_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, start_page);
+        let (s_snip, s_rects) = pdf::compute_page_selection(
+            p_start_text,
+            pdf::PageBoundary::Point(start_pt.0, start_pt.1),
+            pdf::PageBoundary::EndOfPage,
+        );
+        if !s_rects.is_empty() {
+            results.push(PageSelection {
+                page: start_page,
+                snippet: s_snip,
+                line_rects_pt: s_rects,
+            });
+        }
+
+        // Intermediate full pages
+        for p in (start_page + 1)..end_page {
+            let p_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, p);
+            let (mid_snip, mid_rects) = pdf::compute_page_selection(
+                p_text,
+                pdf::PageBoundary::StartOfPage,
+                pdf::PageBoundary::EndOfPage,
+            );
+            if !mid_rects.is_empty() {
+                results.push(PageSelection {
+                    page: p,
+                    snippet: mid_snip,
+                    line_rects_pt: mid_rects,
+                });
+            }
+        }
+
+        // Page end_page: from StartOfPage to end_pt
+        let p_end_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, end_page);
+        let (e_snip, e_rects) = pdf::compute_page_selection(
+            p_end_text,
+            pdf::PageBoundary::StartOfPage,
+            pdf::PageBoundary::Point(end_pt.0, end_pt.1),
+        );
+        if !e_rects.is_empty() {
+            results.push(PageSelection {
+                page: end_page,
+                snippet: e_snip,
+                line_rects_pt: e_rects,
+            });
+        }
+    } else {
+        // Dragging upwards: end_page < start_page
+        let p_end_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, end_page);
+        let (e_snip, e_rects) = pdf::compute_page_selection(
+            p_end_text,
+            pdf::PageBoundary::Point(end_pt.0, end_pt.1),
+            pdf::PageBoundary::EndOfPage,
+        );
+        if !e_rects.is_empty() {
+            results.push(PageSelection {
+                page: end_page,
+                snippet: e_snip,
+                line_rects_pt: e_rects,
+            });
+        }
+
+        for p in (end_page + 1)..start_page {
+            let p_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, p);
+            let (mid_snip, mid_rects) = pdf::compute_page_selection(
+                p_text,
+                pdf::PageBoundary::StartOfPage,
+                pdf::PageBoundary::EndOfPage,
+            );
+            if !mid_rects.is_empty() {
+                results.push(PageSelection {
+                    page: p,
+                    snippet: mid_snip,
+                    line_rects_pt: mid_rects,
+                });
+            }
+        }
+
+        let p_start_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, start_page);
+        let (s_snip, s_rects) = pdf::compute_page_selection(
+            p_start_text,
+            pdf::PageBoundary::StartOfPage,
+            pdf::PageBoundary::Point(start_pt.0, start_pt.1),
+        );
+        if !s_rects.is_empty() {
+            results.push(PageSelection {
+                page: start_page,
+                snippet: s_snip,
+                line_rects_pt: s_rects,
+            });
+        }
+    }
+
+    results
 }
 
 fn get_page_highlights(state: &AppState, page: i32) -> Vec<pdf::worker::HighlightOverlay> {
@@ -624,11 +928,7 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
 
     for annot in &s.annotations {
         let swatch_col = get_color(annot.color_index).1;
-        let col = if annot.kind == "highlight" {
-            swatch_col
-        } else {
-            parse_slint_color(&annot.color_hex).unwrap_or(swatch_col)
-        };
+        let col = parse_slint_color(&annot.color_hex).unwrap_or(swatch_col);
         let item_data = AnnotationItemData {
             id: annot.id,
             page: annot.page,
@@ -680,12 +980,38 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
     ui.set_page_annotations(v_model.into());
 
     // Update active selection rects according to the current zoom level
-    if !s.active_selection_line_rects.is_empty() {
+    if !s.active_selections.is_empty() {
+        let mut ui_rects = Vec::new();
+        for sel in &s.active_selections {
+            let (unrot_w, unrot_h) = s.get_unrotated_page_size(sel.page);
+            for orig_r in adjust_line_rects_for_highlight(&sel.line_rects_pt) {
+                let tr = transform_rect_for_rotation(orig_r, unrot_w, unrot_h, s.rotation);
+                ui_rects.push(SelectionRect {
+                    page: sel.page,
+                    x: tr.0 * s.zoom_level,
+                    y: tr.1 * s.zoom_level,
+                    width: (tr.2 - tr.0) * s.zoom_level,
+                    height: (tr.3 - tr.1) * s.zoom_level,
+                });
+            }
+        }
+        if let Some(first) = ui_rects.first() {
+            let (pw_pt, _) = s.get_page_size(first.page);
+            let page_w = pw_pt * s.zoom_level;
+            let popup_x = ((first.x + (first.width - 296.0) / 2.0).clamp(10.0, (page_w - 306.0).max(10.0))).round();
+            let popup_y = ((first.y - 58.0).max(8.0)).round();
+            ui.set_popup_page(first.page);
+            ui.set_popup_x(popup_x);
+            ui.set_popup_y(popup_y);
+        }
+        ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::from(ui_rects)).into());
+    } else if !s.active_selection_line_rects.is_empty() {
         let (unrot_w, unrot_h) = s.get_unrotated_page_size(s.active_selection_page);
         let mut ui_rects = Vec::new();
         for orig_r in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
             let tr = transform_rect_for_rotation(orig_r, unrot_w, unrot_h, s.rotation);
             ui_rects.push(SelectionRect {
+                page: s.active_selection_page,
                 x: tr.0 * s.zoom_level,
                 y: tr.1 * s.zoom_level,
                 width: (tr.2 - tr.0) * s.zoom_level,
@@ -696,8 +1022,9 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
             let first = &ui_rects[0];
             let (pw_pt, _) = s.get_page_size(s.active_selection_page);
             let page_w = pw_pt * s.zoom_level;
-            let popup_x = (first.x + (first.width - 250.0) / 2.0).clamp(10.0, (page_w - 260.0).max(10.0));
-            let popup_y = (first.y - 48.0).max(8.0);
+            let popup_x = ((first.x + (first.width - 296.0) / 2.0).clamp(10.0, (page_w - 306.0).max(10.0))).round();
+            let popup_y = ((first.y - 58.0).max(8.0)).round();
+            ui.set_popup_page(first.page);
             ui.set_popup_x(popup_x);
             ui.set_popup_y(popup_y);
         }
@@ -963,7 +1290,7 @@ fn update_view(ui: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
 
     let scale_factor = ui.window().scale_factor().max(1.0);
-    let actual_render_zoom = (state.zoom_level * scale_factor).max(0.1);
+    let actual_render_zoom = compute_actual_render_zoom(state.zoom_level, scale_factor);
 
     // Update toolbar page indicator: e.g. "1 / 120" or "1-2 / 120"
     ui.set_current_page(state.current_page);
@@ -1139,7 +1466,7 @@ fn prefetch_neighbors(state: &mut AppState, generation: u64, zoom: f32) {
 
 fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindow) {
     let scale_factor = ui.window().scale_factor().max(1.0);
-    let actual_render_zoom = (state.zoom_level * scale_factor).max(0.1);
+    let actual_render_zoom = compute_actual_render_zoom(state.zoom_level, scale_factor);
 
     let next_gen = state.worker.current_generation() + 1;
     state.worker.set_current_generation(next_gen);
@@ -1190,7 +1517,7 @@ fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindo
 
 fn trigger_scroll_page_render_direct(state: &mut AppState, page_idx: i32, ui: &AppWindow) {
     let scale_factor = ui.window().scale_factor().max(1.0);
-    let actual_render_zoom = (state.zoom_level * scale_factor).max(0.1);
+    let actual_render_zoom = compute_actual_render_zoom(state.zoom_level, scale_factor);
 
     let next_gen = state.worker.current_generation() + 1;
     state.worker.set_current_generation(next_gen);
@@ -1840,8 +2167,10 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
                     let zoom = s.zoom_level.max(0.1);
-                    s.active_selection_page = page_no;
+                    s.sel_start_page = page_no;
                     s.sel_start_pt = s.to_unrotated_pt(page_no, local_x / zoom, local_y / zoom);
+                    s.active_selections.clear();
+                    s.active_selection_page = page_no;
                     s.active_selection_snippet.clear();
                     s.active_selection_line_rects.clear();
                     ensure_cached_text(s, page_no);
@@ -1852,6 +2181,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 ui.set_show_popup(false);
                 ui.set_show_note_input(false);
                 ui.set_selected_annotation_id(-1);
+                ui.set_selected_annotation_kind("".into());
                 ui.set_hovered_annotation_id(-1);
                 ui.set_current_note_text("".into());
                 ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
@@ -1859,7 +2189,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
         });
     }
 
-    // Selection Dragged (live sub-word character level selection)
+    // Selection Dragged (live sub-word character level selection across lines & pages)
     {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
@@ -1869,32 +2199,37 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
+                    let (target_page, curr_x, curr_y) = resolve_scroll_drag_position(s, page_no, local_x, local_y);
                     let zoom = s.zoom_level.max(0.1);
-                    let (pt_x, pt_y) = s.to_unrotated_pt(page_no, local_x / zoom, local_y / zoom);
-                    ensure_cached_text(s, page_no);
+                    let (pt_x, pt_y) = s.to_unrotated_pt(target_page, curr_x / zoom, curr_y / zoom);
 
-                    let (snippet, rects_pt) = pdf::compute_text_selection(
-                        &s.cached_text,
-                        s.sel_start_pt.0,
-                        s.sel_start_pt.1,
-                        pt_x,
-                        pt_y,
+                    let selections = compute_multipage_selection(
+                        s,
+                        s.sel_start_page,
+                        s.sel_start_pt,
+                        target_page,
+                        (pt_x, pt_y),
                     );
 
-                    s.active_selection_snippet = snippet;
-                    s.active_selection_line_rects = rects_pt;
+                    s.active_selections = selections;
+                    s.active_selection_page = s.active_selections.first().map(|p| p.page).unwrap_or(page_no);
+                    s.active_selection_snippet = s.active_selections.iter().map(|p| p.snippet.as_str()).collect::<Vec<_>>().join("\n");
+                    s.active_selection_line_rects = s.active_selections.first().map(|p| p.line_rects_pt.clone()).unwrap_or_default();
 
-                    if !s.active_selection_line_rects.is_empty() {
+                    if !s.active_selections.is_empty() {
                         has_sel = true;
-                        let (unrot_w, unrot_h) = s.get_unrotated_page_size(page_no);
-                        for orig_r in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
-                            let tr = transform_rect_for_rotation(orig_r, unrot_w, unrot_h, s.rotation);
-                            line_rects_ui.push(SelectionRect {
-                                x: tr.0 * zoom,
-                                y: tr.1 * zoom,
-                                width: (tr.2 - tr.0) * zoom,
-                                height: (tr.3 - tr.1) * zoom,
-                            });
+                        for sel in &s.active_selections {
+                            let (unrot_w, unrot_h) = s.get_unrotated_page_size(sel.page);
+                            for orig_r in adjust_line_rects_for_highlight(&sel.line_rects_pt) {
+                                let tr = transform_rect_for_rotation(orig_r, unrot_w, unrot_h, s.rotation);
+                                line_rects_ui.push(SelectionRect {
+                                    page: sel.page,
+                                    x: tr.0 * zoom,
+                                    y: tr.1 * zoom,
+                                    width: (tr.2 - tr.0) * zoom,
+                                    height: (tr.3 - tr.1) * zoom,
+                                });
+                            }
                         }
                     }
                 }
@@ -1919,45 +2254,53 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
         app.on_selection_completed(move |page_no, local_x, local_y| {
             let mut line_rects_ui = Vec::new();
             let mut has_sel = false;
+            let mut popup_page = page_no;
             let mut popup_x = 0.0f32;
             let mut popup_y = 0.0f32;
 
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
+                    let (target_page, curr_x, curr_y) = resolve_scroll_drag_position(s, page_no, local_x, local_y);
                     let zoom = s.zoom_level.max(0.1);
-                    let (pt_x, pt_y) = s.to_unrotated_pt(page_no, local_x / zoom, local_y / zoom);
-                    ensure_cached_text(s, page_no);
+                    let (pt_x, pt_y) = s.to_unrotated_pt(target_page, curr_x / zoom, curr_y / zoom);
 
-                    let (snippet, rects_pt) = pdf::compute_text_selection(
-                        &s.cached_text,
-                        s.sel_start_pt.0,
-                        s.sel_start_pt.1,
-                        pt_x,
-                        pt_y,
+                    let selections = compute_multipage_selection(
+                        s,
+                        s.sel_start_page,
+                        s.sel_start_pt,
+                        target_page,
+                        (pt_x, pt_y),
                     );
 
-                    s.active_selection_snippet = snippet;
-                    s.active_selection_line_rects = rects_pt;
+                    s.active_selections = selections;
+                    s.active_selection_page = s.active_selections.first().map(|p| p.page).unwrap_or(page_no);
+                    s.active_selection_snippet = s.active_selections.iter().map(|p| p.snippet.as_str()).collect::<Vec<_>>().join("\n");
+                    s.active_selection_line_rects = s.active_selections.first().map(|p| p.line_rects_pt.clone()).unwrap_or_default();
 
-                    if !s.active_selection_line_rects.is_empty() && !s.active_selection_snippet.trim().is_empty() {
+                    if !s.active_selections.is_empty() && !s.active_selection_snippet.trim().is_empty() {
                         has_sel = true;
-                        let (unrot_w, unrot_h) = s.get_unrotated_page_size(page_no);
-                        for orig_r in adjust_line_rects_for_highlight(&s.active_selection_line_rects) {
-                            let tr = transform_rect_for_rotation(orig_r, unrot_w, unrot_h, s.rotation);
-                            line_rects_ui.push(SelectionRect {
-                                x: tr.0 * zoom,
-                                y: tr.1 * zoom,
-                                width: (tr.2 - tr.0) * zoom,
-                                height: (tr.3 - tr.1) * zoom,
-                            });
+                        for sel in &s.active_selections {
+                            let (unrot_w, unrot_h) = s.get_unrotated_page_size(sel.page);
+                            for orig_r in adjust_line_rects_for_highlight(&sel.line_rects_pt) {
+                                let tr = transform_rect_for_rotation(orig_r, unrot_w, unrot_h, s.rotation);
+                                line_rects_ui.push(SelectionRect {
+                                    page: sel.page,
+                                    x: tr.0 * zoom,
+                                    y: tr.1 * zoom,
+                                    width: (tr.2 - tr.0) * zoom,
+                                    height: (tr.3 - tr.1) * zoom,
+                                });
+                            }
                         }
                         if let Some(first) = line_rects_ui.first() {
-                            let (pw_pt, _) = s.get_page_size(page_no);
+                            let (pw_pt, _) = s.get_page_size(first.page);
                             let page_w = pw_pt * zoom;
-                            popup_x = (first.x + (first.width - 250.0) / 2.0).clamp(10.0, (page_w - 260.0).max(10.0));
-                            popup_y = (first.y - 48.0).max(8.0);
+                            popup_page = first.page;
+                            popup_x = ((first.x + (first.width - 296.0) / 2.0).clamp(10.0, (page_w - 306.0).max(10.0))).round();
+                            popup_y = ((first.y - 58.0).max(8.0)).round();
                         }
                     } else {
+                        s.active_selections.clear();
                         s.active_selection_line_rects.clear();
                         s.active_selection_snippet.clear();
                     }
@@ -1969,6 +2312,8 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::from(line_rects_ui)).into());
                     ui.set_has_selection(true);
                     ui.set_selected_annotation_id(-1);
+                ui.set_selected_annotation_kind("".into());
+                    ui.set_popup_page(popup_page);
                     ui.set_popup_x(popup_x);
                     ui.set_popup_y(popup_y);
                     ui.set_show_popup(true);
@@ -1979,6 +2324,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_show_note_input(false);
                     ui.set_current_note_text("".into());
                     ui.set_selected_annotation_id(-1);
+                ui.set_selected_annotation_kind("".into());
                 }
             }
         });
@@ -1996,21 +2342,36 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 get_color(color_idx).0
             };
             let mut need_sync = false;
-            let mut highlight_update: Option<(i32, slint::Image)> = None;
+            let mut highlight_updates: Vec<(i32, slint::Image)> = Vec::new();
 
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
-                    if !s.active_selection_line_rects.is_empty() {
-                        let target_page = s.active_selection_page;
+                    let selections = if !s.active_selections.is_empty() {
+                        s.active_selections.clone()
+                    } else if !s.active_selection_line_rects.is_empty() {
+                        vec![PageSelection {
+                            page: s.active_selection_page,
+                            snippet: s.active_selection_snippet.clone(),
+                            line_rects_pt: s.active_selection_line_rects.clone(),
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+
+                    for sel in selections {
+                        if sel.line_rects_pt.is_empty() {
+                            continue;
+                        }
+                        let target_page = sel.page;
                         let annot = AnnotationRecord {
                             id: s.next_annot_id,
                             page: target_page,
                             kind: kind.to_string(),
                             color_index: color_idx,
-                            color_hex: hex,
-                            snippet: s.active_selection_snippet.clone(),
+                            color_hex: hex.clone(),
+                            snippet: sel.snippet.clone(),
                             comment: String::new(),
-                            line_rects_pt: s.active_selection_line_rects.clone(),
+                            line_rects_pt: sel.line_rects_pt.clone(),
                             is_from_pdf: false,
                         };
                         s.next_annot_id += 1;
@@ -2018,7 +2379,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 
                         if kind == "highlight" {
                             let rgb = get_highlight_blend_rgb(color_idx);
-                            let adjusted_rects = adjust_line_rects_for_highlight(&s.active_selection_line_rects);
+                            let adjusted_rects = adjust_line_rects_for_highlight(&sel.line_rects_pt);
                             let (pw_pt, _) = s.get_page_size(target_page);
                             let (unrot_w, unrot_h) = s.get_unrotated_page_size(target_page);
                             let rotation = s.rotation;
@@ -2058,16 +2419,18 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                                 }
 
                                 if let Some(img) = rgba_to_image(&cached.rgba, w, h) {
-                                    highlight_update = Some((target_page, img));
+                                    highlight_updates.push((target_page, img));
                                 }
                             }
                         }
 
                         s.annotations.push(annot);
-                        s.active_selection_line_rects.clear();
-                        s.active_selection_snippet.clear();
                         need_sync = true;
                     }
+
+                    s.active_selections.clear();
+                    s.active_selection_line_rects.clear();
+                    s.active_selection_snippet.clear();
                 }
             }
 
@@ -2079,18 +2442,21 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_show_note_input(false);
                     ui.set_current_note_text("".into());
                     ui.set_selected_annotation_id(-1);
+                ui.set_selected_annotation_kind("".into());
                     ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
 
-                    // If a highlight was created and blended directly in-place, update the UI image immediately
-                    if let Some((page, img)) = highlight_update {
+                    for (target_page, img) in highlight_updates {
                         let pages_model = ui.get_scroll_pages();
-                        let idx = page as usize;
+                        let idx = target_page as usize;
                         if let Some(mut item) = pages_model.row_data(idx) {
                             item.image = img.clone();
                             pages_model.set_row_data(idx, item);
                         }
-                        if page == ui.get_current_page() {
-                            ui.set_page_image(img);
+                        if target_page == ui.get_current_page() {
+                            ui.set_page_image(img.clone());
+                        }
+                        if ui.get_is_dual_page() && target_page == ui.get_current_page() + 1 {
+                            ui.set_secondary_page_image(img);
                         }
                     }
 
@@ -2114,21 +2480,31 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
 
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
-                    if !s.active_selection_line_rects.is_empty() {
+                    let (target_page, snippet, line_rects) = if !s.active_selections.is_empty() {
+                        let primary = &s.active_selections[0];
+                        (primary.page, s.active_selection_snippet.clone(), primary.line_rects_pt.clone())
+                    } else if !s.active_selection_line_rects.is_empty() {
+                        (s.active_selection_page, s.active_selection_snippet.clone(), s.active_selection_line_rects.clone())
+                    } else {
+                        (-1, String::new(), Vec::new())
+                    };
+
+                    if target_page >= 0 && !line_rects.is_empty() {
                         let annot = AnnotationRecord {
                             id: s.next_annot_id,
-                            page: s.active_selection_page,
+                            page: target_page,
                             kind: "note".to_string(),
                             color_index: color_idx,
                             color_hex: hex,
-                            snippet: s.active_selection_snippet.clone(),
+                            snippet,
                             comment: comment.to_string(),
-                            line_rects_pt: s.active_selection_line_rects.clone(),
+                            line_rects_pt: line_rects,
                             is_from_pdf: false,
                         };
                         s.next_annot_id += 1;
                         s.push_undo(UndoAction::Created(annot.clone()));
                         s.annotations.push(annot);
+                        s.active_selections.clear();
                         s.active_selection_line_rects.clear();
                         s.active_selection_snippet.clear();
                         need_sync = true;
@@ -2144,7 +2520,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_show_note_input(false);
                     ui.set_current_note_text("".into());
                     ui.set_selected_annotation_id(-1);
-                    ui.set_current_note_text("".into());
+                ui.set_selected_annotation_kind("".into());
                     ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
                     if let Ok(lock) = state_lock.lock() {
                         if let Some(s) = lock.as_ref() {
@@ -2187,6 +2563,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 if let Some(ui) = app_weak.upgrade() {
                     ui.set_is_dirty(true);
                     ui.set_selected_annotation_id(-1);
+                ui.set_selected_annotation_kind("".into());
                     ui.set_hovered_annotation_id(-1);
                     ui.set_show_popup(false);
                     if let Ok(mut lock) = state_lock.lock() {
@@ -2223,7 +2600,13 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                         let page = s.annotations[pos].page;
                         let old_index = s.annotations[pos].color_index;
                         let old_hex = s.annotations[pos].color_hex.clone();
-                        let (hex, _) = get_color(new_color_idx);
+                        is_highlight = s.annotations[pos].kind == "highlight";
+                        let hex = if is_highlight {
+                            let [r, g, b] = get_highlight_blend_rgb(new_color_idx);
+                            format!("#{r:02x}{g:02x}{b:02x}")
+                        } else {
+                            get_color(new_color_idx).0
+                        };
                         if old_index != new_color_idx {
                             s.push_undo(UndoAction::ColorChanged {
                                 id,
@@ -2234,7 +2617,6 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             });
                         }
                         update_page = Some(page);
-                        is_highlight = s.annotations[pos].kind == "highlight";
                         s.annotations[pos].color_index = new_color_idx;
                         s.annotations[pos].color_hex = hex;
                         s.annotations[pos].is_from_pdf = false;
@@ -2324,6 +2706,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_is_dirty(true);
                     ui.set_show_popup(false);
                     ui.set_selected_annotation_id(-1);
+                ui.set_selected_annotation_kind("".into());
                     ui.set_hovered_annotation_id(-1);
                     if let Ok(mut lock) = state_lock.lock() {
                         if let Some(s) = lock.as_mut() {
@@ -2359,6 +2742,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     ui.set_is_dirty(true);
                     ui.set_show_popup(false);
                     ui.set_selected_annotation_id(-1);
+                ui.set_selected_annotation_kind("".into());
                     ui.set_hovered_annotation_id(-1);
                     if let Ok(mut lock) = state_lock.lock() {
                         if let Some(s) = lock.as_mut() {
@@ -2653,6 +3037,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
         app.on_clear_selection(move || {
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
+                    s.active_selections.clear();
                     s.active_selection_line_rects.clear();
                     s.active_selection_snippet.clear();
                 }
@@ -2662,6 +3047,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 ui.set_show_popup(false);
                 ui.set_show_note_input(false);
                 ui.set_selected_annotation_id(-1);
+                ui.set_selected_annotation_kind("".into());
                 ui.set_hovered_annotation_id(-1);
                 ui.set_current_note_text("".into());
                 ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
@@ -3014,6 +3400,7 @@ fn perform_zoom(
 ) {
     ui.set_show_popup(false);
     ui.set_selected_annotation_id(-1);
+    ui.set_selected_annotation_kind("".into());
     ui.set_hovered_annotation_id(-1);
     let mut is_scroll = false;
     let mut old_zoom = 1.0;
@@ -3114,7 +3501,10 @@ mod tests {
             redo_stack: VecDeque::new(),
             cached_text_page: -1,
             cached_text: pdf::PageTextData::default(),
+            page_text_cache: std::collections::HashMap::new(),
+            sel_start_page: 0,
             sel_start_pt: (0.0, 0.0),
+            active_selections: Vec::new(),
             active_selection_page: 0,
             active_selection_snippet: String::new(),
             active_selection_line_rects: Vec::new(),
@@ -3407,5 +3797,114 @@ mod tests {
         assert!((un_y - orig_cy).abs() < 0.001);
 
         let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn test_parse_primary_monitor_scale() {
+        let sample_xml = r#"<monitors version="2">
+  <configuration>
+    <logicalmonitor>
+      <x>0</x>
+      <y>0</y>
+      <scale>1.25</scale>
+      <primary>yes</primary>
+      <monitor>
+        <monitorspec>
+          <connector>eDP-1</connector>
+        </monitorspec>
+      </monitor>
+    </logicalmonitor>
+  </configuration>
+</monitors>"#;
+        assert_eq!(super::parse_primary_monitor_scale(sample_xml), Some(1.25));
+
+        // Multi-monitor scenario: second monitor is primary
+        let multi_xml = r#"<monitors version="2">
+  <configuration>
+    <logicalmonitor>
+      <x>0</x>
+      <y>0</y>
+      <scale>1.0</scale>
+      <primary>no</primary>
+    </logicalmonitor>
+    <logicalmonitor>
+      <x>1920</x>
+      <y>0</y>
+      <scale>1.5</scale>
+      <primary>yes</primary>
+    </logicalmonitor>
+  </configuration>
+</monitors>"#;
+        assert_eq!(super::parse_primary_monitor_scale(multi_xml), Some(1.5));
+
+        // Invalid XML or empty
+        assert_eq!(super::parse_primary_monitor_scale(""), None);
+    }
+
+    #[test]
+    fn test_compute_actual_render_zoom() {
+        // Standard 100% zoom with 1.25 fractional scale
+        let z = super::compute_actual_render_zoom(1.0, 1.25);
+        assert!((z - 2.5).abs() < 0.001);
+
+        // Clamping check: very small zoom
+        let z_min = super::compute_actual_render_zoom(0.01, 1.0);
+        assert_eq!(z_min, 0.2);
+
+        // Clamping check: very large zoom
+        let z_max = super::compute_actual_render_zoom(10.0, 2.0);
+        assert_eq!(z_max, 6.0);
+    }
+
+    #[test]
+    fn test_resolve_scroll_drag_position_across_pages() {
+        let (mut state, pdf_path) = setup_test_state();
+        state.is_scroll_view = true;
+        state.total_pages = 3;
+        state.page_sizes = vec![(500.0, 700.0), (500.0, 700.0), (500.0, 700.0)];
+        state.zoom_level = 1.0;
+
+        // 1. Dragging within page 0
+        let (p, _x, y) = super::resolve_scroll_drag_position(&state, 0, 100.0, 250.0);
+        assert_eq!(p, 0);
+        assert!((y - 250.0).abs() < 0.01);
+
+        // 2. Dragging down past page 0 (height 700 + gap 24) into page 1: local_y = 800.0
+        // global_y = 12.0 + 800.0 = 812.0
+        // page 1 card_top = (700 + 24) + 12 = 736.0
+        // target page is 1, local_y = 812 - 736 = 76.0
+        let (p, _x, y) = super::resolve_scroll_drag_position(&state, 0, 100.0, 800.0);
+        assert_eq!(p, 1);
+        assert!((y - 76.0).abs() < 0.01);
+
+        // 3. Dragging further down into page 2: local_y = 1600.0 from page 0
+        // global_y = 12 + 1600 = 1612
+        // page 2 card_top = 2 * (700 + 24) + 12 = 1460
+        // target page is 2, local_y = 1612 - 1460 = 152.0
+        let (p, _x, y) = super::resolve_scroll_drag_position(&state, 0, 100.0, 1600.0);
+        assert_eq!(p, 2);
+        assert!((y - 152.0).abs() < 0.01);
+
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn test_highlight_color_consistency_between_create_and_update() {
+        // Green highlight (index 1)
+        let green_idx = 1;
+        let [r, g, b] = super::get_highlight_blend_rgb(green_idx);
+        let create_hex = format!("#{r:02x}{g:02x}{b:02x}");
+
+        let is_highlight = true;
+        let update_hex = if is_highlight {
+            let [r, g, b] = super::get_highlight_blend_rgb(green_idx);
+            format!("#{r:02x}{g:02x}{b:02x}")
+        } else {
+            super::get_color(green_idx).0
+        };
+
+        assert_eq!(create_hex, "#bbf7d0");
+        assert_eq!(update_hex, "#bbf7d0");
+        assert_eq!(create_hex, update_hex);
     }
 }
