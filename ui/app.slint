@@ -1385,14 +1385,13 @@ VerticalLayout {
                                     }
 
                                     HorizontalLayout {
-                                        padding-left: 10px + item.depth * 14px;
+                                        padding-left: 10px + item.depth * 16px;
                                         padding-right: 14px;
-                                        spacing: 4px;
-                                        alignment: space-between;
+                                        spacing: 6px;
 
                                         if item.has-children: chevron-btn := Rectangle {
-                                            width: 22px;
-                                            height: 22px;
+                                            width: 18px;
+                                            height: 18px;
                                             y: (parent.height - self.height) / 2;
                                             border-radius: 4px;
                                             background: chev-ta.has-hover ? Theme.hover-bg : transparent;
@@ -1413,8 +1412,8 @@ VerticalLayout {
                                         }
 
                                         if !item.has-children: Rectangle {
-                                            width: 22px;
-                                            height: 22px;
+                                            width: 18px;
+                                            height: 18px;
                                             y: (parent.height - self.height) / 2;
                                         }
 
@@ -1424,6 +1423,7 @@ VerticalLayout {
                                             font-size: 12px;
                                             font-weight: item.page == root.current-page ? 600 : 400;
                                             color: item.page == root.current-page ? Theme.text-primary : row-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                            horizontal-alignment: left;
                                             vertical-alignment: center;
                                             overflow: elide;
                                             horizontal-stretch: 1;
@@ -1434,7 +1434,9 @@ VerticalLayout {
                                             font-family: "Inter";
                                             font-size: 11px;
                                             color: item.page == root.current-page ? Theme.accent : Theme.text-muted;
+                                            horizontal-alignment: right;
                                             vertical-alignment: center;
+                                            horizontal-stretch: 0;
                                         }
                                     }
                                 }
