@@ -6,11 +6,20 @@ pub use worker::{PdfWorker, RenderRequest, RenderedPage};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TocItem {
+    pub id: i32,
     pub title: String,
     pub page: i32,
     pub depth: i32,
+    pub has_children: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageLink {
+    pub bounds_pt: (f32, f32, f32, f32), // (x0, y0, x1, y1) in unrotated PDF points
+    pub target_page: i32,                // -1 if external URI
+    pub uri: String,
 }
 
 #[derive(Debug, Clone)]
@@ -60,7 +69,8 @@ pub fn read_pdf_info(file_path: &str) -> Result<PdfMetadata, String> {
     let toc = match doc.outlines() {
         Ok(outlines) => {
             let mut list = Vec::new();
-            extract_toc(&doc, &outlines, 0, &mut list);
+            let mut next_id = 0;
+            extract_toc(&doc, &outlines, 0, &mut next_id, &mut list);
             list
         }
         Err(_) => Vec::new(),
@@ -79,6 +89,7 @@ fn extract_toc(
     doc: &mupdf::Document,
     outlines: &[mupdf::Outline],
     depth: i32,
+    next_id: &mut i32,
     result: &mut Vec<TocItem>,
 ) {
     for item in outlines {
@@ -92,18 +103,64 @@ fn extract_toc(
         }
 
         let title = item.title.trim().to_string();
+        let has_children = !item.down.is_empty();
+        let id = *next_id;
+        *next_id += 1;
+
         if !title.is_empty() {
             result.push(TocItem {
+                id,
                 title,
                 page: target_page.unwrap_or(0),
                 depth,
+                has_children,
             });
         }
 
-        if !item.down.is_empty() {
-            extract_toc(doc, &item.down, depth + 1, result);
+        if has_children {
+            extract_toc(doc, &item.down, depth + 1, next_id, result);
         }
     }
+}
+
+pub fn extract_page_links(file_path: &str, page_no: i32) -> Vec<PageLink> {
+    let doc = match mupdf::Document::open(file_path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    extract_page_links_from_doc(&doc, page_no)
+}
+
+pub fn extract_page_links_from_doc(doc: &mupdf::Document, page_no: i32) -> Vec<PageLink> {
+    let page = match doc.load_page(page_no) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+
+    let links_iter = match page.links() {
+        Ok(iter) => iter,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut result = Vec::new();
+    for link in links_iter {
+        let mut target_page = -1;
+        if let Some(dest) = &link.dest {
+            target_page = dest.loc.page_number as i32;
+        } else if !link.uri.is_empty() {
+            if let Ok(Some(dest)) = doc.resolve_link(&link.uri) {
+                target_page = dest.loc.page_number as i32;
+            }
+        }
+
+        result.push(PageLink {
+            bounds_pt: (link.bounds.x0, link.bounds.y0, link.bounds.x1, link.bounds.y1),
+            target_page,
+            uri: link.uri,
+        });
+    }
+
+    result
 }
 
 #[derive(Clone, Debug)]

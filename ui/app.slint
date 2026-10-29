@@ -244,10 +244,23 @@ export struct RecentBookItem {
 }
 
 export struct TocItemData {
+    id: int,
     title: string,
     page: int,
     display-page: string,
     depth: int,
+    has-children: bool,
+    is-expanded: bool,
+}
+
+export struct PdfLinkData {
+    page: int,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    target-page: int,
+    uri: string,
 }
 
 export struct SelectionRect {
@@ -360,6 +373,7 @@ export component AppWindow inherits Window {
     in property <[AnnotationItemData]> highlight-items;
     in property <[AnnotationItemData]> note-items;
     in property <[AnnotationVisual]> page-annotations;
+    in property <[PdfLinkData]> page-links: [];
 
     // Text selection & floating popup state
     in property <[SelectionRect]> selection-rects;
@@ -430,6 +444,8 @@ export component AppWindow inherits Window {
     callback visible-page-changed(int);
     callback toggle-sidebar();
     callback jump-to-page(int);
+    callback toggle-toc-collapse(int);
+    callback open-external-url(string);
 
     // Search callbacks
     callback toggle-search();
@@ -1351,7 +1367,7 @@ VerticalLayout {
                                 vertical-stretch: 1;
 
                                 for item in root.toc-items: row := Rectangle {
-                                    height: 38px;
+                                    height: 36px;
                                     width: parent.width;
                                     background: item.page == root.current-page ? Theme.active-bg : row-ta.has-hover ? Theme.hover-bg : transparent;
                                     animate background { duration: 100ms; }
@@ -1363,11 +1379,44 @@ VerticalLayout {
                                         background: Theme.accent;
                                     }
 
+                                    row-ta := TouchArea {
+                                        clicked => { root.jump-to-page(item.page); }
+                                        mouse-cursor: pointer;
+                                    }
+
                                     HorizontalLayout {
-                                        padding-left: 14px + item.depth * 12px;
+                                        padding-left: 10px + item.depth * 14px;
                                         padding-right: 14px;
-                                        spacing: 8px;
+                                        spacing: 4px;
                                         alignment: space-between;
+
+                                        if item.has-children: chevron-btn := Rectangle {
+                                            width: 22px;
+                                            height: 22px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 4px;
+                                            background: chev-ta.has-hover ? Theme.hover-bg : transparent;
+
+                                            Image {
+                                                x: (parent.width - 12px) / 2;
+                                                y: (parent.height - 12px) / 2;
+                                                width: 12px;
+                                                height: 12px;
+                                                source: item.is-expanded ? @image-url("../assets/icons/chevron-down.svg") : @image-url("../assets/icons/chevron-right.svg");
+                                                colorize: chev-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                                            }
+
+                                            chev-ta := TouchArea {
+                                                clicked => { root.toggle-toc-collapse(item.id); }
+                                                mouse-cursor: pointer;
+                                            }
+                                        }
+
+                                        if !item.has-children: Rectangle {
+                                            width: 22px;
+                                            height: 22px;
+                                            y: (parent.height - self.height) / 2;
+                                        }
 
                                         Text {
                                             text: item.title;
@@ -1387,11 +1436,6 @@ VerticalLayout {
                                             color: item.page == root.current-page ? Theme.accent : Theme.text-muted;
                                             vertical-alignment: center;
                                         }
-                                    }
-
-                                    row-ta := TouchArea {
-                                        clicked => { root.jump-to-page(item.page); }
-                                        mouse-cursor: pointer;
                                     }
                                 }
                             }
@@ -2161,6 +2205,73 @@ VerticalLayout {
                                     }
                                 }
 
+                                // Embedded Document Links (Table of Contents, internal jumps, external URLs)
+                                for link in root.page-links: Rectangle {
+                                    if link.page == root.current-page: Rectangle {
+                                        x: link.x;
+                                        y: link.y;
+                                        width: link.width;
+                                        height: link.height;
+                                        background: link-ta.has-hover ? #3b82f618 : transparent;
+                                        border-radius: 2px;
+                                        border-width: link-ta.has-hover ? 1px : 0px;
+                                        border-color: link-ta.has-hover ? #3b82f640 : transparent;
+
+                                        link-ta := TouchArea {
+                                            width: 100%;
+                                            height: 100%;
+                                            mouse-cursor: pointer;
+
+                                            scroll-event(event) => {
+                                                if (event.modifiers.control || root.is-ctrl-pressed) {
+                                                    if (event.delta-y > 0) {
+                                                        root.zoom-in();
+                                                        return accept;
+                                                    } else if (event.delta-y < 0) {
+                                                        root.zoom-out();
+                                                        return accept;
+                                                    }
+                                                }
+                                                return reject;
+                                            }
+
+                                            pointer-event(event) => {
+                                                if (event.kind == PointerEventKind.move) {
+                                                    root.hovered-annotation-id = -1;
+                                                    keyboard-handler.focus();
+                                                } else if (event.button == PointerEventButton.left) {
+                                                    if (event.kind == PointerEventKind.down) {
+                                                        keyboard-handler.focus();
+                                                        root.selected-annotation-id = -1;
+                                                        root.selected-annotation-kind = "";
+                                                        root.current-note-text = "";
+                                                        root.show-note-input = false;
+                                                        root.selection-started(root.current-page, link.x + link-ta.mouse-x, link.y + link-ta.mouse-y);
+                                                    } else if (event.kind == PointerEventKind.up) {
+                                                        root.current-note-text = "";
+                                                        root.show-note-input = false;
+                                                        root.selection-completed(root.current-page, link.x + link-ta.mouse-x, link.y + link-ta.mouse-y);
+                                                    }
+                                                }
+                                            }
+
+                                            moved => {
+                                                if (link-ta.pressed) {
+                                                    root.selection-dragged(root.current-page, link.x + link-ta.mouse-x, link.y + link-ta.mouse-y);
+                                                }
+                                            }
+
+                                            clicked => {
+                                                if (link.target-page >= 0) {
+                                                    root.jump-to-page(link.target-page);
+                                                } else if (link.uri != "") {
+                                                    root.open-external-url(link.uri);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 // Render Page Annotations on top of page-ta so hover and click are intercepted
                                 for annot in root.page-annotations: Rectangle {
                                     if annot.page == root.current-page: Rectangle {
@@ -2911,6 +3022,47 @@ VerticalLayout {
                                         }
                                     }
                                 }
+
+                                // Embedded Document Links on Secondary Page
+                                for link in root.page-links: Rectangle {
+                                    if link.page == root.current-page + 1: Rectangle {
+                                        x: link.x;
+                                        y: link.y;
+                                        width: link.width;
+                                        height: link.height;
+                                        background: link-sec-ta.has-hover ? #3b82f618 : transparent;
+                                        border-radius: 2px;
+                                        border-width: link-sec-ta.has-hover ? 1px : 0px;
+                                        border-color: link-sec-ta.has-hover ? #3b82f640 : transparent;
+
+                                        link-sec-ta := TouchArea {
+                                            width: 100%;
+                                            height: 100%;
+                                            mouse-cursor: pointer;
+
+                                            scroll-event(event) => {
+                                                if (event.modifiers.control || root.is-ctrl-pressed) {
+                                                    if (event.delta-y > 0) {
+                                                        root.zoom-in();
+                                                        return accept;
+                                                    } else if (event.delta-y < 0) {
+                                                        root.zoom-out();
+                                                        return accept;
+                                                    }
+                                                }
+                                                return reject;
+                                            }
+
+                                            clicked => {
+                                                if (link.target-page >= 0) {
+                                                    root.jump-to-page(link.target-page);
+                                                } else if (link.uri != "") {
+                                                    root.open-external-url(link.uri);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -3060,6 +3212,74 @@ VerticalLayout {
                                     moved => {
                                         if (page-scroll-ta.pressed) {
                                             root.selection-dragged(page-item.page-index, page-scroll-ta.mouse-x, page-scroll-ta.mouse-y);
+                                        }
+                                    }
+                                }
+
+                                // Embedded Document Links in Scroll View
+                                for link in root.page-links: Rectangle {
+                                    if link.page == page-item.page-index: Rectangle {
+                                        x: link.x;
+                                        y: link.y;
+                                        width: link.width;
+                                        height: link.height;
+                                        background: link-scroll-ta.has-hover ? #3b82f618 : transparent;
+                                        border-radius: 2px;
+                                        border-width: link-scroll-ta.has-hover ? 1px : 0px;
+                                        border-color: link-scroll-ta.has-hover ? #3b82f640 : transparent;
+
+                                        link-scroll-ta := TouchArea {
+                                            width: 100%;
+                                            height: 100%;
+                                            mouse-cursor: pointer;
+
+                                            scroll-event(event) => {
+                                                if (event.modifiers.control || root.is-ctrl-pressed) {
+                                                    if (event.delta-y > 0) {
+                                                        root.zoom-in();
+                                                        return accept;
+                                                    } else if (event.delta-y < 0) {
+                                                        root.zoom-out();
+                                                        return accept;
+                                                    }
+                                                }
+                                                return reject;
+                                            }
+
+                                            pointer-event(event) => {
+                                                if (event.kind == PointerEventKind.move) {
+                                                    root.hovered-annotation-id = -1;
+                                                    keyboard-handler.focus();
+                                                } else if (event.button == PointerEventButton.left) {
+                                                    if (event.kind == PointerEventKind.down) {
+                                                        keyboard-handler.focus();
+                                                        root.selected-annotation-id = -1;
+                                                        root.selected-annotation-kind = "";
+                                                        root.current-note-text = "";
+                                                        root.show-note-input = false;
+                                                        root.current-page = page-item.page-index;
+                                                        root.selection-started(page-item.page-index, link.x + link-scroll-ta.mouse-x, link.y + link-scroll-ta.mouse-y);
+                                                    } else if (event.kind == PointerEventKind.up) {
+                                                        root.current-note-text = "";
+                                                        root.show-note-input = false;
+                                                        root.selection-completed(page-item.page-index, link.x + link-scroll-ta.mouse-x, link.y + link-scroll-ta.mouse-y);
+                                                    }
+                                                }
+                                            }
+
+                                            moved => {
+                                                if (link-scroll-ta.pressed) {
+                                                    root.selection-dragged(page-item.page-index, link.x + link-scroll-ta.mouse-x, link.y + link-scroll-ta.mouse-y);
+                                                }
+                                            }
+
+                                            clicked => {
+                                                if (link.target-page >= 0) {
+                                                    root.jump-to-page(link.target-page);
+                                                } else if (link.uri != "") {
+                                                    root.open-external-url(link.uri);
+                                                }
+                                            }
                                         }
                                     }
                                 }

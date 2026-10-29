@@ -211,14 +211,18 @@ Note: Important thesis.
     fn test_export_with_toc_and_chapter_grouping() {
         let toc = vec![
             TocItem {
+                id: 1,
                 title: "Chapter 1: The New Society".to_string(),
                 page: 0,
                 depth: 0,
+                has_children: false,
             },
             TocItem {
+                id: 2,
                 title: "Chapter 2: One New Humanity".to_string(),
                 page: 25,
                 depth: 0,
+                has_children: false,
             },
         ];
 
@@ -262,14 +266,18 @@ Note: Crucial summary for Chapter 1 thesis.
     fn test_export_nested_toc_hierarchy() {
         let toc = vec![
             TocItem {
+                id: 1,
                 title: "Part I".to_string(),
                 page: 0,
                 depth: 0,
+                has_children: true,
             },
             TocItem {
+                id: 2,
                 title: "Section 1.1 Foundations".to_string(),
                 page: 4,
                 depth: 1,
+                has_children: false,
             },
         ];
 

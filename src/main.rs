@@ -177,6 +177,8 @@ struct AppState {
     search_match_case: bool,
     search_match_whole_word: bool,
     pub toc: Vec<pdf::TocItem>,
+    pub collapsed_toc_ids: std::collections::HashSet<i32>,
+    pub page_links_cache: std::collections::HashMap<i32, Vec<pdf::PageLink>>,
     pub rotation: i32, // 0, 90, 180, 270
     pub is_dual_page: bool,
 }
@@ -225,6 +227,14 @@ impl AppState {
         } else {
             (self.page_width_pt, self.page_height_pt)
         }
+    }
+
+    pub fn get_or_load_page_links(&mut self, page: i32) -> &[pdf::PageLink] {
+        if !self.page_links_cache.contains_key(&page) {
+            let links = pdf::extract_page_links(&self.file_path, page);
+            self.page_links_cache.insert(page, links);
+        }
+        self.page_links_cache.get(&page).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     pub fn get_page_size(&self, page: i32) -> (f32, f32) {
@@ -510,19 +520,8 @@ fn setup_document(
     app.set_can_prev(initial_page > 0);
     app.set_can_next(initial_page < meta.page_count - 1);
 
-    // Initialize Table of Contents (Outline)
+    // Table of Contents (Outline) presence
     let has_toc = !meta.toc.is_empty();
-    let mut toc_entries = Vec::with_capacity(meta.toc.len());
-    for item in &meta.toc {
-        toc_entries.push(TocItemData {
-            title: item.title.clone().into(),
-            page: item.page,
-            display_page: format!("{}", item.page + 1).into(),
-            depth: item.depth,
-        });
-    }
-    let toc_model = std::rc::Rc::new(slint::VecModel::from(toc_entries));
-    app.set_toc_items(toc_model.into());
 
     // Extract any existing annotations (highlights, underlines, notes) from the PDF
     let existing_annots = pdf::extract_document_annotations(&path_str);
@@ -628,9 +627,13 @@ fn setup_document(
         search_match_case: false,
         search_match_whole_word: false,
         toc: meta.toc,
+        collapsed_toc_ids: std::collections::HashSet::new(),
+        page_links_cache: std::collections::HashMap::new(),
         rotation: 0,
         is_dual_page: false,
     };
+
+    rebuild_toc_model(&app_state, app);
 
     app.set_rotation(0);
     app.set_is_dual_page(false);
@@ -1174,6 +1177,108 @@ fn sync_search_to_ui(s: &AppState, ui: &AppWindow) {
     ui.set_scroll_search_highlights(std::rc::Rc::new(slint::VecModel::from(scroll_highlight_items)).into());
 }
 
+pub fn compute_visible_toc_items(
+    toc: &[pdf::TocItem],
+    collapsed_ids: &std::collections::HashSet<i32>,
+) -> Vec<TocItemData> {
+    let mut visible_entries = Vec::new();
+    let mut skip_until_depth: Option<i32> = None;
+
+    for item in toc {
+        if let Some(skip_depth) = skip_until_depth {
+            if item.depth > skip_depth {
+                continue;
+            } else {
+                skip_until_depth = None;
+            }
+        }
+
+        let is_expanded = !collapsed_ids.contains(&item.id);
+        visible_entries.push(TocItemData {
+            id: item.id,
+            title: item.title.clone().into(),
+            page: item.page,
+            display_page: format!("{}", item.page + 1).into(),
+            depth: item.depth,
+            has_children: item.has_children,
+            is_expanded,
+        });
+
+        if item.has_children && !is_expanded {
+            skip_until_depth = Some(item.depth);
+        }
+    }
+    visible_entries
+}
+
+fn rebuild_toc_model(state: &AppState, ui: &AppWindow) {
+    let visible_entries = compute_visible_toc_items(&state.toc, &state.collapsed_toc_ids);
+    let toc_model = std::rc::Rc::new(slint::VecModel::from(visible_entries));
+    ui.set_toc_items(toc_model.into());
+}
+
+pub fn compute_transformed_links(
+    links: &[pdf::PageLink],
+    page: i32,
+    unrot_w: f32,
+    unrot_h: f32,
+    rotation: i32,
+    zoom_level: f32,
+) -> Vec<PdfLinkData> {
+    let mut ui_links = Vec::with_capacity(links.len());
+    for link in links {
+        let tr = transform_rect_for_rotation(link.bounds_pt, unrot_w, unrot_h, rotation);
+        let x = tr.0 * zoom_level;
+        let y = tr.1 * zoom_level;
+        let width = (tr.2 - tr.0).max(2.0) * zoom_level;
+        let height = (tr.3 - tr.1).max(2.0) * zoom_level;
+
+        ui_links.push(PdfLinkData {
+            page,
+            x,
+            y,
+            width,
+            height,
+            target_page: link.target_page,
+            uri: link.uri.clone().into(),
+        });
+    }
+    ui_links
+}
+
+fn sync_links_to_ui(state: &mut AppState, ui: &AppWindow) {
+    let pages_to_sync: Vec<i32> = if state.is_scroll_view {
+        let min_p = (state.current_page - 2).max(0);
+        let max_p = (state.current_page + 3).min(state.total_pages - 1);
+        (min_p..=max_p).collect()
+    } else if state.is_dual_page {
+        if state.current_page + 1 < state.total_pages {
+            vec![state.current_page, state.current_page + 1]
+        } else {
+            vec![state.current_page]
+        }
+    } else {
+        vec![state.current_page]
+    };
+
+    let mut ui_links = Vec::new();
+    for &page in &pages_to_sync {
+        let links = state.get_or_load_page_links(page).to_vec();
+        let (unrot_w, unrot_h) = state.get_unrotated_page_size(page);
+        ui_links.extend(compute_transformed_links(
+            &links,
+            page,
+            unrot_w,
+            unrot_h,
+            state.rotation,
+            state.zoom_level,
+        ));
+    }
+
+    let link_model = std::rc::Rc::new(slint::VecModel::from(ui_links));
+    ui.set_page_links(link_model.into());
+}
+
 fn jump_to_search_match(
     s: &mut AppState,
     ui: &AppWindow,
@@ -1410,6 +1515,7 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
     // Refresh annotation visual coordinates scaled to current zoom
     sync_annotations_to_ui(state, ui);
     sync_search_to_ui(state, ui);
+    sync_links_to_ui(state, ui);
 
     // Bump generation counter
     let next_gen = state.worker.current_generation() + 1;
@@ -2203,6 +2309,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                         if let Ok(mut lock) = state_lock.lock() {
                             if let Some(s) = lock.as_mut() {
                                 trigger_scroll_page_render(s, target_page, &ui);
+                                sync_links_to_ui(s, &ui);
                             }
                         }
                     } else {
@@ -2210,6 +2317,41 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     }
                     save_session();
                 }
+            }
+        });
+    }
+
+    // Toggle Table of Contents Item Collapse/Expand
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_toggle_toc_collapse(move |id| {
+            if let Ok(mut lock) = state_lock.lock() {
+                if let Some(s) = lock.as_mut() {
+                    if s.collapsed_toc_ids.contains(&id) {
+                        s.collapsed_toc_ids.remove(&id);
+                    } else {
+                        s.collapsed_toc_ids.insert(id);
+                    }
+                    if let Some(ui) = app_weak.upgrade() {
+                        rebuild_toc_model(s, &ui);
+                    }
+                }
+            }
+        });
+    }
+
+    // Open External Document URL in default browser
+    {
+        app.on_open_external_url(move |uri| {
+            let uri_str = uri.as_str().trim();
+            if uri_str.starts_with("http://") || uri_str.starts_with("https://") || uri_str.starts_with("mailto:") {
+                #[cfg(target_os = "linux")]
+                let _ = std::process::Command::new("xdg-open").arg(uri_str).spawn();
+                #[cfg(target_os = "macos")]
+                let _ = std::process::Command::new("open").arg(uri_str).spawn();
+                #[cfg(target_os = "windows")]
+                let _ = std::process::Command::new("cmd").args(["/C", "start", "", uri_str]).spawn();
             }
         });
     }
@@ -3252,6 +3394,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             ui.set_can_prev(s.current_page > 0);
                             ui.set_can_next(s.current_page < s.total_pages - 1);
                             trigger_scroll_page_render(s, new_page, &ui);
+                            sync_links_to_ui(s, &ui);
                         }
                     }
                     save_session();
@@ -3298,6 +3441,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                                 ui.set_can_prev(s.current_page > 0);
                                 ui.set_can_next(s.current_page < s.total_pages - 1);
                                 trigger_scroll_page_render(s, new_page, &ui);
+                            sync_links_to_ui(s, &ui);
                             }
                         }
                     } else {
@@ -3352,6 +3496,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                                 ui.set_can_prev(s.current_page > 0);
                                 ui.set_can_next(s.current_page < s.total_pages - 1);
                                 trigger_scroll_page_render(s, new_page, &ui);
+                            sync_links_to_ui(s, &ui);
                             }
                         }
                     } else {
@@ -3601,6 +3746,8 @@ mod tests {
             search_match_case: false,
             search_match_whole_word: false,
             toc: Vec::new(),
+            collapsed_toc_ids: std::collections::HashSet::new(),
+            page_links_cache: std::collections::HashMap::new(),
             rotation: 0,
             is_dual_page: false,
         };
@@ -3992,5 +4139,92 @@ mod tests {
         assert_eq!(create_hex, "#bbf7d0");
         assert_eq!(update_hex, "#bbf7d0");
         assert_eq!(create_hex, update_hex);
+    }
+
+    #[test]
+    fn test_rebuild_toc_model_collapse_expand() {
+        // Structure:
+        // 0: Chapter 1 (id 0, depth 0, has_children: true)
+        // 1:   Section 1.1 (id 1, depth 1, has_children: true)
+        // 2:     Sub 1.1.1 (id 2, depth 2, has_children: false)
+        // 3:   Section 1.2 (id 3, depth 1, has_children: false)
+        // 4: Chapter 2 (id 4, depth 0, has_children: false)
+        let toc = vec![
+            pdf::TocItem { id: 0, title: "Chapter 1".into(), page: 0, depth: 0, has_children: true },
+            pdf::TocItem { id: 1, title: "Section 1.1".into(), page: 1, depth: 1, has_children: true },
+            pdf::TocItem { id: 2, title: "Sub 1.1.1".into(), page: 2, depth: 2, has_children: false },
+            pdf::TocItem { id: 3, title: "Section 1.2".into(), page: 3, depth: 1, has_children: false },
+            pdf::TocItem { id: 4, title: "Chapter 2".into(), page: 4, depth: 0, has_children: false },
+        ];
+        let mut collapsed = std::collections::HashSet::new();
+
+        // 1. Initially all expanded
+        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        assert_eq!(visible.len(), 5);
+
+        // 2. Collapse Section 1.1 (id 1)
+        collapsed.insert(1);
+        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        // Visible items: Chapter 1, Section 1.1, Section 1.2, Chapter 2 (Sub 1.1.1 hidden)
+        assert_eq!(visible.len(), 4);
+        let titles: Vec<String> = visible.iter().map(|item| item.title.to_string()).collect();
+        assert_eq!(titles, vec!["Chapter 1", "Section 1.1", "Section 1.2", "Chapter 2"]);
+
+        // 3. Collapse Chapter 1 (id 0)
+        collapsed.insert(0);
+        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        // Visible items: Chapter 1, Chapter 2 (all descendants of Chapter 1 hidden)
+        assert_eq!(visible.len(), 2);
+        let titles: Vec<String> = visible.iter().map(|item| item.title.to_string()).collect();
+        assert_eq!(titles, vec!["Chapter 1", "Chapter 2"]);
+
+        // 4. Expand Chapter 1 (id 0 removed from collapsed)
+        collapsed.remove(&0);
+        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        // Section 1.1 is still collapsed, so: Chapter 1, Section 1.1, Section 1.2, Chapter 2
+        assert_eq!(visible.len(), 4);
+
+        // 5. Expand Section 1.1 (id 1 removed)
+        collapsed.remove(&1);
+        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        assert_eq!(visible.len(), 5);
+    }
+
+    #[test]
+    fn test_sync_links_to_ui_rotation_and_zoom() {
+        // Mock 1 link on page 0
+        let links = vec![
+            pdf::PageLink {
+                bounds_pt: (10.0, 20.0, 110.0, 40.0), // width = 100, height = 20
+                target_page: 5,
+                uri: String::new(),
+            }
+        ];
+
+        let unrot_w = 500.0;
+        let unrot_h = 700.0;
+        let zoom = 2.0;
+
+        // Rotation = 0
+        let transformed = super::compute_transformed_links(&links, 0, unrot_w, unrot_h, 0, zoom);
+        assert_eq!(transformed.len(), 1);
+        let link0 = &transformed[0];
+        assert_eq!(link0.page, 0);
+        assert_eq!(link0.target_page, 5);
+        assert!((link0.x - 20.0).abs() < 0.01);
+        assert!((link0.y - 40.0).abs() < 0.01);
+        assert!((link0.width - 200.0).abs() < 0.01);
+        assert!((link0.height - 40.0).abs() < 0.01);
+
+        // Rotation = 90
+        // page size is 500 x 700 (w x h)
+        // at 90 deg: x = 700 - 40 = 660, y = 10, width = 20, height = 100
+        let transformed_90 = super::compute_transformed_links(&links, 0, unrot_w, unrot_h, 90, zoom);
+        assert_eq!(transformed_90.len(), 1);
+        let link_rot = &transformed_90[0];
+        assert!((link_rot.x - 660.0 * 2.0).abs() < 0.01);
+        assert!((link_rot.y - 10.0 * 2.0).abs() < 0.01);
+        assert!((link_rot.width - 40.0).abs() < 0.01);
+        assert!((link_rot.height - 200.0).abs() < 0.01);
     }
 }
