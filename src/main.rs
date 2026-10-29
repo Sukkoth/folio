@@ -368,21 +368,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let app_weak = app.as_weak();
         app.on_open_document(move || {
-            let res = rfd::FileDialog::new()
-                .add_filter("PDF document (*.pdf)", &["pdf"])
-                .pick_file();
+            let app_weak = app_weak.clone();
+            std::thread::spawn(move || {
+                let res = rfd::FileDialog::new()
+                    .add_filter("PDF document (*.pdf)", &["pdf"])
+                    .pick_file();
 
-            if let Some(path) = res {
-                if let Some(ui) = app_weak.upgrade() {
-                    let display_name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("document.pdf")
-                        .to_string();
-                    let _ = setup_document(&ui, &path, display_name);
-                    update_recent_books_model(&ui);
+                if let Some(path) = res {
+                    let _ = app_weak.upgrade_in_event_loop(move |ui| {
+                        let display_name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("document.pdf")
+                            .to_string();
+                        let _ = setup_document(&ui, &path, display_name);
+                        update_recent_books_model(&ui);
+                    });
                 }
-            }
+            });
         });
     }
 
@@ -2873,69 +2876,75 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 }
             };
 
-            let chosen_path = match prompt_save_as(&file_path) {
-                Some(p) => p,
-                None => return, // User cancelled
-            };
+            let app_weak = app_weak.clone();
+            let state_lock = Arc::clone(&state_lock);
+            std::thread::spawn(move || {
+                let chosen_path = match prompt_save_as(&file_path) {
+                    Some(p) => p,
+                    None => return, // User cancelled
+                };
 
-            let new_path_str = chosen_path.to_string_lossy().to_string();
+                let new_path_str = chosen_path.to_string_lossy().to_string();
 
-            if let Some(ui) = app_weak.upgrade() {
-                ui.set_is_saving(true);
-            }
+                let _ = app_weak.upgrade_in_event_loop({
+                    let new_path_str = new_path_str.clone();
+                    let file_path = file_path.clone();
+                    let to_save = to_save.clone();
+                    let state_lock = Arc::clone(&state_lock);
+                    let app_weak = app_weak.clone();
+                    move |ui| {
+                        ui.set_is_saving(true);
 
-            // If saving to a new path, copy the base file over first if they differ
-            if new_path_str != file_path {
-                if let Err(e) = std::fs::copy(&file_path, &new_path_str) {
-                    eprintln!("Failed to copy PDF for Save As: {e}");
-                    if let Some(ui) = app_weak.upgrade() {
-                        ui.set_is_saving(false);
-                    }
-                    return;
-                }
-            }
-
-            let save_result = pdf::save_document_annotations(&new_path_str, &to_save);
-
-            if let Some(ui) = app_weak.upgrade() {
-                ui.set_is_saving(false);
-                match save_result {
-                    Ok(()) => {
-                        let new_file_name = std::path::Path::new(&new_path_str)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(&new_path_str)
-                            .to_string();
-
-                        ui.set_is_dirty(false);
-                        ui.set_file_path(new_path_str.clone().into());
-                        ui.set_file_title(new_file_name.into());
-                        ui.set_show_saved_badge(true);
-
-                        let ui_weak = app_weak.clone();
-                        slint::Timer::single_shot(
-                            std::time::Duration::from_millis(2000),
-                            move || {
-                                if let Some(ui) = ui_weak.upgrade() {
-                                    ui.set_show_saved_badge(false);
-                                }
-                            },
-                        );
-
-                        if let Ok(mut lock) = state_lock.lock() {
-                            if let Some(s) = lock.as_mut() {
-                                s.file_path = new_path_str.clone();
-                                s.cached_text_page = -1;
-                                s.worker.switch_document(new_path_str);
+                        // If saving to a new path, copy the base file over first if they differ
+                        if new_path_str != file_path {
+                            if let Err(e) = std::fs::copy(&file_path, &new_path_str) {
+                                eprintln!("Failed to copy PDF for Save As: {e}");
+                                ui.set_is_saving(false);
+                                return;
                             }
                         }
-                        save_current_session(&state_lock, &ui);
+
+                        let save_result = pdf::save_document_annotations(&new_path_str, &to_save);
+                        ui.set_is_saving(false);
+                        match save_result {
+                            Ok(()) => {
+                                let new_file_name = std::path::Path::new(&new_path_str)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(&new_path_str)
+                                    .to_string();
+
+                                ui.set_is_dirty(false);
+                                ui.set_file_path(new_path_str.clone().into());
+                                ui.set_file_title(new_file_name.into());
+                                ui.set_show_saved_badge(true);
+
+                                let ui_weak = app_weak.clone();
+                                slint::Timer::single_shot(
+                                    std::time::Duration::from_millis(2000),
+                                    move || {
+                                        if let Some(ui) = ui_weak.upgrade() {
+                                            ui.set_show_saved_badge(false);
+                                        }
+                                    },
+                                );
+
+                                if let Ok(mut lock) = state_lock.lock() {
+                                    if let Some(s) = lock.as_mut() {
+                                        s.file_path = new_path_str.clone();
+                                        s.cached_text_page = -1;
+                                        s.worker.switch_document(new_path_str);
+                                    }
+                                }
+                                save_current_session(&state_lock, &ui);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to save PDF as: {e}");
+                            }
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("Failed to save PDF as: {e}");
-                    }
-                }
-            }
+                });
+            });
         });
     }
 
@@ -3002,12 +3011,15 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                 }
             };
 
-            if let Some(ui) = app_weak.upgrade() {
-                if is_empty {
+            if is_empty {
+                if let Some(ui) = app_weak.upgrade() {
                     trigger_toast(&ui, "No annotations to export");
-                    return;
                 }
+                return;
+            }
 
+            let app_weak = app_weak.clone();
+            std::thread::spawn(move || {
                 if let Some(save_path) = rfd::FileDialog::new()
                     .set_file_name(&default_filename)
                     .add_filter("Markdown", &["md"])
@@ -3018,13 +3030,21 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             let display_name = save_path
                                 .file_name()
                                 .and_then(|n| n.to_str())
-                                .unwrap_or("annotations.md");
-                            trigger_toast(&ui, &format!("✓ Saved to {}", display_name));
+                                .unwrap_or("annotations.md")
+                                .to_string();
+                            let _ = app_weak.upgrade_in_event_loop(move |ui| {
+                                trigger_toast(&ui, &format!("✓ Saved to {}", display_name));
+                            });
                         }
-                        Err(e) => trigger_toast(&ui, &format!("Failed to save: {}", e)),
+                        Err(e) => {
+                            let err_msg = format!("Failed to save: {}", e);
+                            let _ = app_weak.upgrade_in_event_loop(move |ui| {
+                                trigger_toast(&ui, &err_msg);
+                            });
+                        }
                     }
                 }
-            }
+            });
         });
     }
 
