@@ -343,11 +343,11 @@ fn init_display_environment() {
 }
 
 pub fn compute_actual_render_zoom(zoom_level: f32, scale_factor: f32) -> f32 {
-    // Standard PDF points are 72 DPI while UI logical pixels assume 96 DPI (1.33x ratio).
-    // Applying a 2.0x supersampling factor ensures font glyphs, vectors, and formulas are
-    // rasterized at native screen density and crisply downsampled into the page card container,
-    // avoiding blurry/480p rendering on both fractional and high-DPI monitors.
-    (zoom_level * scale_factor * 2.0).clamp(0.2, 6.0)
+    // PDF points are 72 DPI; standard screen logical resolution is 96 DPI (ratio 1.3333).
+    // Multiply by monitor scale_factor to rasterize at native physical screen resolution.
+    // Clamping to [0.2, 3.5] ensures razor-sharp text on 4K/high-DPI monitors without
+    // generating 50MB+ pixmaps that saturate memory bandwidth during zooming.
+    (zoom_level * (96.0 / 72.0) * scale_factor).clamp(0.2, 3.5)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1387,17 +1387,22 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
         let pw = pw_pt * state.zoom_level;
         let ph = ph_pt * state.zoom_level;
         if let Some(mut item) = pages_model.row_data(i) {
+            let geom_changed = (item.offset_y - cur_offset).abs() > 0.5
+                || (item.width - pw).abs() > 0.5
+                || (item.height - ph).abs() > 0.5;
             item.offset_y = cur_offset;
             item.width = pw;
             item.height = ph;
+            let mut image_changed = false;
             if let Some(cached) = state.cache.get(i as i32, state.zoom_level, state.rotation) {
                 if let Some(img) = rgba_to_image(&cached.rgba, cached.width, cached.height) {
                     item.image = img;
+                    image_changed = true;
                 }
-            } else {
-                item.image = slint::Image::default();
             }
-            pages_model.set_row_data(i, item);
+            if geom_changed || image_changed {
+                pages_model.set_row_data(i, item);
+            }
         }
         cur_offset += ph + 24.0;
     }
@@ -3513,18 +3518,17 @@ fn perform_zoom(
 }
 
 fn rgba_to_image(rgba: &[u8], w: u32, h: u32) -> Option<slint::Image> {
-    if w == 0 || h == 0 || rgba.len() < (w as usize * h as usize * 4) {
+    let expected_len = (w as usize) * (h as usize) * 4;
+    if w == 0 || h == 0 || rgba.len() < expected_len {
         return None;
     }
 
     let mut pixel_buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
-    let slice = pixel_buffer.make_mut_slice();
-
-    for (dst, chunk) in slice.iter_mut().zip(rgba.chunks_exact(4)) {
-        dst.r = chunk[0];
-        dst.g = chunk[1];
-        dst.b = chunk[2];
-        dst.a = chunk[3];
+    {
+        let slice = pixel_buffer.make_mut_slice();
+        unsafe {
+            std::ptr::copy_nonoverlapping(rgba.as_ptr(), slice.as_mut_ptr() as *mut u8, expected_len);
+        }
     }
 
     Some(slint::Image::from_rgba8(pixel_buffer))
@@ -3909,7 +3913,8 @@ mod tests {
     fn test_compute_actual_render_zoom() {
         // Standard 100% zoom with 1.25 fractional scale
         let z = super::compute_actual_render_zoom(1.0, 1.25);
-        assert!((z - 2.5).abs() < 0.001);
+        let expected = (1.0 * (96.0 / 72.0) * 1.25f32).clamp(0.2, 3.5);
+        assert!((z - expected).abs() < 0.001);
 
         // Clamping check: very small zoom
         let z_min = super::compute_actual_render_zoom(0.01, 1.0);
@@ -3917,7 +3922,7 @@ mod tests {
 
         // Clamping check: very large zoom
         let z_max = super::compute_actual_render_zoom(10.0, 2.0);
-        assert_eq!(z_max, 6.0);
+        assert_eq!(z_max, 3.5);
     }
 
     #[test]

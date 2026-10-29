@@ -340,6 +340,7 @@ export component AppWindow inherits Window {
     in property <string> page-display: "1 / 1";
     in property <string> zoom-display: "200%";
     in property <float> zoom-level: 2.0;
+    property <length> zoom-wheel-delta: 0px;
     in property <bool> can-prev: false;
     in property <bool> can-next: false;
     in property <bool> can-undo: false;
@@ -2031,13 +2032,15 @@ VerticalLayout {
 
                             scroll-event(event) => {
                                 if (event.modifiers.control) {
-                                    if (event.delta-y > 0) {
+                                    root.zoom-wheel-delta += event.delta-y;
+                                    if (root.zoom-wheel-delta >= 30px) {
                                         root.zoom-in();
-                                        return accept;
-                                    } else if (event.delta-y < 0) {
+                                        root.zoom-wheel-delta = 0px;
+                                    } else if (root.zoom-wheel-delta <= -30px) {
                                         root.zoom-out();
-                                        return accept;
+                                        root.zoom-wheel-delta = 0px;
                                     }
+                                    return accept;
                                 }
                                 return reject;
                             }
@@ -2884,13 +2887,15 @@ VerticalLayout {
 
                                 scroll-event(event) => {
                                     if (event.modifiers.control) {
-                                        if (event.delta-y > 0) {
+                                        root.zoom-wheel-delta += event.delta-y;
+                                        if (root.zoom-wheel-delta >= 30px) {
                                             root.zoom-in();
-                                            return accept;
-                                        } else if (event.delta-y < 0) {
+                                            root.zoom-wheel-delta = 0px;
+                                        } else if (root.zoom-wheel-delta <= -30px) {
                                             root.zoom-out();
-                                            return accept;
+                                            root.zoom-wheel-delta = 0px;
                                         }
+                                        return accept;
                                     }
                                     return reject;
                                 }
@@ -2939,13 +2944,15 @@ VerticalLayout {
 
                                     scroll-event(event) => {
                                         if (event.modifiers.control) {
-                                            if (event.delta-y > 0) {
+                                            root.zoom-wheel-delta += event.delta-y;
+                                            if (root.zoom-wheel-delta >= 30px) {
                                                 root.zoom-in();
-                                                return accept;
-                                            } else if (event.delta-y < 0) {
+                                                root.zoom-wheel-delta = 0px;
+                                            } else if (root.zoom-wheel-delta <= -30px) {
                                                 root.zoom-out();
-                                                return accept;
+                                                root.zoom-wheel-delta = 0px;
                                             }
+                                            return accept;
                                         }
                                         return reject;
                                     }
