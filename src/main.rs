@@ -343,11 +343,10 @@ fn init_display_environment() {
 }
 
 pub fn compute_actual_render_zoom(zoom_level: f32, scale_factor: f32) -> f32 {
-    // PDF points are 72 DPI; standard screen logical resolution is 96 DPI (ratio 1.3333).
-    // Multiply by monitor scale_factor to rasterize at native physical screen resolution.
-    // Clamping to [0.2, 3.5] ensures razor-sharp text on 4K/high-DPI monitors without
-    // generating 50MB+ pixmaps that saturate memory bandwidth during zooming.
-    (zoom_level * (96.0 / 72.0) * scale_factor).clamp(0.2, 3.5)
+    // 96 DPI / 72 DPI = 1.3333 scale for native 100% display density.
+    // Multiplying by monitor scale_factor ensures native physical pixel resolution.
+    // Clamping to [0.2, 8.0] ensures crisp, high-resolution rendering all the way up to 500% zoom.
+    (zoom_level * (96.0 / 72.0) * scale_factor).clamp(0.2, 8.0)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1492,11 +1491,13 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
 }
 
 fn prefetch_neighbors(state: &mut AppState, generation: u64, zoom: f32) {
+    if state.zoom_level > 2.0 {
+        // At high zoom, focus all worker resources on the active page
+        return;
+    }
     let neighbors = [
         state.current_page + 1,
         state.current_page - 1,
-        state.current_page + 2,
-        state.current_page - 2,
     ];
 
     for &p in &neighbors {
@@ -3461,12 +3462,26 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
     }
 }
 
+static LAST_ZOOM_INSTANT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
 fn perform_zoom(
     ui: &AppWindow,
     state_lock: &Arc<Mutex<Option<AppState>>>,
     factor: f32,
     target_page: Option<i32>,
 ) {
+    {
+        if let Ok(mut last_zoom) = LAST_ZOOM_INSTANT.lock() {
+            let now = std::time::Instant::now();
+            if let Some(prev) = *last_zoom {
+                if now.duration_since(prev).as_millis() < 40 {
+                    return;
+                }
+            }
+            *last_zoom = Some(now);
+        }
+    }
+
     ui.set_show_popup(false);
     ui.set_selected_annotation_id(-1);
     ui.set_selected_annotation_kind("".into());
@@ -3913,7 +3928,7 @@ mod tests {
     fn test_compute_actual_render_zoom() {
         // Standard 100% zoom with 1.25 fractional scale
         let z = super::compute_actual_render_zoom(1.0, 1.25);
-        let expected = (1.0 * (96.0 / 72.0) * 1.25f32).clamp(0.2, 3.5);
+        let expected = (1.0 * (96.0 / 72.0) * 1.25f32).clamp(0.2, 8.0);
         assert!((z - expected).abs() < 0.001);
 
         // Clamping check: very small zoom
@@ -3922,7 +3937,7 @@ mod tests {
 
         // Clamping check: very large zoom
         let z_max = super::compute_actual_render_zoom(10.0, 2.0);
-        assert_eq!(z_max, 3.5);
+        assert_eq!(z_max, 8.0);
     }
 
     #[test]

@@ -117,29 +117,7 @@ fn worker_loop(
                     doc = new_doc;
                 }
             }
-            WorkerMessage::Render(mut req) => {
-                // If newer render requests are queued, drain superseded requests
-                while let Ok(newer_msg) = receiver.try_recv() {
-                    match newer_msg {
-                        WorkerMessage::Render(newer_req) => {
-                            if newer_req.generation >= req.generation {
-                                req = newer_req;
-                            }
-                        }
-                        WorkerMessage::SwitchDocument(new_path) => {
-                            if let Ok(new_doc) = mupdf::Document::open(&new_path) {
-                                doc = new_doc;
-                                file_path = new_path;
-                            }
-                        }
-                        WorkerMessage::Reload => {
-                            if let Ok(new_doc) = mupdf::Document::open(&file_path) {
-                                doc = new_doc;
-                            }
-                        }
-                    }
-                }
-
+            WorkerMessage::Render(req) => {
                 // Fast-path drop if request generation is already superseded
                 if req.generation < current_generation.load(Ordering::Relaxed) {
                     continue;

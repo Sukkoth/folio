@@ -340,7 +340,6 @@ export component AppWindow inherits Window {
     in property <string> page-display: "1 / 1";
     in property <string> zoom-display: "200%";
     in property <float> zoom-level: 2.0;
-    property <length> zoom-wheel-delta: 0px;
     in property <bool> can-prev: false;
     in property <bool> can-next: false;
     in property <bool> can-undo: false;
@@ -2032,15 +2031,13 @@ VerticalLayout {
 
                             scroll-event(event) => {
                                 if (event.modifiers.control) {
-                                    root.zoom-wheel-delta += event.delta-y;
-                                    if (root.zoom-wheel-delta >= 30px) {
+                                    if (event.delta-y > 0) {
                                         root.zoom-in();
-                                        root.zoom-wheel-delta = 0px;
-                                    } else if (root.zoom-wheel-delta <= -30px) {
+                                        return accept;
+                                    } else if (event.delta-y < 0) {
                                         root.zoom-out();
-                                        root.zoom-wheel-delta = 0px;
+                                        return accept;
                                     }
-                                    return accept;
                                 }
                                 return reject;
                             }
@@ -2106,6 +2103,19 @@ VerticalLayout {
                                     width: 100%;
                                     height: 100%;
                                     mouse-cursor: text;
+
+                                    scroll-event(event) => {
+                                        if (event.modifiers.control) {
+                                            if (event.delta-y > 0) {
+                                                root.zoom-in();
+                                                return accept;
+                                            } else if (event.delta-y < 0) {
+                                                root.zoom-out();
+                                                return accept;
+                                            }
+                                        }
+                                        return reject;
+                                    }
 
                                     pointer-event(event) => {
                                         if (event.kind == PointerEventKind.move) {
@@ -2193,6 +2203,18 @@ VerticalLayout {
 
                                             pin-ta := TouchArea {
                                                 mouse-cursor: pointer;
+                                                scroll-event(event) => {
+                                                    if (event.modifiers.control) {
+                                                        if (event.delta-y > 0) {
+                                                            root.zoom-in();
+                                                            return accept;
+                                                        } else if (event.delta-y < 0) {
+                                                            root.zoom-out();
+                                                            return accept;
+                                                        }
+                                                    }
+                                                    return reject;
+                                                }
                                                 pointer-event(event) => {
                                                     if (event.kind == PointerEventKind.move) {
                                                         root.hovered-annotation-id = annot.id;
@@ -2220,6 +2242,19 @@ VerticalLayout {
                                             width: 100%;
                                             height: 100%;
                                             mouse-cursor: pointer;
+
+                                            scroll-event(event) => {
+                                                if (event.modifiers.control) {
+                                                    if (event.delta-y > 0) {
+                                                        root.zoom-in();
+                                                        return accept;
+                                                    } else if (event.delta-y < 0) {
+                                                        root.zoom-out();
+                                                        return accept;
+                                                    }
+                                                }
+                                                return reject;
+                                            }
 
                                             pointer-event(event) => {
                                                 if (event.kind == PointerEventKind.move) {
@@ -2887,15 +2922,13 @@ VerticalLayout {
 
                                 scroll-event(event) => {
                                     if (event.modifiers.control) {
-                                        root.zoom-wheel-delta += event.delta-y;
-                                        if (root.zoom-wheel-delta >= 30px) {
+                                        if (event.delta-y > 0) {
                                             root.zoom-in();
-                                            root.zoom-wheel-delta = 0px;
-                                        } else if (root.zoom-wheel-delta <= -30px) {
+                                            return accept;
+                                        } else if (event.delta-y < 0) {
                                             root.zoom-out();
-                                            root.zoom-wheel-delta = 0px;
+                                            return accept;
                                         }
-                                        return accept;
                                     }
                                     return reject;
                                 }
@@ -2944,15 +2977,13 @@ VerticalLayout {
 
                                     scroll-event(event) => {
                                         if (event.modifiers.control) {
-                                            root.zoom-wheel-delta += event.delta-y;
-                                            if (root.zoom-wheel-delta >= 30px) {
+                                            if (event.delta-y > 0) {
                                                 root.zoom-in();
-                                                root.zoom-wheel-delta = 0px;
-                                            } else if (root.zoom-wheel-delta <= -30px) {
+                                                return accept;
+                                            } else if (event.delta-y < 0) {
                                                 root.zoom-out();
-                                                root.zoom-wheel-delta = 0px;
+                                                return accept;
                                             }
-                                            return accept;
                                         }
                                         return reject;
                                     }
@@ -3044,6 +3075,18 @@ VerticalLayout {
 
                                             pin-ta2 := TouchArea {
                                                 mouse-cursor: pointer;
+                                                scroll-event(event) => {
+                                                    if (event.modifiers.control) {
+                                                        if (event.delta-y > 0) {
+                                                            root.zoom-in();
+                                                            return accept;
+                                                        } else if (event.delta-y < 0) {
+                                                            root.zoom-out();
+                                                            return accept;
+                                                        }
+                                                    }
+                                                    return reject;
+                                                }
                                                 pointer-event(event) => {
                                                     if (event.kind == PointerEventKind.move) {
                                                         root.hovered-annotation-id = annot.id;
@@ -3072,6 +3115,19 @@ VerticalLayout {
                                             width: 100%;
                                             height: 100%;
                                             mouse-cursor: pointer;
+
+                                            scroll-event(event) => {
+                                                if (event.modifiers.control) {
+                                                    if (event.delta-y > 0) {
+                                                        root.zoom-in();
+                                                        return accept;
+                                                    } else if (event.delta-y < 0) {
+                                                        root.zoom-out();
+                                                        return accept;
+                                                    }
+                                                }
+                                                return reject;
+                                            }
 
                                             pointer-event(event) => {
                                                 if (event.kind == PointerEventKind.move) {
