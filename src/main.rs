@@ -179,6 +179,9 @@ struct AppState {
     pub toc: Vec<pdf::TocItem>,
     pub collapsed_toc_ids: std::collections::HashSet<i32>,
     pub page_links_cache: std::collections::HashMap<i32, Vec<pdf::PageLink>>,
+    pub has_logical_pages: bool,
+    pub use_logical_pages: bool,
+    pub page_labels: Vec<String>,
     pub rotation: i32, // 0, 90, 180, 270
     pub is_dual_page: bool,
 }
@@ -636,10 +639,16 @@ fn setup_document(
         toc: meta.toc,
         collapsed_toc_ids: initial_collapsed_ids,
         page_links_cache: std::collections::HashMap::new(),
+        has_logical_pages: meta.has_logical_pages,
+        use_logical_pages: meta.has_logical_pages,
+        page_labels: meta.page_labels,
         rotation: 0,
         is_dual_page: false,
     };
 
+    app.set_has_logical_pages(app_state.has_logical_pages);
+    app.set_use_logical_pages(app_state.use_logical_pages);
+    update_page_indicator(&app_state, app);
     rebuild_toc_model(&app_state, app);
 
     app.set_rotation(0);
@@ -1187,6 +1196,8 @@ fn sync_search_to_ui(s: &AppState, ui: &AppWindow) {
 pub fn compute_visible_toc_items(
     toc: &[pdf::TocItem],
     collapsed_ids: &std::collections::HashSet<i32>,
+    page_labels: &[String],
+    use_logical_pages: bool,
 ) -> Vec<TocItemData> {
     let mut visible_entries = Vec::new();
     let mut skip_until_depth: Option<i32> = None;
@@ -1201,11 +1212,20 @@ pub fn compute_visible_toc_items(
         }
 
         let is_expanded = !collapsed_ids.contains(&item.id);
+        let display_page = if use_logical_pages {
+            page_labels
+                .get(item.page as usize)
+                .cloned()
+                .unwrap_or_else(|| format!("{}", item.page + 1))
+        } else {
+            format!("{}", item.page + 1)
+        };
+
         visible_entries.push(TocItemData {
             id: item.id,
             title: item.title.clone().into(),
             page: item.page,
-            display_page: format!("{}", item.page + 1).into(),
+            display_page: display_page.into(),
             depth: item.depth,
             has_children: item.has_children,
             is_expanded,
@@ -1219,9 +1239,118 @@ pub fn compute_visible_toc_items(
 }
 
 fn rebuild_toc_model(state: &AppState, ui: &AppWindow) {
-    let visible_entries = compute_visible_toc_items(&state.toc, &state.collapsed_toc_ids);
+    let visible_entries = compute_visible_toc_items(
+        &state.toc,
+        &state.collapsed_toc_ids,
+        &state.page_labels,
+        state.use_logical_pages,
+    );
     let toc_model = std::rc::Rc::new(slint::VecModel::from(visible_entries));
     ui.set_toc_items(toc_model.into());
+}
+
+pub fn resolve_page_number(
+    input: &str,
+    total_pages: i32,
+    has_logical_pages: bool,
+    use_logical_pages: bool,
+    page_labels: &[String],
+) -> Option<i32> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    if has_logical_pages {
+        if use_logical_pages {
+            // In logical mode: first check exact logical page label (e.g. "ix", "1", "29", "Cover")
+            if let Some(pos) = page_labels
+                .iter()
+                .position(|lbl| lbl.eq_ignore_ascii_case(raw))
+            {
+                return Some(pos as i32);
+            }
+            // Fallback: check if user entered a 1-based paper sheet number
+            if let Ok(paper_num) = raw.parse::<i32>() {
+                if paper_num >= 1 && paper_num <= total_pages {
+                    return Some(paper_num - 1);
+                }
+            }
+        } else {
+            // In paper mode: first check 1-based paper sheet number
+            if let Ok(paper_num) = raw.parse::<i32>() {
+                if paper_num >= 1 && paper_num <= total_pages {
+                    return Some(paper_num - 1);
+                }
+            }
+            // Fallback: check logical label
+            if let Some(pos) = page_labels
+                .iter()
+                .position(|lbl| lbl.eq_ignore_ascii_case(raw))
+            {
+                return Some(pos as i32);
+            }
+        }
+    } else {
+        // Document without custom labels: standard 1-based paper number
+        if let Ok(paper_num) = raw.parse::<i32>() {
+            if paper_num >= 1 && paper_num <= total_pages {
+                return Some(paper_num - 1);
+            }
+        }
+    }
+
+    None
+}
+
+fn resolve_page_input(input: &str, state: &AppState) -> Option<i32> {
+    resolve_page_number(
+        input,
+        state.total_pages,
+        state.has_logical_pages,
+        state.use_logical_pages,
+        &state.page_labels,
+    )
+}
+
+fn update_page_indicator(state: &AppState, ui: &AppWindow) {
+    let cur_str = if state.is_dual_page && state.current_page + 1 < state.total_pages {
+        let p1 = if state.has_logical_pages && state.use_logical_pages {
+            state
+                .page_labels
+                .get(state.current_page as usize)
+                .cloned()
+                .unwrap_or_else(|| format!("{}", state.current_page + 1))
+        } else {
+            format!("{}", state.current_page + 1)
+        };
+        let p2 = if state.has_logical_pages && state.use_logical_pages {
+            state
+                .page_labels
+                .get((state.current_page + 1) as usize)
+                .cloned()
+                .unwrap_or_else(|| format!("{}", state.current_page + 2))
+        } else {
+            format!("{}", state.current_page + 2)
+        };
+        format!("{}-{}", p1, p2)
+    } else {
+        if state.has_logical_pages && state.use_logical_pages {
+            state
+                .page_labels
+                .get(state.current_page as usize)
+                .cloned()
+                .unwrap_or_else(|| format!("{}", state.current_page + 1))
+        } else {
+            format!("{}", state.current_page + 1)
+        }
+    };
+
+    ui.set_current_page_input(cur_str.clone().into());
+    ui.set_total_pages_display(format!("{}", state.total_pages).into());
+    ui.set_page_display(format!("{} / {}", cur_str, state.total_pages).into());
+    ui.set_can_prev(state.current_page > 0);
+    ui.set_can_next(state.current_page < state.total_pages - 1);
 }
 
 pub fn compute_transformed_links(
@@ -1458,14 +1587,7 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
     ui.set_is_dual_page(state.is_dual_page);
     ui.set_has_secondary_page(has_secondary);
 
-    if has_secondary {
-        ui.set_page_display(format!("{}-{} / {}", state.current_page + 1, state.current_page + 2, state.total_pages).into());
-        ui.set_can_next(state.current_page + 2 < state.total_pages);
-    } else {
-        ui.set_page_display(format!("{} / {}", state.current_page + 1, state.total_pages).into());
-        ui.set_can_next(state.current_page < state.total_pages - 1);
-    }
-    ui.set_can_prev(state.current_page > 0);
+    update_page_indicator(state, ui);
     ui.set_zoom_display(format!("{}%", (state.zoom_level * 100.0).round() as i32).into());
     ui.set_zoom_level(state.zoom_level);
 
@@ -2284,14 +2406,12 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
         let save_session = make_session_saver();
         app.on_jump_to_page(move |target_page| {
             let mut is_scroll = false;
-            let mut total_pages = 0;
             let valid = {
                 if let Ok(mut lock) = state_lock.lock() {
                     if let Some(s) = lock.as_mut() {
                         if target_page >= 0 && target_page < s.total_pages {
                             s.current_page = target_page;
                             is_scroll = s.is_scroll_view;
-                            total_pages = s.total_pages;
                             true
                         } else {
                             false
@@ -2307,9 +2427,11 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             if valid {
                 if let Some(ui) = app_weak.upgrade() {
                     ui.set_current_page(target_page);
-                    ui.set_page_display(format!("{} / {}", target_page + 1, total_pages).into());
-                    ui.set_can_prev(target_page > 0);
-                    ui.set_can_next(target_page < total_pages - 1);
+                    if let Ok(lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_ref() {
+                            update_page_indicator(s, &ui);
+                        }
+                    }
 
                     if is_scroll {
                         ui.invoke_scroll_to_page(target_page);
@@ -2323,6 +2445,88 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                         update_view(&ui, &state_lock);
                     }
                     save_session();
+                }
+            }
+        });
+    }
+
+    // Go to Page (Direct Input in top toolbar)
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        let save_session = make_session_saver();
+        app.on_go_to_page(move |input| {
+            let mut target_page: Option<i32> = None;
+            let mut is_scroll = false;
+
+            if let Ok(lock) = state_lock.lock() {
+                if let Some(s) = lock.as_ref() {
+                    target_page = resolve_page_input(input.as_str(), s);
+                    is_scroll = s.is_scroll_view;
+                }
+            }
+
+            if let Some(ui) = app_weak.upgrade() {
+                if let Some(target) = target_page {
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            s.current_page = target;
+                            update_page_indicator(s, &ui);
+                            if is_scroll {
+                                trigger_scroll_page_render(s, target, &ui);
+                                sync_links_to_ui(s, &ui);
+                            }
+                        }
+                    }
+                    if is_scroll {
+                        ui.invoke_scroll_to_page(target);
+                    } else {
+                        update_view(&ui, &state_lock);
+                    }
+                    save_session();
+                } else {
+                    // Invalid page input: reset input to current page
+                    if let Ok(lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_ref() {
+                            update_page_indicator(s, &ui);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Reset Page Input (Cancel edit on Escape)
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_reset_page_input(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                if let Ok(lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_ref() {
+                        update_page_indicator(s, &ui);
+                    }
+                }
+            }
+        });
+    }
+
+    // Toggle Page Numbering Mode (Logical vs Paper)
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_toggle_page_number_mode(move || {
+            if let Ok(mut lock) = state_lock.lock() {
+                if let Some(s) = lock.as_mut() {
+                    if s.has_logical_pages {
+                        s.use_logical_pages = !s.use_logical_pages;
+                        let use_logical = s.use_logical_pages;
+                        if let Some(ui) = app_weak.upgrade() {
+                            ui.set_use_logical_pages(use_logical);
+                            update_page_indicator(s, &ui);
+                            rebuild_toc_model(s, &ui);
+                        }
+                    }
                 }
             }
         });
@@ -3397,9 +3601,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     if let Ok(mut lock) = state_lock.lock() {
                         if let Some(s) = lock.as_mut() {
                             ui.set_current_page(s.current_page);
-                            ui.set_page_display(format!("{} / {}", s.current_page + 1, s.total_pages).into());
-                            ui.set_can_prev(s.current_page > 0);
-                            ui.set_can_next(s.current_page < s.total_pages - 1);
+                            update_page_indicator(s, &ui);
                             trigger_scroll_page_render(s, new_page, &ui);
                             sync_links_to_ui(s, &ui);
                         }
@@ -3444,11 +3646,9 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                         ui.invoke_scroll_to_page(new_page);
                         if let Ok(mut lock) = state_lock.lock() {
                             if let Some(s) = lock.as_mut() {
-                                ui.set_page_display(format!("{} / {}", s.current_page + 1, s.total_pages).into());
-                                ui.set_can_prev(s.current_page > 0);
-                                ui.set_can_next(s.current_page < s.total_pages - 1);
+                                update_page_indicator(s, &ui);
                                 trigger_scroll_page_render(s, new_page, &ui);
-                            sync_links_to_ui(s, &ui);
+                                sync_links_to_ui(s, &ui);
                             }
                         }
                     } else {
@@ -3499,11 +3699,9 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                         ui.invoke_scroll_to_page(new_page);
                         if let Ok(mut lock) = state_lock.lock() {
                             if let Some(s) = lock.as_mut() {
-                                ui.set_page_display(format!("{} / {}", s.current_page + 1, s.total_pages).into());
-                                ui.set_can_prev(s.current_page > 0);
-                                ui.set_can_next(s.current_page < s.total_pages - 1);
+                                update_page_indicator(s, &ui);
                                 trigger_scroll_page_render(s, new_page, &ui);
-                            sync_links_to_ui(s, &ui);
+                                sync_links_to_ui(s, &ui);
                             }
                         }
                     } else {
@@ -3755,6 +3953,9 @@ mod tests {
             toc: Vec::new(),
             collapsed_toc_ids: std::collections::HashSet::new(),
             page_links_cache: std::collections::HashMap::new(),
+            has_logical_pages: false,
+            use_logical_pages: false,
+            page_labels: vec!["1".to_string()],
             rotation: 0,
             is_dual_page: false,
         };
@@ -4171,7 +4372,7 @@ mod tests {
             .map(|item| item.id)
             .collect();
 
-        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        let visible = super::compute_visible_toc_items(&toc, &collapsed, &[], false);
         // Initially visible: Chapter 1, Chapter 2 (all sub-levels collapsed)
         assert_eq!(visible.len(), 2);
         let titles: Vec<String> = visible.iter().map(|item| item.title.to_string()).collect();
@@ -4179,7 +4380,7 @@ mod tests {
 
         // 2. Expand Chapter 1 (id 0 removed from collapsed)
         collapsed.remove(&0);
-        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        let visible = super::compute_visible_toc_items(&toc, &collapsed, &[], false);
         // Section 1.1 is still collapsed, so: Chapter 1, Section 1.1, Section 1.2, Chapter 2
         assert_eq!(visible.len(), 4);
         let titles: Vec<String> = visible.iter().map(|item| item.title.to_string()).collect();
@@ -4187,18 +4388,18 @@ mod tests {
 
         // 3. Expand Section 1.1 (id 1 removed)
         collapsed.remove(&1);
-        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        let visible = super::compute_visible_toc_items(&toc, &collapsed, &[], false);
         // All items now visible
         assert_eq!(visible.len(), 5);
 
         // 4. Re-collapse Section 1.1 (id 1)
         collapsed.insert(1);
-        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        let visible = super::compute_visible_toc_items(&toc, &collapsed, &[], false);
         assert_eq!(visible.len(), 4);
 
         // 5. Re-collapse Chapter 1 (id 0)
         collapsed.insert(0);
-        let visible = super::compute_visible_toc_items(&toc, &collapsed);
+        let visible = super::compute_visible_toc_items(&toc, &collapsed, &[], false);
         assert_eq!(visible.len(), 2);
     }
 
@@ -4238,5 +4439,49 @@ mod tests {
         assert!((link_rot.y - 10.0 * 2.0).abs() < 0.01);
         assert!((link_rot.width - 40.0).abs() < 0.01);
         assert!((link_rot.height - 200.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_resolve_page_number_logical_and_paper() {
+        // Mock 5-page book with logical labels:
+        // Page 0: "Cover"
+        // Page 1: "i"
+        // Page 2: "ii"
+        // Page 3: "1"
+        // Page 4: "2"
+        let labels = vec![
+            "Cover".to_string(),
+            "i".to_string(),
+            "ii".to_string(),
+            "1".to_string(),
+            "2".to_string(),
+        ];
+        let total = 5;
+
+        // 1. Logical mode
+        assert_eq!(super::resolve_page_number("Cover", total, true, true, &labels), Some(0));
+        assert_eq!(super::resolve_page_number("cover", total, true, true, &labels), Some(0));
+        assert_eq!(super::resolve_page_number("i", total, true, true, &labels), Some(1));
+        assert_eq!(super::resolve_page_number("I", total, true, true, &labels), Some(1));
+        assert_eq!(super::resolve_page_number("ii", total, true, true, &labels), Some(2));
+        assert_eq!(super::resolve_page_number("1", total, true, true, &labels), Some(3));
+        assert_eq!(super::resolve_page_number("2", total, true, true, &labels), Some(4));
+        assert_eq!(super::resolve_page_number("99", total, true, true, &labels), None);
+
+        // 2. Paper mode: user enters sheet numbers 1..=5
+        assert_eq!(super::resolve_page_number("1", total, true, false, &labels), Some(0));
+        assert_eq!(super::resolve_page_number("2", total, true, false, &labels), Some(1));
+        assert_eq!(super::resolve_page_number("4", total, true, false, &labels), Some(3));
+        assert_eq!(super::resolve_page_number("5", total, true, false, &labels), Some(4));
+        // Fallback to logical label name if given in paper mode
+        assert_eq!(super::resolve_page_number("Cover", total, true, false, &labels), Some(0));
+        assert_eq!(super::resolve_page_number("ii", total, true, false, &labels), Some(2));
+
+        // 3. Document without logical labels
+        assert_eq!(super::resolve_page_number("1", 10, false, false, &[]), Some(0));
+        assert_eq!(super::resolve_page_number("10", 10, false, false, &[]), Some(9));
+        assert_eq!(super::resolve_page_number("0", 10, false, false, &[]), None);
+        assert_eq!(super::resolve_page_number("11", 10, false, false, &[]), None);
+        assert_eq!(super::resolve_page_number("abc", 10, false, false, &[]), None);
     }
 }

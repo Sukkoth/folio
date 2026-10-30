@@ -351,6 +351,11 @@ export component AppWindow inherits Window {
     in-out property <bool> show-recent-books: false;
     callback open-recent-book(string);
     in property <string> page-display: "1 / 1";
+    in-out property <string> current-page-input: "1";
+    in property <string> total-pages-display: "1";
+    in property <bool> has-logical-pages: false;
+    in-out property <bool> use-logical-pages: false;
+    in-out property <bool> focus-page-input-flag: false;
     in property <string> zoom-display: "200%";
     in property <float> zoom-level: 2.0;
     in-out property <bool> is-ctrl-pressed: false;
@@ -446,6 +451,9 @@ export component AppWindow inherits Window {
     callback jump-to-page(int);
     callback toggle-toc-collapse(int);
     callback open-external-url(string);
+    callback go-to-page(string);
+    callback reset-page-input();
+    callback toggle-page-number-mode();
 
     // Search callbacks
     callback toggle-search();
@@ -562,6 +570,10 @@ keyboard-handler := FocusScope {
                     // Ctrl + F: Toggle Search
                     if (event.text == "f" || event.text == "F" || event.text == "\u{6}") {
                         root.toggle-search();
+                        return accept;
+                    // Ctrl + G: Go to page
+                    } else if (event.text == "g" || event.text == "G" || event.text == "\u{7}") {
+                        root.focus-page-input-flag = true;
                         return accept;
                     // Ctrl + S: Save Document
                     } else if (event.text == "s" || event.text == "S" || event.text == "\u{13}") {
@@ -926,15 +938,97 @@ VerticalLayout {
                                     clicked => { root.prev-page(); }
                                 }
 
+                                // Interactive Page Input Field
+                                page-input-box := Rectangle {
+                                    height: 24px;
+                                    y: (parent.height - self.height) / 2;
+                                    background: page-input.has-focus ? Theme.surface-subtle : Theme.card-subtle;
+                                    border-radius: 4px;
+                                    border-width: page-input.has-focus ? 1.5px : 1px;
+                                    border-color: page-input.has-focus ? Theme.accent : Theme.border-subtle;
+                                    min-width: 36px;
+
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+
+                                        page-input := TextInput {
+                                            text <=> root.current-page-input;
+                                            font-family: "Inter";
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                            color: Theme.text-primary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            single-line: true;
+                                            min-width: 28px;
+
+                                            property <bool> trigger-focus: root.focus-page-input-flag;
+                                            changed trigger-focus => {
+                                                if (self.trigger-focus) {
+                                                    self.focus();
+                                                    root.focus-page-input-flag = false;
+                                                }
+                                            }
+
+                                            accepted => {
+                                                root.go-to-page(self.text);
+                                                keyboard-handler.focus();
+                                            }
+
+                                            key-pressed(event) => {
+                                                if (event.text == Key.Return) {
+                                                    root.go-to-page(self.text);
+                                                    keyboard-handler.focus();
+                                                    return accept;
+                                                } else if (event.text == Key.Escape) {
+                                                    root.reset-page-input();
+                                                    keyboard-handler.focus();
+                                                    return accept;
+                                                }
+                                                return reject;
+                                            }
+                                        }
+                                    }
+                                }
+
                                 Text {
-                                    text: root.page-display;
+                                    text: "/ " + root.total-pages-display;
                                     font-family: "Inter";
                                     font-size: 12px;
-                                    font-weight: 600;
-                                    color: Theme.text-primary;
-                                    horizontal-alignment: center;
+                                    font-weight: 500;
+                                    color: Theme.text-muted;
                                     vertical-alignment: center;
-                                    min-width: 60px;
+                                }
+
+                                // Toggle button between Logical (Book) Page Numbers and Paper Page Numbers
+                                if root.has-logical-pages: page-mode-btn := Rectangle {
+                                    height: 20px;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 4px;
+                                    background: mode-ta.has-hover ? Theme.border : transparent;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        padding-left: 5px;
+                                        padding-right: 5px;
+
+                                        Text {
+                                            text: root.use-logical-pages ? "Logical" : "Paper";
+                                            font-family: "Inter";
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            color: root.use-logical-pages ? Theme.accent : Theme.text-secondary;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    mode-ta := TouchArea {
+                                        clicked => { root.toggle-page-number-mode(); }
+                                        mouse-cursor: pointer;
+                                    }
                                 }
 
                                 IconButton {

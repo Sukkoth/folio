@@ -29,6 +29,8 @@ pub struct PdfMetadata {
     pub initial_height_pt: f32,
     pub page_sizes: Vec<(f32, f32)>,
     pub toc: Vec<TocItem>,
+    pub has_logical_pages: bool,
+    pub page_labels: Vec<String>,
 }
 
 /// Lazily inspects page count, per-page dimensions, and outline cheaply without loading whole file
@@ -76,12 +78,51 @@ pub fn read_pdf_info(file_path: &str) -> Result<PdfMetadata, String> {
         Err(_) => Vec::new(),
     };
 
+    // Extract page labels if available in PDF Root
+    let mut page_labels = Vec::with_capacity(page_count as usize);
+    let mut has_logical_pages = false;
+
+    if let Ok(pdf_doc) = mupdf::pdf::PdfDocument::open(file_path) {
+        let has_labels_dict = if let Ok(trailer) = pdf_doc.trailer() {
+            if let Ok(Some(root)) = trailer.get_dict("Root") {
+                root.get_dict("PageLabels").ok().flatten().is_some()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if has_labels_dict {
+            for p in 0..page_count {
+                if let Ok(lbl) = pdf_doc.page_label(p as usize) {
+                    let trimmed = lbl.trim().to_string();
+                    if trimmed != format!("{}", p + 1) {
+                        has_logical_pages = true;
+                    }
+                    page_labels.push(trimmed);
+                } else {
+                    page_labels.push(format!("{}", p + 1));
+                }
+            }
+        }
+    }
+
+    if !has_logical_pages {
+        page_labels.clear();
+        for p in 0..page_count {
+            page_labels.push(format!("{}", p + 1));
+        }
+    }
+
     Ok(PdfMetadata {
         page_count,
         initial_width_pt: width_pt,
         initial_height_pt: height_pt,
         page_sizes,
         toc,
+        has_logical_pages,
+        page_labels,
     })
 }
 
@@ -1628,5 +1669,49 @@ mod tests {
             assert_eq!(w270, h0, "270 deg rotation width must equal 0 deg height");
             assert_eq!(h270, w0, "270 deg rotation height must equal 0 deg width");
         }
+    }
+
+    #[test]
+    fn test_read_pdf_info_page_labels() {
+        let temp_dir = std::env::temp_dir();
+        let test_pdf_path = temp_dir.join("folio_page_labels_test.pdf");
+        let path_str = test_pdf_path.to_str().unwrap();
+
+        // Create a 4-page PDF:
+        // Page 0, 1: Roman numerals ("i", "ii")
+        // Page 2, 3: Arabic numbers ("1", "2")
+        {
+            let mut doc = mupdf::pdf::PdfDocument::new();
+            doc.new_page((500.0, 700.0)).unwrap();
+            doc.new_page((500.0, 700.0)).unwrap();
+            doc.new_page((500.0, 700.0)).unwrap();
+            doc.new_page((500.0, 700.0)).unwrap();
+
+            doc.set_page_label_rule(mupdf::PageLabelRule {
+                index: 0,
+                style: mupdf::PageLabelStyle::LowerRoman,
+                prefix: String::new(),
+                start: 1,
+            }).unwrap();
+
+            doc.set_page_label_rule(mupdf::PageLabelRule {
+                index: 2,
+                style: mupdf::PageLabelStyle::Decimal,
+                prefix: String::new(),
+                start: 1,
+            }).unwrap();
+
+            doc.save(path_str).unwrap();
+        }
+
+        let meta = read_pdf_info(path_str).unwrap();
+        assert!(meta.has_logical_pages, "Should detect logical page labels in document");
+        assert_eq!(meta.page_labels.len(), 4);
+        assert_eq!(meta.page_labels[0], "i");
+        assert_eq!(meta.page_labels[1], "ii");
+        assert_eq!(meta.page_labels[2], "1");
+        assert_eq!(meta.page_labels[3], "2");
+
+        let _ = std::fs::remove_file(path_str);
     }
 }
