@@ -352,9 +352,7 @@ export component AppWindow inherits Window {
     callback open-recent-book(string);
     in property <string> page-display: "1 / 1";
     in-out property <string> current-page-input: "1";
-    in property <string> total-pages-display: "1";
-    in property <bool> has-logical-pages: false;
-    in-out property <bool> use-logical-pages: false;
+    in property <string> page-suffix-display: "/ 1";
     in-out property <bool> focus-page-input-flag: false;
     in property <string> zoom-display: "200%";
     in property <float> zoom-level: 2.0;
@@ -453,7 +451,6 @@ export component AppWindow inherits Window {
     callback open-external-url(string);
     callback go-to-page(string);
     callback reset-page-input();
-    callback toggle-page-number-mode();
 
     // Search callbacks
     callback toggle-search();
@@ -993,42 +990,12 @@ VerticalLayout {
                                 }
 
                                 Text {
-                                    text: "/ " + root.total-pages-display;
+                                    text: root.page-suffix-display;
                                     font-family: "Inter";
                                     font-size: 12px;
                                     font-weight: 500;
                                     color: Theme.text-muted;
                                     vertical-alignment: center;
-                                }
-
-                                // Toggle button between Logical (Book) Page Numbers and Paper Page Numbers
-                                if root.has-logical-pages: page-mode-btn := Rectangle {
-                                    height: 20px;
-                                    y: (parent.height - self.height) / 2;
-                                    border-radius: 4px;
-                                    background: mode-ta.has-hover ? Theme.border : transparent;
-                                    border-width: 1px;
-                                    border-color: Theme.border;
-
-                                    HorizontalLayout {
-                                        alignment: center;
-                                        padding-left: 5px;
-                                        padding-right: 5px;
-
-                                        Text {
-                                            text: root.use-logical-pages ? "Logical" : "Paper";
-                                            font-family: "Inter";
-                                            font-size: 10px;
-                                            font-weight: 600;
-                                            color: root.use-logical-pages ? Theme.accent : Theme.text-secondary;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-
-                                    mode-ta := TouchArea {
-                                        clicked => { root.toggle-page-number-mode(); }
-                                        mouse-cursor: pointer;
-                                    }
                                 }
 
                                 IconButton {
