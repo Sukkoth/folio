@@ -342,8 +342,13 @@ export component AppWindow inherits Window {
     // Page Rotation (0, 90, 180, 270)
     in-out property <int> rotation: 0;
 
+    // Paper Theme (0 = Light, 1 = Sepia, 2 = Scientific Dark)
+    in-out property <int> paper-theme: 0;
+
     callback rotate-clockwise();
     callback set-dual-page(bool);
+    callback cycle-paper-theme();
+    callback set-paper-theme(int);
 
     in property <string> file-title: "";
     in property <string> file-path: "";
@@ -662,6 +667,9 @@ keyboard-handler := FocusScope {
                     return accept;
                 } else if (event.text == Key.RightArrow || event.text == Key.PageDown || event.text == Key.DownArrow) {
                     root.next-page();
+                    return accept;
+                } else if (event.text == "t" || event.text == "T" || event.text == "p" || event.text == "P") {
+                    root.cycle-paper-theme();
                     return accept;
                 }
             }
@@ -1218,11 +1226,21 @@ VerticalLayout {
                             }
                         }
 
-                        // Bottom Group: Theme Toggle
+                        // Bottom Group: Paper Theme & App Chrome Theme
                         VerticalLayout {
-                            spacing: 10px;
+                            spacing: 8px;
                             alignment: end;
 
+                            // Paper Theme (Document Color Mode)
+                            NavRailButton {
+                                icon: @image-url("../assets/icons/palette.svg");
+                                active: root.paper-theme != 0;
+                                clicked => {
+                                    root.cycle-paper-theme();
+                                }
+                            }
+
+                            // App Chrome Theme (Dark / Light UI)
                             NavRailButton {
                                 icon: Theme.dark ? @image-url("../assets/icons/sun.svg") : @image-url("../assets/icons/moon.svg");
                                 clicked => {
@@ -2062,7 +2080,9 @@ VerticalLayout {
 // Document Viewport// Document Viewport / Error Area
                 Rectangle {
                     horizontal-stretch: 1;
-                    background: Theme.canvas-bg;
+                    background: Theme.dark
+                        ? (root.paper-theme == 1 ? #22201B : #10110C)
+                        : (root.paper-theme == 1 ? #EFE9D9 : root.paper-theme == 2 ? #22231C : Theme.canvas-bg);
                     clip: true;
 
                     if root.has-error: Rectangle {
@@ -2174,13 +2194,13 @@ VerticalLayout {
                                 y: max(32px, (view-scroll.content-height - self.height) / 2);
                                 width: root.page-width;
                                 height: root.page-height;
-                                background: #ffffff;
+                                background: root.paper-theme == 1 ? #F4ECD8 : root.paper-theme == 2 ? #18181A : #ffffff;
                                 border-radius: 4px;
                                 border-width: 1px;
-                                border-color: Theme.border;
-                                drop-shadow-blur: Theme.dark ? 16px : 0px;
+                                border-color: root.paper-theme == 2 ? #2B2D24 : root.paper-theme == 1 ? #DCD4BC : Theme.border;
+                                drop-shadow-blur: root.paper-theme == 2 ? 24px : Theme.dark ? 16px : 0px;
                                 drop-shadow-offset-y: Theme.dark ? 4px : 0px;
-                                drop-shadow-color: Theme.dark ? #00000050 : #00000000;
+                                drop-shadow-color: root.paper-theme == 2 ? #00000080 : Theme.dark ? #00000050 : #00000000;
 
                                 Image {
                                     width: 100%;
@@ -3052,13 +3072,13 @@ VerticalLayout {
                                 y: max(32px, (view-scroll.content-height - self.height) / 2);
                                 width: root.secondary-page-width;
                                 height: root.secondary-page-height;
-                                background: #ffffff;
+                                background: root.paper-theme == 1 ? #F4ECD8 : root.paper-theme == 2 ? #18181A : #ffffff;
                                 border-radius: 4px;
                                 border-width: 1px;
-                                border-color: Theme.border;
-                                drop-shadow-blur: Theme.dark ? 16px : 0px;
+                                border-color: root.paper-theme == 2 ? #2B2D24 : root.paper-theme == 1 ? #DCD4BC : Theme.border;
+                                drop-shadow-blur: root.paper-theme == 2 ? 24px : Theme.dark ? 16px : 0px;
                                 drop-shadow-offset-y: Theme.dark ? 4px : 0px;
-                                drop-shadow-color: Theme.dark ? #00000050 : #00000000;
+                                drop-shadow-color: root.paper-theme == 2 ? #00000080 : Theme.dark ? #00000050 : #00000000;
 
                                 Image {
                                     width: 100%;
@@ -3202,13 +3222,13 @@ VerticalLayout {
                                 y: 12px;
                                 width: page-item.width;
                                 height: page-item.height;
-                                background: #ffffff;
+                                background: root.paper-theme == 1 ? #F4ECD8 : root.paper-theme == 2 ? #18181A : #ffffff;
                                 border-radius: 4px;
                                 border-width: 1px;
-                                border-color: Theme.border;
-                                drop-shadow-blur: Theme.dark ? 16px : 0px;
+                                border-color: root.paper-theme == 2 ? #2B2D24 : root.paper-theme == 1 ? #DCD4BC : Theme.border;
+                                drop-shadow-blur: root.paper-theme == 2 ? 24px : Theme.dark ? 16px : 0px;
                                 drop-shadow-offset-y: Theme.dark ? 4px : 0px;
-                                drop-shadow-color: Theme.dark ? #00000050 : #00000000;
+                                drop-shadow-color: root.paper-theme == 2 ? #00000080 : Theme.dark ? #00000050 : #00000000;
 
                                 Image {
                                     width: 100%;

@@ -3,6 +3,33 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum PaperTheme {
+    #[default]
+    Light = 0,
+    Sepia = 1,
+    ScientificDark = 2,
+    HighContrastDark = 3,
+}
+
+impl From<i32> for PaperTheme {
+    fn from(v: i32) -> Self {
+        match v {
+            1 => PaperTheme::Sepia,
+            2 => PaperTheme::ScientificDark,
+            3 => PaperTheme::HighContrastDark,
+            _ => PaperTheme::Light,
+        }
+    }
+}
+
+impl From<PaperTheme> for i32 {
+    fn from(t: PaperTheme) -> Self {
+        t as i32
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HighlightOverlay {
     pub rgb: [u8; 3],
@@ -17,6 +44,7 @@ pub struct RenderRequest {
     pub generation: u64,
     pub is_preview: bool,
     pub highlights: Vec<HighlightOverlay>,
+    pub theme: PaperTheme,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +56,7 @@ pub struct RenderedPage {
     pub rotation: i32,
     pub generation: u64,
     pub is_preview: bool,
+    pub theme: PaperTheme,
 }
 
 #[derive(Debug, Clone)]
@@ -123,7 +152,7 @@ fn worker_loop(
                     continue;
                 }
 
-                match render_page(&doc, req.page, req.zoom, req.rotation, &req.highlights) {
+                match render_page(&doc, req.page, req.zoom, req.rotation, &req.highlights, req.theme) {
                     Ok((rgba, w, h)) => {
                         if req.generation >= current_generation.load(Ordering::Relaxed) {
                             on_rendered(RenderedPage {
@@ -134,6 +163,7 @@ fn worker_loop(
                                 rotation: req.rotation,
                                 generation: req.generation,
                                 is_preview: req.is_preview,
+                                theme: req.theme,
                             });
                         }
                     }
@@ -146,12 +176,41 @@ fn worker_loop(
     }
 }
 
+pub fn transform_rect_to_pixels(
+    rect: (f32, f32, f32, f32),
+    pw_pt: f32,
+    ph_pt: f32,
+    rotation: i32,
+    zoom: f32,
+    w: usize,
+    h: usize,
+) -> (usize, usize, usize, usize) {
+    let (rx0, ry0, rx1, ry1) = match rotation.rem_euclid(360) {
+        90 => (ph_pt - rect.3, rect.0, ph_pt - rect.1, rect.2),
+        180 => (pw_pt - rect.2, ph_pt - rect.3, pw_pt - rect.0, ph_pt - rect.1),
+        270 => (rect.1, pw_pt - rect.2, rect.3, pw_pt - rect.0),
+        _ => (rect.0, rect.1, rect.2, rect.3),
+    };
+    let min_x = rx0.min(rx1);
+    let max_x = rx0.max(rx1);
+    let min_y = ry0.min(ry1);
+    let max_y = ry0.max(ry1);
+
+    let px0 = ((min_x * zoom).floor().max(0.0) as usize).min(w);
+    let py0 = ((min_y * zoom).floor().max(0.0) as usize).min(h);
+    let px1 = ((max_x * zoom).ceil().max(0.0) as usize).min(w);
+    let py1 = ((max_y * zoom).ceil().max(0.0) as usize).min(h);
+
+    (px0, py0, px1, py1)
+}
+
 pub fn render_page(
     doc: &mupdf::Document,
     page_no: i32,
     zoom: f32,
     rotation: i32,
     highlights: &[HighlightOverlay],
+    theme: PaperTheme,
 ) -> Result<(Vec<u8>, u32, u32), String> {
     let page = doc
         .load_page(page_no)
@@ -160,6 +219,19 @@ pub fn render_page(
     let bounds = page.bounds().unwrap_or(mupdf::Rect { x0: 0.0, y0: 0.0, x1: 595.0, y1: 842.0 });
     let pw_pt = (bounds.x1 - bounds.x0).abs();
     let ph_pt = (bounds.y1 - bounds.y0).abs();
+
+    // In dark themes, extract image/figure blocks to protect them from negative inversion
+    let mut image_rects_pt = Vec::new();
+    if theme == PaperTheme::ScientificDark || theme == PaperTheme::HighContrastDark {
+        if let Ok(tp) = page.to_text_page(mupdf::TextPageFlags::ACCURATE_BBOXES) {
+            for block in tp.blocks() {
+                if block.r#type() == mupdf::text_page::TextBlockType::Image {
+                    let b = block.bounds();
+                    image_rects_pt.push((b.x0, b.y0, b.x1, b.y1));
+                }
+            }
+        }
+    }
 
     let mut matrix = mupdf::Matrix::new_scale(zoom, zoom);
     if rotation != 0 {
@@ -203,17 +275,7 @@ pub fn render_page(
         let hb = h_over.rgb[2] as u16;
 
         for rect in &h_over.rects_pt {
-            let (rx0, ry0, rx1, ry1) = match rotation.rem_euclid(360) {
-                90 => (ph_pt - rect.3, rect.0, ph_pt - rect.1, rect.2),
-                180 => (pw_pt - rect.2, ph_pt - rect.3, pw_pt - rect.0, ph_pt - rect.1),
-                270 => (rect.1, pw_pt - rect.2, rect.3, pw_pt - rect.0),
-                _ => (rect.0, rect.1, rect.2, rect.3),
-            };
-
-            let px0 = ((rx0 * zoom).round() as usize).min(w as usize);
-            let py0 = ((ry0 * zoom).round() as usize).min(h as usize);
-            let px1 = ((rx1 * zoom).round() as usize).min(w as usize);
-            let py1 = ((ry1 * zoom).round() as usize).min(h as usize);
+            let (px0, py0, px1, py1) = transform_rect_to_pixels(*rect, pw_pt, ph_pt, rotation, zoom, w as usize, h as usize);
 
             for y in py0..py1 {
                 let row_offset = y * (w as usize);
@@ -231,5 +293,335 @@ pub fn render_page(
         }
     }
 
+    let image_rects_px: Vec<(usize, usize, usize, usize)> = image_rects_pt
+        .into_iter()
+        .map(|r| transform_rect_to_pixels(r, pw_pt, ph_pt, rotation, zoom, w as usize, h as usize))
+        .collect();
+
+    apply_paper_theme(&mut rgba, w as usize, h as usize, theme, &image_rects_px);
+
     Ok((rgba, w, h))
+}
+
+pub fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let rf = r as f32 / 255.0;
+    let gf = g as f32 / 255.0;
+    let bf = b as f32 / 255.0;
+
+    let max = rf.max(gf).max(bf);
+    let min = rf.min(gf).min(bf);
+    let delta = max - min;
+
+    let l = (max + min) / 2.0;
+
+    if delta < 1e-4 {
+        return (0.0, 0.0, l);
+    }
+
+    let s = if l < 0.5 {
+        delta / (max + min)
+    } else {
+        delta / (2.0 - max - min)
+    };
+
+    let mut h = if (max - rf).abs() < 1e-4 {
+        ((gf - bf) / delta).rem_euclid(6.0)
+    } else if (max - gf).abs() < 1e-4 {
+        (bf - rf) / delta + 2.0
+    } else {
+        (rf - gf) / delta + 4.0
+    };
+    h *= 60.0;
+    if h < 0.0 {
+        h += 360.0;
+    }
+
+    (h, s, l)
+}
+
+pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    if s < 1e-4 {
+        let v = (l * 255.0).round().clamp(0.0, 255.0) as u8;
+        return (v, v, v);
+    }
+
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h_prime = (h.rem_euclid(360.0)) / 60.0;
+    let x = c * (1.0 - ((h_prime % 2.0) - 1.0).abs());
+    let m = l - c / 2.0;
+
+    let (r1, g1, b1) = if (0.0..1.0).contains(&h_prime) {
+        (c, x, 0.0)
+    } else if (1.0..2.0).contains(&h_prime) {
+        (x, c, 0.0)
+    } else if (2.0..3.0).contains(&h_prime) {
+        (0.0, c, x)
+    } else if (3.0..4.0).contains(&h_prime) {
+        (0.0, x, c)
+    } else if (4.0..5.0).contains(&h_prime) {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+
+    (
+        ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
+/// Applies scientific paper themes directly to the raster RGBA buffer.
+/// - Light: Unmodified original rendering.
+/// - Sepia: Warm cream paper (#F4ECD8), soft umber text (#382E25), blue light attenuation.
+/// - ScientificDark: Perceptual luminance tone mapping (#18181A background, #D6D4CD text),
+///   preserving hue of colored highlights/links/plots, and preserving photographic images.
+/// - HighContrastDark: Pure black/white inversion (#000000 background, #FFFFFF text).
+pub fn apply_paper_theme(
+    rgba: &mut [u8],
+    w: usize,
+    h: usize,
+    theme: PaperTheme,
+    image_rects: &[(usize, usize, usize, usize)],
+) {
+    if theme == PaperTheme::Light {
+        return;
+    }
+
+    let total_pixels = w * h;
+    if rgba.len() < total_pixels * 4 {
+        return;
+    }
+
+    // Build image mask if any image blocks are present
+    let image_mask = if !image_rects.is_empty() {
+        let mut mask = vec![false; total_pixels];
+        for &(px0, py0, px1, py1) in image_rects {
+            let y_end = py1.min(h);
+            let x_end = px1.min(w);
+            for y in py0..y_end {
+                let row_start = y * w;
+                for x in px0..x_end {
+                    mask[row_start + x] = true;
+                }
+            }
+        }
+        Some(mask)
+    } else {
+        None
+    };
+
+    // Precompute 256-entry lookup tables for neutral pixels (chroma <= 12)
+    let mut lut_r = [0u8; 256];
+    let mut lut_g = [0u8; 256];
+    let mut lut_b = [0u8; 256];
+
+    match theme {
+        PaperTheme::Sepia => {
+            // Paper: (244, 236, 216), Ink: (56, 46, 37)
+            for y in 0..256 {
+                let ny = y as f32 / 255.0;
+                lut_r[y] = (56.0 + ny * (244.0 - 56.0)).round() as u8;
+                lut_g[y] = (46.0 + ny * (236.0 - 46.0)).round() as u8;
+                lut_b[y] = (37.0 + ny * (216.0 - 37.0)).round() as u8;
+            }
+        }
+        PaperTheme::ScientificDark => {
+            // Slate: (24, 24, 26), Soft stone ink: (214, 212, 205)
+            // Original white (y=255) maps to slate (24, 24, 26)
+            // Original black (y=0) maps to stone (214, 212, 205)
+            for y in 0..256 {
+                let y_inv = 1.0 - (y as f32 / 255.0);
+                lut_r[y] = (24.0 + y_inv * (214.0 - 24.0)).round() as u8;
+                lut_g[y] = (24.0 + y_inv * (212.0 - 24.0)).round() as u8;
+                lut_b[y] = (26.0 + y_inv * (205.0 - 26.0)).round() as u8;
+            }
+        }
+        PaperTheme::HighContrastDark => {
+            for y in 0..256 {
+                let inv = (255 - y) as u8;
+                lut_r[y] = inv;
+                lut_g[y] = inv;
+                lut_b[y] = inv;
+            }
+        }
+        PaperTheme::Light => unreachable!(),
+    }
+
+    for p_idx in 0..total_pixels {
+        // If this pixel is part of a photo/figure, protect it in dark themes
+        if let Some(ref mask) = image_mask {
+            if mask[p_idx] {
+                if theme == PaperTheme::ScientificDark || theme == PaperTheme::HighContrastDark {
+                    let idx = p_idx * 4;
+                    // Slightly dampen 100% white glare in figures by 8% without inverting photographic colors
+                    rgba[idx] = ((rgba[idx] as u16 * 235) / 255) as u8;
+                    rgba[idx + 1] = ((rgba[idx + 1] as u16 * 235) / 255) as u8;
+                    rgba[idx + 2] = ((rgba[idx + 2] as u16 * 235) / 255) as u8;
+                    continue;
+                }
+            }
+        }
+
+        let idx = p_idx * 4;
+        let r = rgba[idx];
+        let g = rgba[idx + 1];
+        let b = rgba[idx + 2];
+
+        let max_v = r.max(g).max(b);
+        let min_v = r.min(g).min(b);
+        let chroma = max_v - min_v;
+
+        // Rec. 709 integer luminance approximation: (54*r + 182*g + 19*b) >> 8
+        let lum = ((54 * r as u32 + 182 * g as u32 + 19 * b as u32) >> 8).min(255) as usize;
+
+        if chroma <= 12 {
+            // Fast path: Neutral pixels (text, paper, anti-aliased font edges)
+            rgba[idx] = lut_r[lum];
+            rgba[idx + 1] = lut_g[lum];
+            rgba[idx + 2] = lut_b[lum];
+        } else {
+            // Saturated pixel: Colored text, highlight, link, plot line
+            match theme {
+                PaperTheme::Sepia => {
+                    let nr = r as f32 / 255.0;
+                    let ng = g as f32 / 255.0;
+                    let nb = b as f32 / 255.0;
+                    let sat_r = (56.0 * (1.0 - nr) + nr * 244.0).clamp(0.0, 255.0);
+                    let sat_g = (46.0 * (1.0 - ng) + ng * 236.0).clamp(0.0, 255.0);
+                    let sat_b = (37.0 * (1.0 - nb) + nb * 216.0).clamp(0.0, 255.0);
+
+                    let t = ((chroma as f32 - 12.0) / 18.0).clamp(0.0, 1.0);
+                    let neut_r = lut_r[lum] as f32;
+                    let neut_g = lut_g[lum] as f32;
+                    let neut_b = lut_b[lum] as f32;
+
+                    rgba[idx] = (neut_r + t * (sat_r - neut_r)).round() as u8;
+                    rgba[idx + 1] = (neut_g + t * (sat_g - neut_g)).round() as u8;
+                    rgba[idx + 2] = (neut_b + t * (sat_b - neut_b)).round() as u8;
+                }
+                PaperTheme::ScientificDark | PaperTheme::HighContrastDark => {
+                    // Hue-preserving luminance remapping
+                    let (h, s, l) = rgb_to_hsl(r, g, b);
+                    let new_l = if theme == PaperTheme::HighContrastDark {
+                        1.0 - l
+                    } else {
+                        (0.82 - 0.52 * l).clamp(0.28, 0.85)
+                    };
+                    let new_s = (s * 1.05).clamp(0.0, 1.0);
+                    let (sat_r, sat_g, sat_b) = hsl_to_rgb(h, new_s, new_l);
+
+                    let t = ((chroma as f32 - 12.0) / 20.0).clamp(0.0, 1.0);
+                    let neut_r = lut_r[lum] as f32;
+                    let neut_g = lut_g[lum] as f32;
+                    let neut_b = lut_b[lum] as f32;
+
+                    rgba[idx] = (neut_r + t * (sat_r as f32 - neut_r)).round() as u8;
+                    rgba[idx + 1] = (neut_g + t * (sat_g as f32 - neut_g)).round() as u8;
+                    rgba[idx + 2] = (neut_b + t * (sat_b as f32 - neut_b)).round() as u8;
+                }
+                PaperTheme::Light => unreachable!(),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_paper_theme_conversions() {
+        assert_eq!(PaperTheme::from(0), PaperTheme::Light);
+        assert_eq!(PaperTheme::from(1), PaperTheme::Sepia);
+        assert_eq!(PaperTheme::from(2), PaperTheme::ScientificDark);
+        assert_eq!(PaperTheme::from(3), PaperTheme::HighContrastDark);
+        assert_eq!(PaperTheme::from(99), PaperTheme::Light);
+
+        assert_eq!(i32::from(PaperTheme::Light), 0);
+        assert_eq!(i32::from(PaperTheme::Sepia), 1);
+        assert_eq!(i32::from(PaperTheme::ScientificDark), 2);
+        assert_eq!(i32::from(PaperTheme::HighContrastDark), 3);
+    }
+
+    #[test]
+    fn test_paper_theme_light_unmodified() {
+        let mut rgba = vec![255, 255, 255, 255, 0, 0, 0, 255];
+        let original = rgba.clone();
+        apply_paper_theme(&mut rgba, 2, 1, PaperTheme::Light, &[]);
+        assert_eq!(rgba, original);
+    }
+
+    #[test]
+    fn test_paper_theme_sepia_tone() {
+        let mut rgba = vec![
+            255, 255, 255, 255, // White paper
+            0, 0, 0, 255,       // Black text
+        ];
+        apply_paper_theme(&mut rgba, 2, 1, PaperTheme::Sepia, &[]);
+
+        // White paper should map to warm cream (~244, 236, 216)
+        assert!((rgba[0] as i32 - 244).abs() <= 2);
+        assert!((rgba[1] as i32 - 236).abs() <= 2);
+        assert!((rgba[2] as i32 - 216).abs() <= 2);
+
+        // Black text should map to warm umber (~56, 46, 37)
+        assert!((rgba[4] as i32 - 56).abs() <= 2);
+        assert!((rgba[5] as i32 - 46).abs() <= 2);
+        assert!((rgba[6] as i32 - 37).abs() <= 2);
+    }
+
+    #[test]
+    fn test_paper_theme_scientific_dark_inversion() {
+        let mut rgba = vec![
+            255, 255, 255, 255, // White paper
+            0, 0, 0, 255,       // Black text
+        ];
+        apply_paper_theme(&mut rgba, 2, 1, PaperTheme::ScientificDark, &[]);
+
+        // White paper should map to dark slate (#18181A -> ~24, 24, 26)
+        assert!((rgba[0] as i32 - 24).abs() <= 2);
+        assert!((rgba[1] as i32 - 24).abs() <= 2);
+        assert!((rgba[2] as i32 - 26).abs() <= 2);
+
+        // Black text should map to soft stone (#D6D4CD -> ~214, 212, 205)
+        assert!((rgba[4] as i32 - 214).abs() <= 2);
+        assert!((rgba[5] as i32 - 212).abs() <= 2);
+        assert!((rgba[6] as i32 - 205).abs() <= 2);
+    }
+
+    #[test]
+    fn test_paper_theme_scientific_dark_hue_preservation() {
+        // Yellow highlight color: (254, 240, 138)
+        let mut rgba = vec![254, 240, 138, 255];
+        apply_paper_theme(&mut rgba, 1, 1, PaperTheme::ScientificDark, &[]);
+
+        // Assert that hue is preserved in yellow range (40 - 70 degrees) and NOT inverted to blue (200 - 260 degrees)
+        let (h, _s, _l) = rgb_to_hsl(rgba[0], rgba[1], rgba[2]);
+        assert!(
+            (40.0..=75.0).contains(&h),
+            "Expected yellow hue (40..75) but got {h} deg for RGB {:?}",
+            &rgba[0..3]
+        );
+        // Red channel must remain dominant over blue
+        assert!(rgba[0] > rgba[2], "Yellow highlight must have Red > Blue: {:?}", &rgba[0..3]);
+    }
+
+    #[test]
+    fn test_paper_theme_image_rect_preservation() {
+        let mut rgba = vec![
+            255, 255, 255, 255, // Outside image (paper)
+            120, 180, 220, 255, // Inside image (photograph pixel)
+        ];
+        let image_rects = vec![(1, 0, 2, 1)]; // Pixel at x=1 is inside image
+        apply_paper_theme(&mut rgba, 2, 1, PaperTheme::ScientificDark, &image_rects);
+
+        // Outside pixel is inverted to dark slate
+        assert!((rgba[0] as i32 - 24).abs() <= 2);
+
+        // Inside photograph pixel is NOT color-inverted (only slightly de-glared)
+        assert!((rgba[4] as i32 - 110).abs() <= 5);
+        assert!((rgba[5] as i32 - 165).abs() <= 5);
+        assert!((rgba[6] as i32 - 202).abs() <= 5);
+    }
 }

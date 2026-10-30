@@ -2,7 +2,7 @@ pub mod cache;
 pub mod worker;
 
 pub use cache::{CachedRender, PageCache};
-pub use worker::{PdfWorker, RenderRequest, RenderedPage};
+pub use worker::{PaperTheme, PdfWorker, RenderRequest, RenderedPage};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 

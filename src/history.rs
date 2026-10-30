@@ -5,17 +5,95 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AppConfig {
+    #[serde(default = "default_dark_mode")]
+    pub dark_mode: bool,
+    #[serde(default)]
+    pub paper_theme: u8,
+}
+
+fn default_dark_mode() -> bool {
+    true
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            dark_mode: true,
+            paper_theme: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DocumentSession {
     pub page: i32,
     pub scroll_y: f32,
     pub zoom_level: f32,
     pub is_scroll_view: bool,
     pub last_opened_at: u64,
+    #[serde(default)]
+    pub paper_theme: u8,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct HistoryStore {
     pub documents: HashMap<String, DocumentSession>,
+}
+
+fn config_file_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"))
+        })?;
+    Some(base.join("folio").join("config.json"))
+}
+
+pub fn load_app_config() -> AppConfig {
+    if let Some(p) = config_file_path() {
+        load_app_config_from(&p)
+    } else {
+        AppConfig::default()
+    }
+}
+
+pub fn load_app_config_from(config_path: &Path) -> AppConfig {
+    if !config_path.exists() {
+        return AppConfig::default();
+    }
+    fs::read_to_string(config_path)
+        .ok()
+        .and_then(|data| serde_json::from_str::<AppConfig>(&data).ok())
+        .unwrap_or_default()
+}
+
+#[allow(dead_code)]
+pub fn save_app_config(config: &AppConfig) {
+    if let Some(p) = config_file_path() {
+        save_app_config_to(config, &p);
+    }
+}
+
+pub fn save_app_config_to(config: &AppConfig, config_path: &Path) {
+    if let Some(parent) = config_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(config) {
+        let _ = fs::write(config_path, json);
+    }
+}
+
+pub fn update_app_config<F: FnOnce(&mut AppConfig)>(updater: F) {
+    if let Some(p) = config_file_path() {
+        update_app_config_at(&p, updater);
+    }
+}
+
+pub fn update_app_config_at<F: FnOnce(&mut AppConfig)>(config_path: &Path, updater: F) {
+    let mut config = load_app_config_from(config_path);
+    updater(&mut config);
+    save_app_config_to(&config, config_path);
 }
 
 fn history_file_path() -> Option<PathBuf> {
@@ -156,6 +234,7 @@ mod tests {
             zoom_level: 2.5,
             is_scroll_view: true,
             last_opened_at: 1729000000,
+            paper_theme: 0,
         };
 
         let json = serde_json::to_string(&session).unwrap();
@@ -174,6 +253,7 @@ mod tests {
                 zoom_level: 1.5,
                 is_scroll_view: false,
                 last_opened_at: 100,
+                paper_theme: 1,
             },
         );
 
@@ -199,6 +279,7 @@ mod tests {
             zoom_level: 1.8,
             is_scroll_view: true,
             last_opened_at: 0,
+            paper_theme: 2,
         };
 
         save_document_session_to(test_doc_path, session.clone(), &test_history_path);
@@ -211,6 +292,7 @@ mod tests {
         assert_eq!(loaded.zoom_level, 1.8);
         assert!(loaded.is_scroll_view);
         assert!(loaded.last_opened_at > 0);
+        assert_eq!(loaded.paper_theme, 2);
 
         let _ = fs::remove_file(&test_history_path);
     }
@@ -229,6 +311,7 @@ mod tests {
                 zoom_level: 1.0,
                 is_scroll_view: false,
                 last_opened_at: 1000,
+                paper_theme: 0,
             },
             &test_history_path,
         );
@@ -241,6 +324,7 @@ mod tests {
                 zoom_level: 1.0,
                 is_scroll_view: false,
                 last_opened_at: 5000,
+                paper_theme: 1,
             },
             &test_history_path,
         );
@@ -252,5 +336,39 @@ mod tests {
         assert_eq!(recents[1].filename, "old.pdf");
 
         let _ = fs::remove_file(&test_history_path);
+    }
+
+    #[test]
+    fn test_app_config_persistence_and_update() {
+        let temp_dir = std::env::temp_dir();
+        let test_config_path = temp_dir.join("folio_test_config.json");
+        let _ = fs::remove_file(&test_config_path);
+
+        // Default config when file does not exist
+        let initial = load_app_config_from(&test_config_path);
+        assert_eq!(initial.dark_mode, true);
+        assert_eq!(initial.paper_theme, 0);
+
+        // Save customized config
+        let custom = AppConfig {
+            dark_mode: false,
+            paper_theme: 2,
+        };
+        save_app_config_to(&custom, &test_config_path);
+
+        let loaded = load_app_config_from(&test_config_path);
+        assert_eq!(loaded.dark_mode, false);
+        assert_eq!(loaded.paper_theme, 2);
+
+        // Update single field
+        update_app_config_at(&test_config_path, |c| {
+            c.paper_theme = 1;
+        });
+
+        let updated = load_app_config_from(&test_config_path);
+        assert_eq!(updated.dark_mode, false);
+        assert_eq!(updated.paper_theme, 1);
+
+        let _ = fs::remove_file(&test_config_path);
     }
 }

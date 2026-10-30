@@ -183,6 +183,7 @@ struct AppState {
     pub page_labels: Vec<String>,
     pub rotation: i32, // 0, 90, 180, 270
     pub is_dual_page: bool,
+    pub paper_theme: pdf::PaperTheme,
 }
 
 pub fn transform_rect_for_rotation(
@@ -365,13 +366,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_display_environment();
     let app = AppWindow::new()?;
 
+    // Load persistent config and apply to UI
+    let config = history::load_app_config();
+    app.set_dark_mode(config.dark_mode);
+    app.set_paper_theme(config.paper_theme as i32);
+
     // Register global UI callbacks (Theme toggle & Open document)
     {
         let app_weak = app.as_weak();
         app.on_toggle_theme(move || {
             if let Some(ui) = app_weak.upgrade() {
                 let current = ui.get_dark_mode();
-                ui.set_dark_mode(!current);
+                let next = !current;
+                ui.set_dark_mode(next);
+                history::update_app_config(|c| c.dark_mode = next);
             }
         });
     }
@@ -465,6 +473,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+pub fn resolve_initial_paper_theme(active_theme: i32, config_theme: u8) -> pdf::PaperTheme {
+    if active_theme >= 0 && active_theme <= 3 {
+        pdf::PaperTheme::from(active_theme)
+    } else {
+        pdf::PaperTheme::from(config_theme as i32)
+    }
+}
+
 fn setup_document(
     app: &AppWindow,
     path: &Path,
@@ -501,6 +517,10 @@ fn setup_document(
         (0, default_zoom, true, 0.0)
     };
 
+    // Maintain active paper theme across files: either from the currently running UI or global config
+    let config = history::load_app_config();
+    let initial_paper_theme = resolve_initial_paper_theme(app.get_paper_theme(), config.paper_theme);
+
     let (p0_w, p0_h) = meta.page_sizes.first().copied().unwrap_or((meta.initial_width_pt, meta.initial_height_pt));
     let standard_h = if meta.page_sizes.len() > 1 {
         meta.page_sizes[1].1
@@ -521,6 +541,7 @@ fn setup_document(
     app.set_page_display(format!("{} / {}", initial_page + 1, meta.page_count).into());
     app.set_can_prev(initial_page > 0);
     app.set_can_next(initial_page < meta.page_count - 1);
+    app.set_paper_theme(initial_paper_theme as i32);
 
     // Table of Contents (Outline) presence
     let has_toc = !meta.toc.is_empty();
@@ -642,6 +663,7 @@ fn setup_document(
         page_labels: meta.page_labels,
         rotation: 0,
         is_dual_page: false,
+        paper_theme: initial_paper_theme,
     };
 
     update_page_indicator(&app_state, app);
@@ -717,12 +739,17 @@ fn handle_rendered_page(
         return;
     }
 
+    // Drop stale results from different paper theme
+    if rendered.theme != state.paper_theme {
+        return;
+    }
+
     // Drop stale preview from older generation
     if rendered.is_preview && rendered.generation != state.worker.current_generation() {
         return;
     }
 
-    if let Some(existing) = state.cache.get(rendered.page, state.zoom_level, state.rotation) {
+    if let Some(existing) = state.cache.get(rendered.page, state.zoom_level, state.rotation, state.paper_theme) {
         if rendered.is_preview && !existing.is_preview {
             return;
         }
@@ -734,6 +761,7 @@ fn handle_rendered_page(
             rendered.page,
             state.zoom_level,
             state.rotation,
+            rendered.theme,
             CachedRender {
                 rgba: rendered.rgba,
                 width: rendered.w,
@@ -1480,6 +1508,7 @@ fn save_current_session_direct(s: &AppState, ui: &AppWindow) {
             zoom_level: s.zoom_level,
             is_scroll_view: s.is_scroll_view,
             last_opened_at: 0,
+            paper_theme: s.paper_theme as u8,
         };
         history::save_document_session(&s.file_path, session);
     }
@@ -1642,7 +1671,7 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
             item.width = pw;
             item.height = ph;
             let mut image_changed = false;
-            if let Some(cached) = state.cache.get(i as i32, state.zoom_level, state.rotation) {
+            if let Some(cached) = state.cache.get(i as i32, state.zoom_level, state.rotation, state.paper_theme) {
                 if let Some(img) = rgba_to_image(&cached.rgba, cached.width, cached.height) {
                     item.image = img;
                     image_changed = true;
@@ -1666,7 +1695,7 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
     state.worker.set_current_generation(next_gen);
 
     // Check LRU cache for current page
-    let cached = state.cache.get(state.current_page, state.zoom_level, state.rotation).cloned();
+    let cached = state.cache.get(state.current_page, state.zoom_level, state.rotation, state.paper_theme).cloned();
 
     let mut primary_needs_render = true;
     if let Some(cached_render) = cached {
@@ -1696,6 +1725,7 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
             is_preview: true,
             highlights: h_current.clone(),
             rotation: state.rotation,
+            theme: state.paper_theme,
         });
 
         // Step 2: Full-res render for current page
@@ -1706,13 +1736,14 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
             is_preview: false,
             highlights: h_current,
             rotation: state.rotation,
+            theme: state.paper_theme,
         });
     }
 
     // If dual-page spread, check and request companion page
     if has_secondary {
         let sec_page = state.current_page + 1;
-        let cached_sec = state.cache.get(sec_page, state.zoom_level, state.rotation).cloned();
+        let cached_sec = state.cache.get(sec_page, state.zoom_level, state.rotation, state.paper_theme).cloned();
         let mut sec_needs_render = true;
         if let Some(cached_render) = cached_sec {
             if let Some(img) = rgba_to_image(&cached_render.rgba, cached_render.width, cached_render.height) {
@@ -1732,6 +1763,7 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
                 is_preview: false,
                 highlights: h_sec,
                 rotation: state.rotation,
+                theme: state.paper_theme,
             });
         }
     }
@@ -1754,7 +1786,7 @@ fn prefetch_neighbors(state: &mut AppState, generation: u64, zoom: f32) {
 
     for &p in &neighbors {
         if p >= 0 && p < state.total_pages {
-            if state.cache.get(p, state.zoom_level, state.rotation).is_none() {
+            if state.cache.get(p, state.zoom_level, state.rotation, state.paper_theme).is_none() {
                 let h_neighbor = get_page_highlights(state, p);
                 state.worker.request_render(RenderRequest {
                     page: p,
@@ -1763,6 +1795,7 @@ fn prefetch_neighbors(state: &mut AppState, generation: u64, zoom: f32) {
                     is_preview: false,
                     highlights: h_neighbor,
                     rotation: state.rotation,
+                    theme: state.paper_theme,
                 });
             }
         }
@@ -1777,7 +1810,7 @@ fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindo
     state.worker.set_current_generation(next_gen);
 
     // If cached, apply immediately
-    if let Some(cached) = state.cache.get(page_idx, state.zoom_level, state.rotation).cloned() {
+    if let Some(cached) = state.cache.get(page_idx, state.zoom_level, state.rotation, state.paper_theme).cloned() {
         if let Some(img) = rgba_to_image(&cached.rgba, cached.width, cached.height) {
             let pages_model = ui.get_scroll_pages();
             let idx = page_idx as usize;
@@ -1806,6 +1839,7 @@ fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindo
         is_preview: true,
         highlights: h_page.clone(),
         rotation: state.rotation,
+        theme: state.paper_theme,
     });
 
     state.worker.request_render(RenderRequest {
@@ -1815,6 +1849,7 @@ fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindo
         is_preview: false,
         highlights: h_page,
         rotation: state.rotation,
+        theme: state.paper_theme,
     });
 
     prefetch_neighbors(state, next_gen, actual_render_zoom);
@@ -1835,6 +1870,7 @@ fn trigger_scroll_page_render_direct(state: &mut AppState, page_idx: i32, ui: &A
         is_preview: false,
         highlights: h_page,
         rotation: state.rotation,
+        theme: state.paper_theme,
     });
 }
 
@@ -2786,43 +2822,47 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             let (unrot_w, unrot_h) = s.get_unrotated_page_size(target_page);
                             let rotation = s.rotation;
 
-                            if let Some(cached) = s.cache.get_mut(target_page, s.zoom_level, rotation) {
-                                let w = cached.width;
-                                let h = cached.height;
-                                let zoom = w as f32 / pw_pt.max(1.0);
+                            if s.paper_theme == pdf::PaperTheme::Light {
+                                if let Some(cached) = s.cache.get_mut(target_page, s.zoom_level, rotation, s.paper_theme) {
+                                    let w = cached.width;
+                                    let h = cached.height;
+                                    let zoom = w as f32 / pw_pt.max(1.0);
 
-                                let hr = rgb[0] as u16;
-                                let hg = rgb[1] as u16;
-                                let hb = rgb[2] as u16;
+                                    let hr = rgb[0] as u16;
+                                    let hg = rgb[1] as u16;
+                                    let hb = rgb[2] as u16;
 
-                                let mut applied = vec![false; (w * h) as usize];
-                                for rect in &adjusted_rects {
-                                    let tr = transform_rect_for_rotation(*rect, unrot_w, unrot_h, rotation);
-                                    let px0 = ((tr.0 * zoom).round() as usize).min(w as usize);
-                                    let py0 = ((tr.1 * zoom).round() as usize).min(h as usize);
-                                    let px1 = ((tr.2 * zoom).round() as usize).min(w as usize);
-                                    let py1 = ((tr.3 * zoom).round() as usize).min(h as usize);
+                                    let mut applied = vec![false; (w * h) as usize];
+                                    for rect in &adjusted_rects {
+                                        let tr = transform_rect_for_rotation(*rect, unrot_w, unrot_h, rotation);
+                                        let px0 = ((tr.0 * zoom).round() as usize).min(w as usize);
+                                        let py0 = ((tr.1 * zoom).round() as usize).min(h as usize);
+                                        let px1 = ((tr.2 * zoom).round() as usize).min(w as usize);
+                                        let py1 = ((tr.3 * zoom).round() as usize).min(h as usize);
 
-                                    for y in py0..py1 {
-                                        let row_offset = y * (w as usize);
-                                        for x in px0..px1 {
-                                            let p_idx = row_offset + x;
-                                            if !applied[p_idx] {
-                                                applied[p_idx] = true;
-                                                let idx = p_idx * 4;
-                                                if idx + 2 < cached.rgba.len() {
-                                                    cached.rgba[idx] = ((cached.rgba[idx] as u16 * hr) / 255) as u8;
-                                                    cached.rgba[idx + 1] = ((cached.rgba[idx + 1] as u16 * hg) / 255) as u8;
-                                                    cached.rgba[idx + 2] = ((cached.rgba[idx + 2] as u16 * hb) / 255) as u8;
+                                        for y in py0..py1 {
+                                            let row_offset = y * (w as usize);
+                                            for x in px0..px1 {
+                                                let p_idx = row_offset + x;
+                                                if !applied[p_idx] {
+                                                    applied[p_idx] = true;
+                                                    let idx = p_idx * 4;
+                                                    if idx + 2 < cached.rgba.len() {
+                                                        cached.rgba[idx] = ((cached.rgba[idx] as u16 * hr) / 255) as u8;
+                                                        cached.rgba[idx + 1] = ((cached.rgba[idx + 1] as u16 * hg) / 255) as u8;
+                                                        cached.rgba[idx + 2] = ((cached.rgba[idx + 2] as u16 * hb) / 255) as u8;
+                                                    }
                                                 }
                                             }
                                         }
                                     }
-                                }
 
-                                if let Some(img) = rgba_to_image(&cached.rgba, w, h) {
-                                    highlight_updates.push((target_page, img));
+                                    if let Some(img) = rgba_to_image(&cached.rgba, w, h) {
+                                        highlight_updates.push((target_page, img));
+                                    }
                                 }
+                            } else {
+                                s.cache.remove_page(target_page);
                             }
                         }
 
@@ -3571,6 +3611,87 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
         });
     }
 
+    // Cycle Paper Theme (Light -> Sepia -> Scientific Dark -> Light)
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_cycle_paper_theme(move || {
+            let (new_theme, current_page, is_scroll) = {
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        let next = match s.paper_theme {
+                            pdf::PaperTheme::Light => pdf::PaperTheme::Sepia,
+                            pdf::PaperTheme::Sepia => pdf::PaperTheme::ScientificDark,
+                            pdf::PaperTheme::ScientificDark => pdf::PaperTheme::Light,
+                            pdf::PaperTheme::HighContrastDark => pdf::PaperTheme::Light,
+                        };
+                        s.paper_theme = next;
+                        (next, s.current_page, s.is_scroll_view)
+                    } else {
+                        (pdf::PaperTheme::Light, 0, false)
+                    }
+                } else {
+                    (pdf::PaperTheme::Light, 0, false)
+                }
+            };
+
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_paper_theme(new_theme as i32);
+                history::update_app_config(|c| c.paper_theme = new_theme as u8);
+                update_view(&ui, &state_lock);
+                if is_scroll {
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            trigger_scroll_page_render(s, current_page, &ui);
+                        }
+                    }
+                }
+                save_current_session(&state_lock, &ui);
+            }
+        });
+    }
+
+    // Set Paper Theme directly
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_set_paper_theme(move |theme_idx| {
+            let (new_theme, changed, current_page, is_scroll) = {
+                if let Ok(mut lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_mut() {
+                        let target = pdf::PaperTheme::from(theme_idx);
+                        if s.paper_theme != target {
+                            s.paper_theme = target;
+                            (target, true, s.current_page, s.is_scroll_view)
+                        } else {
+                            (target, false, s.current_page, s.is_scroll_view)
+                        }
+                    } else {
+                        (pdf::PaperTheme::Light, false, 0, false)
+                    }
+                } else {
+                    (pdf::PaperTheme::Light, false, 0, false)
+                }
+            };
+
+            if changed {
+                if let Some(ui) = app_weak.upgrade() {
+                    ui.set_paper_theme(new_theme as i32);
+                    history::update_app_config(|c| c.paper_theme = new_theme as u8);
+                    update_view(&ui, &state_lock);
+                    if is_scroll {
+                        if let Ok(mut lock) = state_lock.lock() {
+                            if let Some(s) = lock.as_mut() {
+                                trigger_scroll_page_render(s, current_page, &ui);
+                            }
+                        }
+                    }
+                    save_current_session(&state_lock, &ui);
+                }
+            }
+        });
+    }
+
     // Visible Page Changed (scrolling in continuous scroll view)
     {
         let state_lock = Arc::clone(state_lock);
@@ -3951,6 +4072,7 @@ mod tests {
             page_labels: vec!["1".to_string()],
             rotation: 0,
             is_dual_page: false,
+            paper_theme: pdf::PaperTheme::Light,
         };
 
         (state, test_pdf_path)
@@ -4473,5 +4595,49 @@ mod tests {
         assert_eq!(super::resolve_page_number("0", 10, false, &[]), None);
         assert_eq!(super::resolve_page_number("11", 10, false, &[]), None);
         assert_eq!(super::resolve_page_number("abc", 10, false, &[]), None);
+    }
+
+    #[test]
+    fn test_settings_survival_across_file_changes_and_dialog_opens() {
+        let temp_dir = std::env::temp_dir();
+        let test_config_path = temp_dir.join("folio_test_settings_survival.json");
+        let _ = std::fs::remove_file(&test_config_path);
+
+        // 1. Verify that custom settings update and survive in config
+        crate::history::save_app_config_to(
+            &crate::history::AppConfig {
+                dark_mode: false,
+                paper_theme: 2, // Scientific Dark
+            },
+            &test_config_path,
+        );
+
+        let loaded = crate::history::load_app_config_from(&test_config_path);
+        assert_eq!(loaded.dark_mode, false);
+        assert_eq!(loaded.paper_theme, 2);
+
+        // 2. Cold start: active UI theme is not yet set (-1 or unset) -> resolves to config theme (Scientific Dark = 2)
+        let cold_start_theme = super::resolve_initial_paper_theme(-1, loaded.paper_theme);
+        assert_eq!(cold_start_theme, pdf::PaperTheme::ScientificDark);
+
+        // 3. User switches to Sepia (1), then opens another file via dialog or recent books -> resolves to active theme (Sepia = 1)
+        let dialog_open_theme = super::resolve_initial_paper_theme(1, loaded.paper_theme);
+        assert_eq!(dialog_open_theme, pdf::PaperTheme::Sepia);
+
+        // 4. User switches to Scientific Dark (2), then opens a recent book -> resolves to active theme (Scientific Dark = 2)
+        let recent_change_theme = super::resolve_initial_paper_theme(2, loaded.paper_theme);
+        assert_eq!(recent_change_theme, pdf::PaperTheme::ScientificDark);
+
+        // 5. Update config in place and verify persistence
+        crate::history::update_app_config_at(&test_config_path, |c| {
+            c.dark_mode = true;
+            c.paper_theme = 1;
+        });
+
+        let updated = crate::history::load_app_config_from(&test_config_path);
+        assert_eq!(updated.dark_mode, true);
+        assert_eq!(updated.paper_theme, 1);
+
+        let _ = std::fs::remove_file(&test_config_path);
     }
 }
