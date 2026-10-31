@@ -22,6 +22,25 @@ pub struct PageLink {
     pub uri: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DocumentProperties {
+    pub file_name: String,
+    pub file_path: String,
+    pub file_size_display: String,
+    pub page_count_display: String,
+    pub page_dimensions_display: String,
+    pub title: String,
+    pub author: String,
+    pub subject: String,
+    pub keywords: String,
+    pub creator: String,
+    pub producer: String,
+    pub creation_date: String,
+    pub mod_date: String,
+    pub pdf_version: String,
+    pub encryption: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct PdfMetadata {
     pub page_count: i32,
@@ -162,6 +181,281 @@ fn extract_toc(
             extract_toc(doc, &item.down, depth + 1, next_id, result);
         }
     }
+}
+
+pub fn format_with_commas(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    for (i, &c) in chars.iter().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
+}
+
+pub fn format_file_size(bytes: u64) -> String {
+    let formatted_bytes = format_with_commas(bytes);
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB ({} bytes)", bytes as f64 / 1024.0, formatted_bytes)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.2} MB ({} bytes)", bytes as f64 / (1024.0 * 1024.0), formatted_bytes)
+    } else {
+        format!("{:.2} GB ({} bytes)", bytes as f64 / (1024.0 * 1024.0 * 1024.0), formatted_bytes)
+    }
+}
+
+pub fn format_page_dimensions(w_pt: f32, h_pt: f32) -> String {
+    let w_mm = w_pt * 25.4 / 72.0;
+    let h_mm = h_pt * 25.4 / 72.0;
+
+    let is_close = |a: f32, b: f32| (a - b).abs() <= 3.0;
+
+    if (is_close(w_pt, 595.0) && is_close(h_pt, 842.0)) || (is_close(w_pt, 842.0) && is_close(h_pt, 595.0)) {
+        let orient = if w_pt > h_pt { "Landscape" } else { "Portrait" };
+        format!("A4 ({:.0} × {:.0} mm / {:.0} × {:.0} pt) · {}", w_mm, h_mm, w_pt, h_pt, orient)
+    } else if (is_close(w_pt, 612.0) && is_close(h_pt, 792.0)) || (is_close(w_pt, 792.0) && is_close(h_pt, 612.0)) {
+        let orient = if w_pt > h_pt { "Landscape" } else { "Portrait" };
+        format!("US Letter (8.5 × 11 in / {:.0} × {:.0} pt) · {}", w_pt, h_pt, orient)
+    } else if (is_close(w_pt, 612.0) && is_close(h_pt, 1008.0)) || (is_close(w_pt, 1008.0) && is_close(h_pt, 612.0)) {
+        let orient = if w_pt > h_pt { "Landscape" } else { "Portrait" };
+        format!("US Legal (8.5 × 14 in / {:.0} × {:.0} pt) · {}", w_pt, h_pt, orient)
+    } else if (is_close(w_pt, 842.0) && is_close(h_pt, 1191.0)) || (is_close(w_pt, 1191.0) && is_close(h_pt, 842.0)) {
+        let orient = if w_pt > h_pt { "Landscape" } else { "Portrait" };
+        format!("A3 ({:.0} × {:.0} mm / {:.0} × {:.0} pt) · {}", w_mm, h_mm, w_pt, h_pt, orient)
+    } else if (is_close(w_pt, 420.0) && is_close(h_pt, 595.0)) || (is_close(w_pt, 595.0) && is_close(h_pt, 420.0)) {
+        let orient = if w_pt > h_pt { "Landscape" } else { "Portrait" };
+        format!("A5 ({:.0} × {:.0} mm / {:.0} × {:.0} pt) · {}", w_mm, h_mm, w_pt, h_pt, orient)
+    } else {
+        format!("{:.1} × {:.1} mm ({:.0} × {:.0} pt)", w_mm, h_mm, w_pt, h_pt)
+    }
+}
+
+pub fn format_unix_timestamp(secs: u64) -> String {
+    let days = (secs / 86400) as i64;
+    let time_of_day = secs % 86400;
+    let hour = time_of_day / 3600;
+    let min = (time_of_day % 3600) / 60;
+    let sec = time_of_day % 60;
+
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1029 + doe / 1461 - doe / 36524) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02} {hour:02}:{min:02}:{sec:02} UTC")
+}
+
+pub fn format_pdf_date(raw: &str) -> String {
+    let s = raw.trim();
+    if s.is_empty() {
+        return "—".to_string();
+    }
+    let s = s.strip_prefix("D:").unwrap_or(s);
+    if s.len() >= 4 && s[0..4].chars().all(|c| c.is_ascii_digit()) {
+        let year = &s[0..4];
+        let month = if s.len() >= 6 && s[4..6].chars().all(|c| c.is_ascii_digit()) {
+            &s[4..6]
+        } else {
+            ""
+        };
+        let day = if s.len() >= 8 && s[6..8].chars().all(|c| c.is_ascii_digit()) {
+            &s[6..8]
+        } else {
+            ""
+        };
+        let hour = if s.len() >= 10 && s[8..10].chars().all(|c| c.is_ascii_digit()) {
+            &s[8..10]
+        } else {
+            ""
+        };
+        let min = if s.len() >= 12 && s[10..12].chars().all(|c| c.is_ascii_digit()) {
+            &s[10..12]
+        } else {
+            ""
+        };
+        let sec = if s.len() >= 14 && s[12..14].chars().all(|c| c.is_ascii_digit()) {
+            &s[12..14]
+        } else {
+            ""
+        };
+
+        let mut tz = String::new();
+        if s.len() > 14 {
+            let rest = &s[14..];
+            if rest.starts_with('Z') || rest.starts_with('z') {
+                tz = " (UTC)".to_string();
+            } else if rest.starts_with('+') || rest.starts_with('-') {
+                let sign = &rest[0..1];
+                let tz_digits: String = rest[1..].chars().filter(|c| c.is_ascii_digit()).collect();
+                if tz_digits.len() >= 4 {
+                    tz = format!(" (UTC{}{}:{})", sign, &tz_digits[0..2], &tz_digits[2..4]);
+                } else if tz_digits.len() >= 2 {
+                    tz = format!(" (UTC{}{}:00)", sign, &tz_digits[0..2]);
+                }
+            }
+        }
+
+        let mut out = year.to_string();
+        if !month.is_empty() {
+            out.push('-');
+            out.push_str(month);
+            if !day.is_empty() {
+                out.push('-');
+                out.push_str(day);
+            }
+        }
+        if !hour.is_empty() && !min.is_empty() {
+            out.push(' ');
+            out.push_str(hour);
+            out.push(':');
+            out.push_str(min);
+            if !sec.is_empty() {
+                out.push(':');
+                out.push_str(sec);
+            }
+        }
+        out.push_str(&tz);
+        out
+    } else {
+        s.to_string()
+    }
+}
+
+pub fn extract_document_properties(file_path: &str) -> Result<DocumentProperties, String> {
+    let doc = mupdf::Document::open(file_path)
+        .map_err(|e| format!("Failed to open PDF document: {e}"))?;
+
+    let page_count = doc.page_count().unwrap_or(0);
+    let (w_pt, h_pt) = if let Ok(first_page) = doc.load_page(0) {
+        if let Ok(b) = first_page.bounds() {
+            ((b.x1 - b.x0).abs().max(1.0), (b.y1 - b.y0).abs().max(1.0))
+        } else {
+            (0.0, 0.0)
+        }
+    } else {
+        (0.0, 0.0)
+    };
+
+    let title = doc.metadata(mupdf::MetadataName::Title).unwrap_or_default().trim().to_string();
+    let author = doc.metadata(mupdf::MetadataName::Author).unwrap_or_default().trim().to_string();
+    let subject = doc.metadata(mupdf::MetadataName::Subject).unwrap_or_default().trim().to_string();
+    let keywords = doc.metadata(mupdf::MetadataName::Keywords).unwrap_or_default().trim().to_string();
+    let creator = doc.metadata(mupdf::MetadataName::Creator).unwrap_or_default().trim().to_string();
+    let producer = doc.metadata(mupdf::MetadataName::Producer).unwrap_or_default().trim().to_string();
+    let format = doc.metadata(mupdf::MetadataName::Format).unwrap_or_default().trim().to_string();
+    let encryption = doc.metadata(mupdf::MetadataName::Encryption).unwrap_or_default().trim().to_string();
+    let creation_raw = doc.metadata(mupdf::MetadataName::CreationDate).unwrap_or_default().trim().to_string();
+    let mod_raw = doc.metadata(mupdf::MetadataName::ModDate).unwrap_or_default().trim().to_string();
+
+    let fs_meta = std::fs::metadata(file_path).ok();
+    let file_size_display = fs_meta.as_ref()
+        .map(|m| format_file_size(m.len()))
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let mod_date = if !mod_raw.is_empty() {
+        format_pdf_date(&mod_raw)
+    } else if let Some(m) = fs_meta.as_ref().and_then(|m| m.modified().ok()) {
+        if let Ok(duration) = m.duration_since(std::time::UNIX_EPOCH) {
+            format_unix_timestamp(duration.as_secs())
+        } else {
+            "—".to_string()
+        }
+    } else {
+        "—".to_string()
+    };
+
+    let creation_date = if !creation_raw.is_empty() {
+        format_pdf_date(&creation_raw)
+    } else {
+        "—".to_string()
+    };
+
+    let path_obj = std::path::Path::new(file_path);
+    let file_name = path_obj.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("document.pdf")
+        .to_string();
+
+    let page_count_display = if page_count == 1 {
+        "1 page".to_string()
+    } else {
+        format!("{} pages", page_count)
+    };
+
+    let page_dimensions_display = if w_pt > 0.0 && h_pt > 0.0 {
+        format_page_dimensions(w_pt, h_pt)
+    } else {
+        "—".to_string()
+    };
+
+    let pdf_version = if format.is_empty() {
+        "PDF".to_string()
+    } else {
+        format
+    };
+
+    let encryption_display = if encryption.is_empty() || encryption.eq_ignore_ascii_case("none") {
+        "None (Unencrypted)".to_string()
+    } else {
+        encryption
+    };
+
+    let or_dash = |s: String| if s.is_empty() { "—".to_string() } else { s };
+
+    Ok(DocumentProperties {
+        file_name,
+        file_path: file_path.to_string(),
+        file_size_display,
+        page_count_display,
+        page_dimensions_display,
+        title: or_dash(title),
+        author: or_dash(author),
+        subject: or_dash(subject),
+        keywords: or_dash(keywords),
+        creator: or_dash(creator),
+        producer: or_dash(producer),
+        creation_date,
+        mod_date,
+        pdf_version,
+        encryption: encryption_display,
+    })
+}
+
+pub fn format_document_properties_markdown(p: &DocumentProperties) -> String {
+    format!(
+r#"## Document Properties
+- **File Name:** {}
+- **File Path:** {}
+- **File Size:** {}
+- **Pages:** {}
+- **Page Size:** {}
+- **PDF Version:** {}
+- **Security:** {}
+- **Title:** {}
+- **Author:** {}
+- **Subject:** {}
+- **Keywords:** {}
+- **Application:** {}
+- **Producer:** {}
+- **Created:** {}
+- **Modified:** {}
+"#,
+        p.file_name, p.file_path, p.file_size_display, p.page_count_display, p.page_dimensions_display,
+        p.pdf_version, p.encryption, p.title, p.author, p.subject, p.keywords,
+        p.creator, p.producer, p.creation_date, p.mod_date
+    )
 }
 
 pub fn extract_page_links(file_path: &str, page_no: i32) -> Vec<PageLink> {
@@ -1711,6 +2005,61 @@ mod tests {
         assert_eq!(meta.page_labels[1], "ii");
         assert_eq!(meta.page_labels[2], "1");
         assert_eq!(meta.page_labels[3], "2");
+
+        let _ = std::fs::remove_file(path_str);
+    }
+
+    #[test]
+    fn test_format_file_size() {
+        assert_eq!(format_file_size(500), "500 B");
+        assert_eq!(format_file_size(2048), "2.0 KB (2,048 bytes)");
+        assert_eq!(format_file_size(2_516_582), "2.40 MB (2,516,582 bytes)");
+        assert_eq!(format_file_size(1_073_741_824), "1.00 GB (1,073,741,824 bytes)");
+    }
+
+    #[test]
+    fn test_format_page_dimensions() {
+        let a4 = format_page_dimensions(595.0, 842.0);
+        assert!(a4.contains("A4"), "Expected A4 in dimensions: {a4}");
+        assert!(a4.contains("Portrait"), "Expected Portrait in dimensions: {a4}");
+
+        let letter = format_page_dimensions(612.0, 792.0);
+        assert!(letter.contains("US Letter"), "Expected US Letter in dimensions: {letter}");
+
+        let custom = format_page_dimensions(400.0, 300.0);
+        assert!(custom.contains("mm"), "Expected mm in custom dimensions: {custom}");
+    }
+
+    #[test]
+    fn test_format_pdf_date() {
+        assert_eq!(format_pdf_date(""), "—");
+        assert_eq!(format_pdf_date("D:20070223175637+02'00'"), "2007-02-23 17:56:37 (UTC+02:00)");
+        assert_eq!(format_pdf_date("D:20230514120000Z"), "2023-05-14 12:00:00 (UTC)");
+        assert_eq!(format_pdf_date("D:20210815"), "2021-08-15");
+    }
+
+    #[test]
+    fn test_extract_document_properties() {
+        let temp_dir = std::env::temp_dir();
+        let test_pdf_path = temp_dir.join("folio_doc_properties_test.pdf");
+        let path_str = test_pdf_path.to_str().unwrap();
+
+        {
+            let mut doc = mupdf::pdf::PdfDocument::new();
+            doc.new_page((595.0, 842.0)).unwrap();
+            doc.save(path_str).unwrap();
+        }
+
+        let props = extract_document_properties(path_str).unwrap();
+        assert_eq!(props.page_count_display, "1 page");
+        assert!(props.page_dimensions_display.contains("A4"));
+        assert!(props.file_size_display.contains('B') || props.file_size_display.contains("bytes"));
+        assert_eq!(props.encryption, "None (Unencrypted)");
+        assert!(!props.file_name.is_empty());
+
+        let md = format_document_properties_markdown(&props);
+        assert!(md.contains("## Document Properties"));
+        assert!(md.contains("A4"));
 
         let _ = std::fs::remove_file(path_str);
     }

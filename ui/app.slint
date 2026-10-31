@@ -315,6 +315,87 @@ export struct SearchHighlight {
     page-width: length,
 }
 
+export struct DocInfoData {
+    file-name: string,
+    file-path: string,
+    file-size: string,
+    page-count: string,
+    page-size: string,
+    title: string,
+    author: string,
+    subject: string,
+    keywords: string,
+    creator: string,
+    producer: string,
+    creation-date: string,
+    mod-date: string,
+    pdf-version: string,
+    encryption: string,
+}
+
+component DocPropRow inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> is-path: false;
+    callback copy-value(string);
+
+    height: 28px;
+    border-radius: 6px;
+    background: row-ta.has-hover ? Theme.hover-bg : transparent;
+    animate background { duration: 80ms; }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 12px;
+        alignment: space-between;
+
+        Text {
+            width: 110px;
+            text: root.label;
+            font-family: "Inter";
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: end;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.value;
+                font-family: "Inter";
+                font-size: 12px;
+                font-weight: 500;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-alignment: right;
+            }
+
+            if row-ta.has-hover && root.value != "—" && root.value != "": Image {
+                source: @image-url("../assets/icons/copy.svg");
+                width: 12px;
+                height: 12px;
+                colorize: Theme.text-secondary;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+    }
+
+    row-ta := TouchArea {
+        mouse-cursor: (root.value != "—" && root.value != "") ? pointer : default;
+        clicked => {
+            if (root.value != "—" && root.value != "") {
+                root.copy-value(root.value);
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     default-font-family: "Inter";
     in-out property <bool> dark-mode <=> Theme.dark;
@@ -355,6 +436,10 @@ export component AppWindow inherits Window {
     in property <[RecentBookItem]> recent-books: [];
     in-out property <bool> show-recent-books: false;
     callback open-recent-book(string);
+    in-out property <bool> show-doc-info: false;
+    in property <DocInfoData> doc-info;
+    callback copy-to-clipboard(string);
+    callback copy-all-doc-info();
     in property <string> page-display: "1 / 1";
     in-out property <string> current-page-input: "1";
     in property <string> page-suffix-display: "/ 1";
@@ -567,6 +652,10 @@ keyboard-handler := FocusScope {
                             root.show-note-input = true;
                             return accept;
                         }
+                    // Ctrl + Alt + D: Toggle Dual Page Mode
+                    } else if (event.text == "d" || event.text == "D" || event.text == "\u{4}") {
+                        root.set-dual-page(!root.is-dual-page);
+                        return accept;
                     }
                 } else {
                     // Ctrl + F: Toggle Search
@@ -616,8 +705,9 @@ keyboard-handler := FocusScope {
                     } else if (event.text == "r" || event.text == "R" || (event.modifiers.control && event.text == "\u{12}")) {
                         root.rotate-clockwise();
                         return accept;
+                    // Ctrl + D: Document Properties (Doc Info Modal)
                     } else if (event.text == "d" || event.text == "D" || (event.modifiers.control && event.text == "\u{4}")) {
-                        root.set-dual-page(!root.is-dual-page);
+                        root.show-doc-info = !root.show-doc-info;
                         return accept;
                     } else if (event.text == "b" || event.text == "B" || event.text == "\u{2}" || event.text == "t" || event.text == "T" || event.text == "\u{14}") {
                         root.toggle-sidebar();
@@ -626,6 +716,10 @@ keyboard-handler := FocusScope {
                 }
             } else {
                 if (event.text == Key.Escape) {
+                    if (root.show-doc-info) {
+                        root.show-doc-info = false;
+                        return accept;
+                    }
                     if (root.show-search) {
                         root.close-search();
                         return accept;
@@ -1110,6 +1204,22 @@ VerticalLayout {
                                     y: (parent.height - self.height) / 2;
                                     clicked => { root.rotate-clockwise(); }
                                 }
+
+                                Rectangle {
+                                    width: 1px;
+                                    height: 16px;
+                                    background: Theme.border;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                IconButton {
+                                    icon: @image-url("../assets/icons/info.svg");
+                                    size: 26px;
+                                    icon-size: 14px;
+                                    border-radius: 13px;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.show-doc-info = true; }
+                                }
                             }
                         }
                     }
@@ -1234,7 +1344,6 @@ VerticalLayout {
                             // Paper Theme (Document Color Mode)
                             NavRailButton {
                                 icon: @image-url("../assets/icons/palette.svg");
-                                active: root.paper-theme != 0;
                                 clicked => {
                                     root.cycle-paper-theme();
                                 }
@@ -4406,7 +4515,60 @@ VerticalLayout {
                 background: Theme.border-subtle;
             }
 
-            // Bottom action: Open PDF
+            // Bottom actions: Document Properties & Open PDF
+            Rectangle {
+                height: 36px;
+                border-radius: 8px;
+                background: doc-props-ta.has-hover ? Theme.hover-bg : transparent;
+                animate background { duration: 80ms; }
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        Image {
+                            source: @image-url("../assets/icons/info.svg");
+                            width: 14px;
+                            height: 14px;
+                            colorize: Theme.text-primary;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                        Text {
+                            text: "Document Properties";
+                            font-family: "Inter";
+                            font-size: 12px;
+                            font-weight: 500;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Text {
+                        text: "Ctrl+D";
+                        font-family: "Inter";
+                        font-size: 11px;
+                        font-weight: 500;
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                }
+
+                doc-props-ta := TouchArea {
+                    clicked => {
+                        root.show-recent-books = false;
+                        root.show-doc-info = true;
+                    }
+                    mouse-cursor: pointer;
+                }
+            }
+
             Rectangle {
                 height: 36px;
                 border-radius: 8px;
@@ -4443,6 +4605,386 @@ VerticalLayout {
                         root.open-document();
                     }
                     mouse-cursor: pointer;
+                }
+            }
+        }
+    }
+
+    // Backdrop click-to-dismiss for Doc Info Modal
+    if root.show-doc-info: TouchArea {
+        width: 100%;
+        height: 100%;
+        z: 190;
+        clicked => {
+            root.show-doc-info = false;
+        }
+    }
+
+    // Modal Dim Backdrop
+    if root.show-doc-info: Rectangle {
+        width: 100%;
+        height: 100%;
+        z: 195;
+        background: Theme.dark ? #000000a6 : #00000045;
+        animate background { duration: 140ms; }
+    }
+
+    // Document Properties Modal Card
+    if root.show-doc-info: Rectangle {
+        width: root.width > 600px ? 560px : root.width - 32px;
+        height: doc-info-vl.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        z: 200;
+        background: Theme.card-bg;
+        border-radius: 16px;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 32px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: Theme.dark ? #000000cc : #00000035;
+        clip: true;
+
+        doc-info-vl := VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+            alignment: start;
+
+            // Modal Header
+            HorizontalLayout {
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+
+                    Rectangle {
+                        width: 34px;
+                        height: 34px;
+                        border-radius: 10px;
+                        background: Theme.surface-subtle;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        y: (parent.height - self.height) / 2;
+
+                        Image {
+                            source: @image-url("../assets/icons/file-text.svg");
+                            width: 18px;
+                            height: 18px;
+                            colorize: Theme.text-primary;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        alignment: center;
+
+                        Text {
+                            text: "Document Properties";
+                            font-family: "Inter";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                        }
+
+                        Text {
+                            text: root.doc-info.file-name != "" ? root.doc-info.file-name : "No file loaded";
+                            font-family: "Inter";
+                            font-size: 11px;
+                            font-weight: 500;
+                            color: Theme.text-secondary;
+                            overflow: elide;
+                            max-width: 380px;
+                        }
+                    }
+                }
+
+                IconButton {
+                    icon: @image-url("../assets/icons/x.svg");
+                    size: 30px;
+                    icon-size: 14px;
+                    border-radius: 15px;
+                    y: (parent.height - self.height) / 2;
+                    clicked => {
+                        root.show-doc-info = false;
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
+            // Section 1: File Specs
+            VerticalLayout {
+                spacing: 2px;
+
+                Text {
+                    text: "FILE SPECIFICATIONS";
+                    font-family: "Inter";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.text-muted;
+                    letter-spacing: 0.5px;
+                }
+
+                DocPropRow {
+                    label: "Location";
+                    value: root.doc-info.file-path;
+                    is-path: true;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
+                    label: "File Size";
+                    value: root.doc-info.file-size;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
+                    label: "Modified";
+                    value: root.doc-info.mod-date;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
+            // Section 2: Metadata
+            VerticalLayout {
+                spacing: 2px;
+
+                Text {
+                    text: "METADATA";
+                    font-family: "Inter";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.text-muted;
+                    letter-spacing: 0.5px;
+                }
+
+                DocPropRow {
+                    label: "Title";
+                    value: root.doc-info.title;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
+                    label: "Author";
+                    value: root.doc-info.author;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
+                    label: "Subject";
+                    value: root.doc-info.subject;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
+                    label: "Keywords";
+                    value: root.doc-info.keywords;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
+            // Section 3: PDF Details
+            VerticalLayout {
+                spacing: 2px;
+
+                Text {
+                    text: "PDF SPECIFICATIONS";
+                    font-family: "Inter";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.text-muted;
+                    letter-spacing: 0.5px;
+                }
+
+                DocPropRow {
+                    label: "Page Count";
+                    value: root.doc-info.page-count;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
+                    label: "Page Dimensions";
+                    value: root.doc-info.page-size;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
+                    label: "Format / Version";
+                    value: root.doc-info.pdf-version;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
+                    label: "Security";
+                    value: root.doc-info.encryption;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
+                    label: "Created";
+                    value: root.doc-info.creation-date;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
+                    label: "Producer";
+                    value: root.doc-info.producer;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
+                    label: "Creator";
+                    value: root.doc-info.creator;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
+            // Modal Footer: Actions
+            HorizontalLayout {
+                padding-top: 4px;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    // Copy Path Button
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 16px;
+                        background: copy-path-ta.has-hover ? Theme.hover-bg : Theme.surface-subtle;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        animate background { duration: 80ms; }
+                        y: (parent.height - self.height) / 2;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            Image {
+                                source: @image-url("../assets/icons/copy.svg");
+                                width: 13px;
+                                height: 13px;
+                                colorize: Theme.text-primary;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            Text {
+                                text: "Copy Path";
+                                font-family: "Inter";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        copy-path-ta := TouchArea {
+                            clicked => {
+                                root.copy-to-clipboard(root.doc-info.file-path);
+                            }
+                            mouse-cursor: pointer;
+                        }
+                    }
+
+                    // Copy All Markdown Button
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 16px;
+                        background: copy-all-ta.has-hover ? Theme.hover-bg : Theme.surface-subtle;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        animate background { duration: 80ms; }
+                        y: (parent.height - self.height) / 2;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            Image {
+                                source: @image-url("../assets/icons/copy.svg");
+                                width: 13px;
+                                height: 13px;
+                                colorize: Theme.text-primary;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            Text {
+                                text: "Copy All";
+                                font-family: "Inter";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        copy-all-ta := TouchArea {
+                            clicked => {
+                                root.copy-all-doc-info();
+                            }
+                            mouse-cursor: pointer;
+                        }
+                    }
+                }
+
+                // Done Close Button
+                Rectangle {
+                    height: 32px;
+                    border-radius: 16px;
+                    background: done-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    border-width: 1px;
+                    border-color: Theme.accent-border;
+                    animate background { duration: 80ms; }
+                    y: (parent.height - self.height) / 2;
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        alignment: center;
+
+                        Text {
+                            text: "Done";
+                            font-family: "Inter";
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: Theme.on-accent;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    done-ta := TouchArea {
+                        clicked => {
+                            root.show-doc-info = false;
+                        }
+                        mouse-cursor: pointer;
+                    }
                 }
             }
         }

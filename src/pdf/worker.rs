@@ -204,6 +204,83 @@ pub fn transform_rect_to_pixels(
     (px0, py0, px1, py1)
 }
 
+pub fn apply_highlights_to_rgba(
+    rgba: &mut [u8],
+    w: usize,
+    h: usize,
+    highlights: &[HighlightOverlay],
+    theme: PaperTheme,
+    pw_pt: f32,
+    ph_pt: f32,
+    rotation: i32,
+    zoom: f32,
+) {
+    if highlights.is_empty() {
+        return;
+    }
+
+    let mut applied = vec![false; w * h];
+
+    for h_over in highlights {
+        let hr = h_over.rgb[0];
+        let hg = h_over.rgb[1];
+        let hb = h_over.rgb[2];
+
+        for rect in &h_over.rects_pt {
+            let (px0, py0, px1, py1) = transform_rect_to_pixels(*rect, pw_pt, ph_pt, rotation, zoom, w, h);
+
+            for y in py0..py1 {
+                let row_offset = y * w;
+                for x in px0..px1 {
+                    let p_idx = row_offset + x;
+                    if !applied[p_idx] {
+                        applied[p_idx] = true;
+                        let idx = p_idx * 4;
+                        if idx + 2 < rgba.len() {
+                            match theme {
+                                PaperTheme::Light => {
+                                    rgba[idx] = ((rgba[idx] as u16 * hr as u16) / 255) as u8;
+                                    rgba[idx + 1] = ((rgba[idx + 1] as u16 * hg as u16) / 255) as u8;
+                                    rgba[idx + 2] = ((rgba[idx + 2] as u16 * hb as u16) / 255) as u8;
+                                }
+                                PaperTheme::Sepia => {
+                                    rgba[idx] = ((rgba[idx] as u16 * hr as u16) / 255) as u8;
+                                    rgba[idx + 1] = ((rgba[idx + 1] as u16 * hg as u16) / 255) as u8;
+                                    rgba[idx + 2] = ((rgba[idx + 2] as u16 * hb as u16) / 255) as u8;
+                                }
+                                PaperTheme::ScientificDark | PaperTheme::HighContrastDark => {
+                                    let r = rgba[idx] as f32;
+                                    let g = rgba[idx + 1] as f32;
+                                    let b = rgba[idx + 2] as f32;
+                                    let lum = (54.0 * r + 182.0 * g + 19.0 * b) / 255.0;
+
+                                    // Smoothly separate dark background paper from light text:
+                                    // t_text = 0.0 for dark paper background, 1.0 for light text
+                                    let t_text = ((lum - 40.0) / 100.0).clamp(0.0, 1.0);
+
+                                    // For background: blend highlight color with ~42% alpha over dark slate
+                                    let bg_r = r * 0.58 + (hr as f32) * 0.42;
+                                    let bg_g = g * 0.58 + (hg as f32) * 0.42;
+                                    let bg_b = b * 0.58 + (hb as f32) * 0.42;
+
+                                    // For text: preserve brightness with a soft highlight tint
+                                    let txt_r = (r * 0.86 + (hr as f32) * 0.14).min(255.0);
+                                    let txt_g = (g * 0.86 + (hg as f32) * 0.14).min(255.0);
+                                    let txt_b = (b * 0.86 + (hb as f32) * 0.14).min(255.0);
+
+                                    rgba[idx] = (bg_r + t_text * (txt_r - bg_r)).round() as u8;
+                                    rgba[idx + 1] = (bg_g + t_text * (txt_g - bg_g)).round() as u8;
+                                    rgba[idx + 2] = (bg_b + t_text * (txt_b - bg_b)).round() as u8;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn render_page(
     doc: &mupdf::Document,
     page_no: i32,
@@ -266,39 +343,27 @@ pub fn render_page(
         }
     }
 
-    // Apply optical Multiply blending for highlights
-    let mut applied = vec![false; (w * h) as usize];
-
-    for h_over in highlights {
-        let hr = h_over.rgb[0] as u16;
-        let hg = h_over.rgb[1] as u16;
-        let hb = h_over.rgb[2] as u16;
-
-        for rect in &h_over.rects_pt {
-            let (px0, py0, px1, py1) = transform_rect_to_pixels(*rect, pw_pt, ph_pt, rotation, zoom, w as usize, h as usize);
-
-            for y in py0..py1 {
-                let row_offset = y * (w as usize);
-                for x in px0..px1 {
-                    let p_idx = row_offset + x;
-                    if !applied[p_idx] {
-                        applied[p_idx] = true;
-                        let idx = p_idx * 4;
-                        rgba[idx] = ((rgba[idx] as u16 * hr) / 255) as u8;
-                        rgba[idx + 1] = ((rgba[idx + 1] as u16 * hg) / 255) as u8;
-                        rgba[idx + 2] = ((rgba[idx + 2] as u16 * hb) / 255) as u8;
-                    }
-                }
-            }
-        }
-    }
-
     let image_rects_px: Vec<(usize, usize, usize, usize)> = image_rects_pt
         .into_iter()
         .map(|r| transform_rect_to_pixels(r, pw_pt, ph_pt, rotation, zoom, w as usize, h as usize))
         .collect();
 
+    // 1. First, apply paper theme to base PDF canvas (paper, ink, diagrams)
     apply_paper_theme(&mut rgba, w as usize, h as usize, theme, &image_rects_px);
+
+    // 2. Second, apply highlights onto themed paper with theme-aware blending
+    // Highlights are NEVER subjected to negative inversion or double-sepia filtering!
+    apply_highlights_to_rgba(
+        &mut rgba,
+        w as usize,
+        h as usize,
+        highlights,
+        theme,
+        pw_pt,
+        ph_pt,
+        rotation,
+        zoom,
+    );
 
     Ok((rgba, w, h))
 }
@@ -623,5 +688,43 @@ mod tests {
         assert!((rgba[4] as i32 - 110).abs() <= 5);
         assert!((rgba[5] as i32 - 165).abs() <= 5);
         assert!((rgba[6] as i32 - 202).abs() <= 5);
+    }
+
+    #[test]
+    fn test_highlight_color_consistency_across_all_themes() {
+        let yellow_rgb = [254, 240, 138];
+        let h_overlay = HighlightOverlay {
+            rgb: yellow_rgb,
+            rects_pt: vec![(0.0, 0.0, 10.0, 10.0)],
+        };
+
+        // 1. Light Theme
+        let mut rgba_light = vec![255, 255, 255, 255]; // 1x1 white pixel
+        apply_highlights_to_rgba(&mut rgba_light, 1, 1, &[h_overlay.clone()], PaperTheme::Light, 10.0, 10.0, 0, 0.1);
+        assert_eq!(rgba_light[0], 254);
+        assert_eq!(rgba_light[1], 240);
+        assert_eq!(rgba_light[2], 138);
+
+        // 2. Sepia Theme
+        let mut rgba_sepia = vec![244, 236, 216, 255]; // 1x1 sepia paper pixel
+        apply_highlights_to_rgba(&mut rgba_sepia, 1, 1, &[h_overlay.clone()], PaperTheme::Sepia, 10.0, 10.0, 0, 0.1);
+        let (h_sep, _, _) = rgb_to_hsl(rgba_sepia[0], rgba_sepia[1], rgba_sepia[2]);
+        assert!((40.0..=75.0).contains(&h_sep), "Sepia highlight must have yellow hue, got {h_sep}");
+        assert!(rgba_sepia[0] > rgba_sepia[2], "Sepia highlight must keep red > blue");
+
+        // 3. Scientific Dark Theme: Paper background pixel
+        let mut rgba_dark_bg = vec![24, 24, 26, 255]; // 1x1 slate paper pixel
+        apply_highlights_to_rgba(&mut rgba_dark_bg, 1, 1, &[h_overlay.clone()], PaperTheme::ScientificDark, 10.0, 10.0, 0, 0.1);
+        let (h_dark, _, l_dark) = rgb_to_hsl(rgba_dark_bg[0], rgba_dark_bg[1], rgba_dark_bg[2]);
+        assert!((40.0..=75.0).contains(&h_dark), "Dark theme highlight must have yellow hue, got {h_dark}");
+        assert!(rgba_dark_bg[0] > rgba_dark_bg[2], "Dark theme highlight must keep red > blue");
+        assert!(rgba_dark_bg[0] > 90, "Dark theme highlight must be visibly luminous, got {}", rgba_dark_bg[0]);
+
+        // 4. Scientific Dark Theme: Light text pixel
+        let mut rgba_dark_text = vec![214, 212, 205, 255]; // 1x1 light stone text pixel
+        apply_highlights_to_rgba(&mut rgba_dark_text, 1, 1, &[h_overlay], PaperTheme::ScientificDark, 10.0, 10.0, 0, 0.1);
+        let (_, _, l_text) = rgb_to_hsl(rgba_dark_text[0], rgba_dark_text[1], rgba_dark_text[2]);
+        assert!(l_text > 0.75, "Text must remain bright on dark highlight, got l={l_text}");
+        assert!(l_text > l_dark + 0.25, "Text contrast must exceed highlight background contrast");
     }
 }

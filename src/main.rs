@@ -184,6 +184,7 @@ struct AppState {
     pub rotation: i32, // 0, 90, 180, 270
     pub is_dual_page: bool,
     pub paper_theme: pdf::PaperTheme,
+    pub doc_properties: pdf::DocumentProperties,
 }
 
 pub fn transform_rect_for_rotation(
@@ -481,6 +482,26 @@ pub fn resolve_initial_paper_theme(active_theme: i32, config_theme: u8) -> pdf::
     }
 }
 
+fn to_slint_doc_info(props: &pdf::DocumentProperties) -> DocInfoData {
+    DocInfoData {
+        file_name: props.file_name.clone().into(),
+        file_path: props.file_path.clone().into(),
+        file_size: props.file_size_display.clone().into(),
+        page_count: props.page_count_display.clone().into(),
+        page_size: props.page_dimensions_display.clone().into(),
+        title: props.title.clone().into(),
+        author: props.author.clone().into(),
+        subject: props.subject.clone().into(),
+        keywords: props.keywords.clone().into(),
+        creator: props.creator.clone().into(),
+        producer: props.producer.clone().into(),
+        creation_date: props.creation_date.clone().into(),
+        mod_date: props.mod_date.clone().into(),
+        pdf_version: props.pdf_version.clone().into(),
+        encryption: props.encryption.clone().into(),
+    }
+}
+
 fn setup_document(
     app: &AppWindow,
     path: &Path,
@@ -498,6 +519,13 @@ fn setup_document(
             return Ok(());
         }
     };
+
+    let doc_props = pdf::extract_document_properties(&path_str).unwrap_or_else(|_| pdf::DocumentProperties {
+        file_name: display_name.clone(),
+        file_path: path_str.clone(),
+        ..Default::default()
+    });
+    app.set_doc_info(to_slint_doc_info(&doc_props));
 
     app.set_file_title(display_name.into());
     app.set_file_path(path_str.clone().into());
@@ -664,6 +692,7 @@ fn setup_document(
         rotation: 0,
         is_dual_page: false,
         paper_theme: initial_paper_theme,
+        doc_properties: doc_props,
     };
 
     update_page_indicator(&app_state, app);
@@ -2822,47 +2851,31 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             let (unrot_w, unrot_h) = s.get_unrotated_page_size(target_page);
                             let rotation = s.rotation;
 
-                            if s.paper_theme == pdf::PaperTheme::Light {
-                                if let Some(cached) = s.cache.get_mut(target_page, s.zoom_level, rotation, s.paper_theme) {
-                                    let w = cached.width;
-                                    let h = cached.height;
-                                    let zoom = w as f32 / pw_pt.max(1.0);
+                            if let Some(cached) = s.cache.get_mut(target_page, s.zoom_level, rotation, s.paper_theme) {
+                                let w = cached.width as usize;
+                                let h = cached.height as usize;
+                                let zoom = w as f32 / pw_pt.max(1.0);
 
-                                    let hr = rgb[0] as u16;
-                                    let hg = rgb[1] as u16;
-                                    let hb = rgb[2] as u16;
+                                let h_overlay = pdf::worker::HighlightOverlay {
+                                    rgb,
+                                    rects_pt: adjusted_rects,
+                                };
 
-                                    let mut applied = vec![false; (w * h) as usize];
-                                    for rect in &adjusted_rects {
-                                        let tr = transform_rect_for_rotation(*rect, unrot_w, unrot_h, rotation);
-                                        let px0 = ((tr.0 * zoom).round() as usize).min(w as usize);
-                                        let py0 = ((tr.1 * zoom).round() as usize).min(h as usize);
-                                        let px1 = ((tr.2 * zoom).round() as usize).min(w as usize);
-                                        let py1 = ((tr.3 * zoom).round() as usize).min(h as usize);
+                                pdf::worker::apply_highlights_to_rgba(
+                                    &mut cached.rgba,
+                                    w,
+                                    h,
+                                    &[h_overlay],
+                                    s.paper_theme,
+                                    unrot_w,
+                                    unrot_h,
+                                    rotation,
+                                    zoom,
+                                );
 
-                                        for y in py0..py1 {
-                                            let row_offset = y * (w as usize);
-                                            for x in px0..px1 {
-                                                let p_idx = row_offset + x;
-                                                if !applied[p_idx] {
-                                                    applied[p_idx] = true;
-                                                    let idx = p_idx * 4;
-                                                    if idx + 2 < cached.rgba.len() {
-                                                        cached.rgba[idx] = ((cached.rgba[idx] as u16 * hr) / 255) as u8;
-                                                        cached.rgba[idx + 1] = ((cached.rgba[idx + 1] as u16 * hg) / 255) as u8;
-                                                        cached.rgba[idx + 2] = ((cached.rgba[idx + 2] as u16 * hb) / 255) as u8;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if let Some(img) = rgba_to_image(&cached.rgba, w, h) {
-                                        highlight_updates.push((target_page, img));
-                                    }
+                                if let Some(img) = rgba_to_image(&cached.rgba, cached.width, cached.height) {
+                                    highlight_updates.push((target_page, img));
                                 }
-                            } else {
-                                s.cache.remove_page(target_page);
                             }
                         }
 
@@ -3440,6 +3453,49 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     }
                 }
             });
+        });
+    }
+
+    // Copy to clipboard (Doc Info property value or arbitrary string)
+    {
+        let app_weak = app.as_weak();
+        app.on_copy_to_clipboard(move |text| {
+            let s = text.to_string();
+            if s.is_empty() || s == "—" {
+                return;
+            }
+            if let Some(ui) = app_weak.upgrade() {
+                match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(s)) {
+                    Ok(_) => trigger_toast(&ui, "✓ Copied to clipboard"),
+                    Err(e) => trigger_toast(&ui, &format!("Failed to copy: {}", e)),
+                }
+            }
+        });
+    }
+
+    // Copy All Document Properties Markdown to Clipboard
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_copy_all_doc_info(move || {
+            let md = {
+                if let Ok(lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_ref() {
+                        pdf::format_document_properties_markdown(&s.doc_properties)
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            };
+
+            if let Some(ui) = app_weak.upgrade() {
+                match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(md)) {
+                    Ok(_) => trigger_toast(&ui, "✓ Copied document properties to clipboard"),
+                    Err(e) => trigger_toast(&ui, &format!("Failed to copy: {}", e)),
+                }
+            }
         });
     }
 
@@ -4073,6 +4129,7 @@ mod tests {
             rotation: 0,
             is_dual_page: false,
             paper_theme: pdf::PaperTheme::Light,
+            doc_properties: pdf::DocumentProperties::default(),
         };
 
         (state, test_pdf_path)
