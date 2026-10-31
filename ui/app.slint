@@ -466,6 +466,9 @@ export component AppWindow inherits Window {
     in property <[PageItemData]> scroll-pages;
 
     in-out property <bool> show-sidebar: false;
+    in-out property <length> sidebar-width: 350px;
+    in-out property <bool> is-sidebar-resizing: false;
+    callback save-sidebar-width(length);
     in-out property <int> sidebar-tab: 0; // 0=Contents, 1=Highlights, 2=Notes
     in-out property <bool> show-sort-menu: false;
     in-out property <int> annotation-sort-mode: 0; // 0=Document Order, 1=Newest First, 2=Oldest First
@@ -789,6 +792,7 @@ keyboard-handler := FocusScope {
 
         focus-lost(reason) => {
             root.is-ctrl-pressed = false;
+            root.is-sidebar-resizing = false;
         }
 
         
@@ -1374,17 +1378,10 @@ VerticalLayout {
 
                 // Sidebar Drawer (Contents, Highlights, Notes, Search)
                 sidebar := Rectangle {
-                    width: (root.show-sidebar && !root.is-zen-mode) ? 320px : 0px;
+                    width: (root.show-sidebar && !root.is-zen-mode) ? root.sidebar-width : 0px;
                     clip: true;
                     background: Theme.card-bg;
-                    animate width { duration: 160ms; easing: ease-out; }
-
-                    Rectangle {
-                        x: parent.width - 1px;
-                        width: 1px;
-                        height: 100%;
-                        background: Theme.border;
-                    }
+                    animate width { duration: root.is-sidebar-resizing ? 0ms : 160ms; easing: ease-out; }
 
                     // Dismiss overlay for sort menu
                     if root.show-sort-menu: TouchArea {
@@ -1534,7 +1531,7 @@ VerticalLayout {
                     }
 
                     VerticalLayout {
-                        width: 350px;
+                        width: root.sidebar-width;
                         height: 100%;
                         padding: 0;
                         spacing: 0;
@@ -1932,7 +1929,7 @@ VerticalLayout {
                                                     font-size: 15px;
                                                     color: Theme.text-primary;
                                                     overflow: elide;
-                                                    max-width: 250px;
+                                                    max-width: root.sidebar-width - 80px;
                                                 }
                                             }
 
@@ -2082,7 +2079,7 @@ VerticalLayout {
                                                     font-weight: 600;
                                                     color: Theme.text-primary;
                                                     overflow: elide;
-                                                    max-width: 250px;
+                                                    max-width: root.sidebar-width - 80px;
                                                 }
 
                                                 Text {
@@ -2091,7 +2088,7 @@ VerticalLayout {
                                                     font-size: 13px;
                                                     color: Theme.text-muted;
                                                     overflow: elide;
-                                                    max-width: 250px;
+                                                    max-width: root.sidebar-width - 80px;
                                                 }
                                             }
 
@@ -2420,7 +2417,42 @@ VerticalLayout {
                         }
                     }
                 }
-// Document Viewport// Document Viewport / Error Area
+
+                // Sidebar Splitter / Drag Resize Handle
+                if root.show-sidebar && !root.is-zen-mode: sidebar-splitter := Rectangle {
+                    width: 5px;
+                    background: (splitter-ta.has-hover || root.is-sidebar-resizing) ? Theme.accent : transparent;
+                    animate background { duration: 100ms; }
+
+                    if !(splitter-ta.has-hover || root.is-sidebar-resizing): Rectangle {
+                        width: 1px;
+                        height: 100%;
+                        background: Theme.border;
+                        x: 0;
+                    }
+
+                    splitter-ta := TouchArea {
+                        mouse-cursor: col-resize;
+                        pointer-event(event) => {
+                            if event.button == PointerEventButton.left {
+                                if event.kind == PointerEventKind.down {
+                                    root.is-sidebar-resizing = true;
+                                } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                                    root.is-sidebar-resizing = false;
+                                    root.save-sidebar-width(root.sidebar-width);
+                                }
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                root.is-sidebar-resizing = true;
+                                root.sidebar-width = max(240px, min(min(root.width - 250px, 750px), root.sidebar-width + self.mouse-x - self.pressed-x));
+                            }
+                        }
+                    }
+                }
+
+                // Document Viewport / Error Area
                 Rectangle {
                     horizontal-stretch: 1;
                     background: Theme.dark

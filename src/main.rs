@@ -385,8 +385,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = history::load_app_config();
     app.set_dark_mode(config.dark_mode);
     app.set_paper_theme(config.paper_theme as i32);
+    let initial_sidebar_w = if config.sidebar_width >= 240.0 && config.sidebar_width <= 800.0 {
+        config.sidebar_width
+    } else {
+        350.0
+    };
+    app.set_sidebar_width(initial_sidebar_w);
 
     // Register global UI callbacks (Theme toggle & Open document)
+    {
+        app.on_save_sidebar_width(move |w| {
+            if w >= 240.0 && w <= 800.0 {
+                history::update_app_config(|c| c.sidebar_width = w);
+            }
+        });
+    }
+
     {
         let app_weak = app.as_weak();
         app.on_toggle_theme(move || {
@@ -4847,6 +4861,7 @@ mod tests {
                 dark_mode: false,
                 paper_theme: 2, // Scientific Dark
                 annotation_sort_mode: 1,
+                sidebar_width: 380.0,
             },
             &test_config_path,
         );
@@ -4855,6 +4870,7 @@ mod tests {
         assert_eq!(loaded.dark_mode, false);
         assert_eq!(loaded.paper_theme, 2);
         assert_eq!(loaded.annotation_sort_mode, 1);
+        assert_eq!(loaded.sidebar_width, 380.0);
 
         // 2. Cold start: active UI theme is not yet set (-1 or unset) -> resolves to config theme (Scientific Dark = 2)
         let cold_start_theme = super::resolve_initial_paper_theme(-1, loaded.paper_theme);

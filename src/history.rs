@@ -12,10 +12,16 @@ pub struct AppConfig {
     pub paper_theme: u8,
     #[serde(default)]
     pub annotation_sort_mode: u8, // 0 = Document Order (chapters), 1 = Newest First, 2 = Oldest First
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: f32,
 }
 
 fn default_dark_mode() -> bool {
     true
+}
+
+fn default_sidebar_width() -> f32 {
+    350.0
 }
 
 impl Default for AppConfig {
@@ -24,6 +30,7 @@ impl Default for AppConfig {
             dark_mode: true,
             paper_theme: 0,
             annotation_sort_mode: 0,
+            sidebar_width: 350.0,
         }
     }
 }
@@ -352,12 +359,14 @@ mod tests {
         assert_eq!(initial.dark_mode, true);
         assert_eq!(initial.paper_theme, 0);
         assert_eq!(initial.annotation_sort_mode, 0);
+        assert_eq!(initial.sidebar_width, 350.0);
 
         // Save customized config
         let custom = AppConfig {
             dark_mode: false,
             paper_theme: 2,
             annotation_sort_mode: 1,
+            sidebar_width: 420.0,
         };
         save_app_config_to(&custom, &test_config_path);
 
@@ -365,17 +374,20 @@ mod tests {
         assert_eq!(loaded.dark_mode, false);
         assert_eq!(loaded.paper_theme, 2);
         assert_eq!(loaded.annotation_sort_mode, 1);
+        assert_eq!(loaded.sidebar_width, 420.0);
 
         // Update single field
         update_app_config_at(&test_config_path, |c| {
             c.paper_theme = 1;
             c.annotation_sort_mode = 2;
+            c.sidebar_width = 460.0;
         });
 
         let updated = load_app_config_from(&test_config_path);
         assert_eq!(updated.dark_mode, false);
         assert_eq!(updated.paper_theme, 1);
         assert_eq!(updated.annotation_sort_mode, 2);
+        assert_eq!(updated.sidebar_width, 460.0);
 
         let _ = fs::remove_file(&test_config_path);
     }
