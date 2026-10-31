@@ -10,6 +10,8 @@ pub struct AppConfig {
     pub dark_mode: bool,
     #[serde(default)]
     pub paper_theme: u8,
+    #[serde(default)]
+    pub annotation_sort_mode: u8, // 0 = Document Order (chapters), 1 = Newest First, 2 = Oldest First
 }
 
 fn default_dark_mode() -> bool {
@@ -21,6 +23,7 @@ impl Default for AppConfig {
         Self {
             dark_mode: true,
             paper_theme: 0,
+            annotation_sort_mode: 0,
         }
     }
 }
@@ -348,26 +351,31 @@ mod tests {
         let initial = load_app_config_from(&test_config_path);
         assert_eq!(initial.dark_mode, true);
         assert_eq!(initial.paper_theme, 0);
+        assert_eq!(initial.annotation_sort_mode, 0);
 
         // Save customized config
         let custom = AppConfig {
             dark_mode: false,
             paper_theme: 2,
+            annotation_sort_mode: 1,
         };
         save_app_config_to(&custom, &test_config_path);
 
         let loaded = load_app_config_from(&test_config_path);
         assert_eq!(loaded.dark_mode, false);
         assert_eq!(loaded.paper_theme, 2);
+        assert_eq!(loaded.annotation_sort_mode, 1);
 
         // Update single field
         update_app_config_at(&test_config_path, |c| {
             c.paper_theme = 1;
+            c.annotation_sort_mode = 2;
         });
 
         let updated = load_app_config_from(&test_config_path);
         assert_eq!(updated.dark_mode, false);
         assert_eq!(updated.paper_theme, 1);
+        assert_eq!(updated.annotation_sort_mode, 2);
 
         let _ = fs::remove_file(&test_config_path);
     }

@@ -236,7 +236,7 @@ pub fn format_page_dimensions(w_pt: f32, h_pt: f32) -> String {
     }
 }
 
-pub fn format_unix_timestamp(secs: u64) -> String {
+pub fn epoch_to_civil_date(secs: u64) -> (i64, u32, u32, u64, u64, u64) {
     let days = (secs / 86400) as i64;
     let time_of_day = secs % 86400;
     let hour = time_of_day / 3600;
@@ -254,7 +254,30 @@ pub fn format_unix_timestamp(secs: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
 
-    format!("{y:04}-{m:02}-{d:02} {hour:02}:{min:02}:{sec:02} UTC")
+    (y, m as u32, d, hour, min, sec)
+}
+
+pub fn format_unix_timestamp(secs: u64) -> String {
+    if let Some(utc) = chrono::DateTime::from_timestamp(secs as i64, 0) {
+        let local: chrono::DateTime<chrono::Local> = utc.with_timezone(&chrono::Local);
+        local.format("%Y-%m-%d %H:%M").to_string()
+    } else {
+        let (y, m, d, hour, min, _sec) = epoch_to_civil_date(secs);
+        format!("{y:04}-{m:02}-{d:02} {hour:02}:{min:02}")
+    }
+}
+
+pub fn format_pdf_date_from_epoch(secs: u64) -> String {
+    let (y, m, d, hour, min, sec) = epoch_to_civil_date(secs);
+    format!("D:{y:04}{m:02}{d:02}{hour:02}{min:02}{sec:02}Z")
+}
+
+pub fn now_pdf_date() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format_pdf_date_from_epoch(secs)
 }
 
 pub fn format_pdf_date(raw: &str) -> String {
@@ -264,70 +287,81 @@ pub fn format_pdf_date(raw: &str) -> String {
     }
     let s = s.strip_prefix("D:").unwrap_or(s);
     if s.len() >= 4 && s[0..4].chars().all(|c| c.is_ascii_digit()) {
-        let year = &s[0..4];
-        let month = if s.len() >= 6 && s[4..6].chars().all(|c| c.is_ascii_digit()) {
-            &s[4..6]
-        } else {
-            ""
+        let year: i32 = match s[0..4].parse() {
+            Ok(v) => v,
+            Err(_) => return s.to_string(),
         };
-        let day = if s.len() >= 8 && s[6..8].chars().all(|c| c.is_ascii_digit()) {
-            &s[6..8]
+        let month: u32 = if s.len() >= 6 && s[4..6].chars().all(|c| c.is_ascii_digit()) {
+            s[4..6].parse().unwrap_or(1).clamp(1, 12)
         } else {
-            ""
+            1
         };
-        let hour = if s.len() >= 10 && s[8..10].chars().all(|c| c.is_ascii_digit()) {
-            &s[8..10]
+        let day: u32 = if s.len() >= 8 && s[6..8].chars().all(|c| c.is_ascii_digit()) {
+            s[6..8].parse().unwrap_or(1).clamp(1, 31)
         } else {
-            ""
-        };
-        let min = if s.len() >= 12 && s[10..12].chars().all(|c| c.is_ascii_digit()) {
-            &s[10..12]
-        } else {
-            ""
-        };
-        let sec = if s.len() >= 14 && s[12..14].chars().all(|c| c.is_ascii_digit()) {
-            &s[12..14]
-        } else {
-            ""
+            1
         };
 
-        let mut tz = String::new();
-        if s.len() > 14 {
-            let rest = &s[14..];
-            if rest.starts_with('Z') || rest.starts_with('z') {
-                tz = " (UTC)".to_string();
-            } else if rest.starts_with('+') || rest.starts_with('-') {
-                let sign = &rest[0..1];
-                let tz_digits: String = rest[1..].chars().filter(|c| c.is_ascii_digit()).collect();
-                if tz_digits.len() >= 4 {
-                    tz = format!(" (UTC{}{}:{})", sign, &tz_digits[0..2], &tz_digits[2..4]);
-                } else if tz_digits.len() >= 2 {
-                    tz = format!(" (UTC{}{}:00)", sign, &tz_digits[0..2]);
+        let has_time = s.len() >= 12 && s[8..12].chars().all(|c| c.is_ascii_digit());
+        if !has_time {
+            // Only date was provided (e.g. D:20210815)
+            if s.len() >= 8 && s[6..8].chars().all(|c| c.is_ascii_digit()) {
+                return format!("{year:04}-{month:02}-{day:02}");
+            } else if s.len() >= 6 && s[4..6].chars().all(|c| c.is_ascii_digit()) {
+                return format!("{year:04}-{month:02}");
+            } else {
+                return format!("{year:04}");
+            }
+        }
+
+        let hour: u32 = s[8..10].parse().unwrap_or(0).clamp(0, 23);
+        let min: u32 = s[10..12].parse().unwrap_or(0).clamp(0, 59);
+        let sec: u32 = if s.len() >= 14 && s[12..14].chars().all(|c| c.is_ascii_digit()) {
+            s[12..14].parse().unwrap_or(0).clamp(0, 59)
+        } else {
+            0
+        };
+
+        let rest_start = if s.len() >= 14 && s[12..14].chars().all(|c| c.is_ascii_digit()) {
+            14
+        } else {
+            12
+        };
+        let rest = if s.len() > rest_start { &s[rest_start..] } else { "" };
+
+        let opt_offset_secs: Option<i32> = if rest.starts_with('Z') || rest.starts_with('z') {
+            Some(0)
+        } else if rest.starts_with('+') || rest.starts_with('-') {
+            let sign = if rest.starts_with('-') { -1 } else { 1 };
+            let tz_digits: String = rest[1..].chars().filter(|c| c.is_ascii_digit()).collect();
+            let tz_h: i32 = tz_digits[0..2.min(tz_digits.len())].parse().unwrap_or(0);
+            let tz_m: i32 = if tz_digits.len() >= 4 {
+                tz_digits[2..4].parse().unwrap_or(0)
+            } else {
+                0
+            };
+            Some(sign * (tz_h * 3600 + tz_m * 60))
+        } else {
+            None
+        };
+
+        if let Some(naive_date) = chrono::NaiveDate::from_ymd_opt(year, month, day) {
+            if let Some(naive_dt) = naive_date.and_hms_opt(hour, min, sec) {
+                if let Some(offset_secs) = opt_offset_secs {
+                    if let Some(offset) = chrono::FixedOffset::east_opt(offset_secs) {
+                        use chrono::TimeZone;
+                        if let Some(dt) = offset.from_local_datetime(&naive_dt).earliest().or_else(|| offset.from_local_datetime(&naive_dt).latest()) {
+                            let local_dt = dt.with_timezone(&chrono::Local);
+                            return local_dt.format("%Y-%m-%d %H:%M").to_string();
+                        }
+                    }
+                } else {
+                    return naive_dt.format("%Y-%m-%d %H:%M").to_string();
                 }
             }
         }
 
-        let mut out = year.to_string();
-        if !month.is_empty() {
-            out.push('-');
-            out.push_str(month);
-            if !day.is_empty() {
-                out.push('-');
-                out.push_str(day);
-            }
-        }
-        if !hour.is_empty() && !min.is_empty() {
-            out.push(' ');
-            out.push_str(hour);
-            out.push(':');
-            out.push_str(min);
-            if !sec.is_empty() {
-                out.push(':');
-                out.push_str(sec);
-            }
-        }
-        out.push_str(&tz);
-        out
+        format!("{year:04}-{month:02}-{day:02} {hour:02}:{min:02}")
     } else {
         s.to_string()
     }
@@ -1259,7 +1293,7 @@ fn search_document_range(
     results
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExtractedAnnotation {
     pub page: i32,
     pub kind: String, // "highlight", "underline", "strikethrough", "note"
@@ -1268,6 +1302,9 @@ pub struct ExtractedAnnotation {
     pub snippet: String,
     pub comment: String,
     pub line_rects_pt: Vec<(f32, f32, f32, f32)>,
+    pub creation_date: String,
+    pub mod_date: String,
+    pub author: String,
 }
 
 /// Extracts all existing annotations (highlights, underlines, strikethroughs, notes) from the PDF
@@ -1402,6 +1439,19 @@ pub fn extract_document_annotations(file_path: &str) -> Vec<ExtractedAnnotation>
                 false
             });
 
+            let author = annot.author().ok().flatten().unwrap_or("").trim().to_string();
+            let obj = annot.object();
+            let creation_date = obj.get_dict("CreationDate")
+                .ok()
+                .flatten()
+                .and_then(|o| o.as_string().ok())
+                .unwrap_or_default();
+            let mod_date = obj.get_dict("M")
+                .ok()
+                .flatten()
+                .and_then(|o| o.as_string().ok())
+                .unwrap_or_default();
+
             if !is_dup {
                 annotations.push(ExtractedAnnotation {
                     page: p,
@@ -1411,6 +1461,9 @@ pub fn extract_document_annotations(file_path: &str) -> Vec<ExtractedAnnotation>
                     snippet,
                     comment,
                     line_rects_pt,
+                    creation_date,
+                    mod_date,
+                    author,
                 });
             }
         }
@@ -1419,7 +1472,7 @@ pub fn extract_document_annotations(file_path: &str) -> Vec<ExtractedAnnotation>
     annotations
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SaveAnnotationData {
     pub page: i32,
     pub kind: String, // "highlight", "underline", "strikethrough", "note"
@@ -1427,6 +1480,9 @@ pub struct SaveAnnotationData {
     pub snippet: String,
     pub comment: String,
     pub line_rects_pt: Vec<(f32, f32, f32, f32)>,
+    pub creation_date: String,
+    pub mod_date: String,
+    pub author: String,
 }
 
 /// Saves annotations permanently into the PDF file
@@ -1538,6 +1594,7 @@ pub fn save_document_annotations(
                             if !text.is_empty() {
                                 let _ = annot.set_contents(text);
                             }
+                            write_annotation_metadata(&mut annot, &a.creation_date, &a.mod_date, &a.author);
                             let _ = annot.update();
                             set_crisp_rectangular_highlight_appearance(&mut annot, a.color_rgb);
                         }
@@ -1551,6 +1608,7 @@ pub fn save_document_annotations(
                             if !text.is_empty() {
                                 let _ = annot.set_contents(text);
                             }
+                            write_annotation_metadata(&mut annot, &a.creation_date, &a.mod_date, &a.author);
                             let _ = annot.update();
                         }
                     }
@@ -1563,6 +1621,7 @@ pub fn save_document_annotations(
                             if !text.is_empty() {
                                 let _ = annot.set_contents(text);
                             }
+                            write_annotation_metadata(&mut annot, &a.creation_date, &a.mod_date, &a.author);
                             let _ = annot.update();
                         }
                     }
@@ -1581,6 +1640,7 @@ pub fn save_document_annotations(
                     };
                     if let Ok(mut annot) = page.add_text_annotation(rect, text_content) {
                         let _ = annot.set_color(color);
+                        write_annotation_metadata(&mut annot, &a.creation_date, &a.mod_date, &a.author);
                         let _ = annot.update();
                     }
                 }
@@ -1673,6 +1733,28 @@ fn set_crisp_rectangular_highlight_appearance(
         let _ = rect_arr.array_put(1, mupdf::pdf::PdfObject::new_real(min_all_y).unwrap());
         let _ = rect_arr.array_put(2, mupdf::pdf::PdfObject::new_real(max_all_x).unwrap());
         let _ = rect_arr.array_put(3, mupdf::pdf::PdfObject::new_real(max_all_y).unwrap());
+    }
+}
+
+/// Populates standard PDF annotation metadata (CreationDate, M, and Author/T)
+fn write_annotation_metadata(
+    annot: &mut mupdf::pdf::PdfAnnotation,
+    creation_date: &str,
+    mod_date: &str,
+    author: &str,
+) {
+    let now = now_pdf_date();
+    let c_date = if !creation_date.is_empty() { creation_date } else { &now };
+    let m_date = if !mod_date.is_empty() { mod_date } else { &now };
+    let author_str = if !author.is_empty() { author } else { "Folio" };
+
+    let _ = annot.set_author(author_str);
+    let mut obj = annot.object();
+    if let Ok(c_obj) = mupdf::pdf::PdfObject::new_string(c_date) {
+        let _ = obj.dict_put("CreationDate", c_obj);
+    }
+    if let Ok(m_obj) = mupdf::pdf::PdfObject::new_string(m_date) {
+        let _ = obj.dict_put("M", m_obj);
     }
 }
 
@@ -1815,6 +1897,9 @@ mod tests {
                     snippet: a.snippet.clone(),
                     comment: a.comment.clone(),
                     line_rects_pt: a.line_rects_pt.clone(),
+                    creation_date: a.creation_date.clone(),
+                    mod_date: a.mod_date.clone(),
+                    author: a.author.clone(),
                 }
             }).collect();
 
@@ -1858,6 +1943,9 @@ mod tests {
                 snippet: "Testing Folio Highlight Saving".to_string(),
                 comment: String::new(),
                 line_rects_pt: vec![(50.0, 100.0, 250.0, 120.0)],
+                creation_date: "D:20261031120000Z".to_string(),
+                mod_date: "D:20261031123000Z".to_string(),
+                author: "TestUser".to_string(),
             },
             SaveAnnotationData {
                 page: 0,
@@ -1866,6 +1954,9 @@ mod tests {
                 snippet: String::new(),
                 comment: "Important user note".to_string(),
                 line_rects_pt: vec![(60.0, 60.0, 84.0, 84.0)],
+                creation_date: "D:20261031120000Z".to_string(),
+                mod_date: "D:20261031123000Z".to_string(),
+                author: "TestUser".to_string(),
             },
         ];
 
@@ -1876,6 +1967,9 @@ mod tests {
         assert_eq!(extracted.len(), 2);
         assert!(extracted.iter().any(|a| a.kind == "highlight"));
         assert!(extracted.iter().any(|a| a.kind == "note" && a.comment == "Important user note"));
+        assert_eq!(extracted[0].author, "TestUser");
+        assert_eq!(extracted[0].creation_date, "D:20261031120000Z");
+        assert_eq!(extracted[0].mod_date, "D:20261031123000Z");
 
         // Save again with the same 2 annotations: verify count stays 2 (no duplicates created)
         save_document_annotations(path_str, &to_save).unwrap();
@@ -2033,9 +2127,19 @@ mod tests {
     #[test]
     fn test_format_pdf_date() {
         assert_eq!(format_pdf_date(""), "—");
-        assert_eq!(format_pdf_date("D:20070223175637+02'00'"), "2007-02-23 17:56:37 (UTC+02:00)");
-        assert_eq!(format_pdf_date("D:20230514120000Z"), "2023-05-14 12:00:00 (UTC)");
         assert_eq!(format_pdf_date("D:20210815"), "2021-08-15");
+
+        // UTC date converted to user's local timezone
+        use chrono::TimeZone;
+        let utc_dt = chrono::Utc.with_ymd_and_hms(2023, 5, 14, 12, 0, 0).unwrap();
+        let expected_local = utc_dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string();
+        assert_eq!(format_pdf_date("D:20230514120000Z"), expected_local);
+
+        // Date with offset converted to user's local timezone
+        let fixed_offset = chrono::FixedOffset::east_opt(7200).unwrap();
+        let offset_dt = fixed_offset.with_ymd_and_hms(2007, 2, 23, 17, 56, 37).unwrap();
+        let expected_offset_local = offset_dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string();
+        assert_eq!(format_pdf_date("D:20070223175637+02'00'"), expected_offset_local);
     }
 
     #[test]

@@ -1309,6 +1309,7 @@ name = "folio"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "chrono",
  "crossbeam-channel",
  "lru",
  "mupdf",

@@ -20,6 +20,7 @@ const STATIC_COLORS: &[(&str, u8, u8, u8)] = &[
     ("#60a5fa", 0x60, 0xa5, 0xfa), // Blue
     ("#f472b6", 0xf4, 0x72, 0xb6), // Pink
     ("#fb923c", 0xfb, 0x92, 0x3c), // Orange
+    ("#c084fc", 0xc0, 0x84, 0xfc), // Purple
 ];
 
 const HIGHLIGHT_BLEND_COLORS: &[[u8; 3]] = &[
@@ -28,6 +29,7 @@ const HIGHLIGHT_BLEND_COLORS: &[[u8; 3]] = &[
     [191, 219, 254], // Pastel Blue
     [251, 207, 232], // Pastel Pink
     [254, 215, 170], // Pastel Orange
+    [233, 213, 255], // Pastel Purple
 ];
 
 fn get_highlight_blend_rgb(idx: i32) -> [u8; 3] {
@@ -78,12 +80,14 @@ fn match_closest_color_index(rgb: (f32, f32, f32)) -> i32 {
         (2, (0.38, 0.65, 0.98)), // Blue   (#60a5fa)
         (3, (0.96, 0.45, 0.71)), // Pink   (#f472b6)
         (4, (0.98, 0.57, 0.24)), // Orange (#fb923c)
+        (5, (0.75, 0.52, 0.99)), // Purple (#c084fc)
         // Soft pastel highlight colors
         (0, (1.00, 0.95, 0.55)), // Pastel Yellow (#fff38c)
         (1, (0.65, 0.95, 0.82)), // Pastel Green  (#a7f3d0)
         (2, (0.73, 0.90, 0.99)), // Pastel Blue   (#bae6fd)
         (3, (0.98, 0.81, 0.91)), // Pastel Pink   (#fbcfe8)
         (4, (1.00, 0.82, 0.61)), // Pastel Orange (#ffd09b)
+        (5, (0.91, 0.84, 1.00)), // Pastel Purple (#e9d5ff)
     ];
 
     let mut best_idx = 0;
@@ -102,7 +106,7 @@ fn match_closest_color_index(rgb: (f32, f32, f32)) -> i32 {
 }
 
 #[derive(Debug, Clone)]
-struct AnnotationRecord {
+pub(crate) struct AnnotationRecord {
     id: i32,
     page: i32,
     kind: String, // "highlight", "underline", "strikethrough", "note"
@@ -112,6 +116,15 @@ struct AnnotationRecord {
     comment: String,
     line_rects_pt: Vec<(f32, f32, f32, f32)>, // (x0, y0, x1, y1) in points
     is_from_pdf: bool,
+    creation_date: String,
+    mod_date: String,
+    author: String,
+}
+
+fn get_current_author() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "Folio".to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +198,7 @@ struct AppState {
     pub is_dual_page: bool,
     pub paper_theme: pdf::PaperTheme,
     pub doc_properties: pdf::DocumentProperties,
+    pub annotation_sort_mode: u8,
 }
 
 pub fn transform_rect_for_rotation(
@@ -602,6 +616,9 @@ fn setup_document(
             comment: ea.comment,
             line_rects_pt: ea.line_rects_pt,
             is_from_pdf: true,
+            creation_date: ea.creation_date,
+            mod_date: ea.mod_date,
+            author: ea.author,
         });
         next_annot_id += 1;
     }
@@ -693,6 +710,7 @@ fn setup_document(
         is_dual_page: false,
         paper_theme: initial_paper_theme,
         doc_properties: doc_props,
+        annotation_sort_mode: config.annotation_sort_mode,
     };
 
     update_page_indicator(&app_state, app);
@@ -1039,15 +1057,101 @@ fn get_page_highlights(state: &AppState, page: i32) -> Vec<pdf::worker::Highligh
 
 use pdf::adjust_line_rects_for_highlight;
 
-fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
-    let mut highlights = Vec::new();
-    let mut notes = Vec::new();
-    let mut visuals = Vec::new();
+fn get_annotation_min_y(a: &AnnotationRecord) -> f32 {
+    let mut min_y = f32::INFINITY;
+    for r in &a.line_rects_pt {
+        let top = r.1.min(r.3);
+        if top < min_y {
+            min_y = top;
+        }
+    }
+    if min_y.is_infinite() {
+        0.0
+    } else {
+        min_y
+    }
+}
 
-    for annot in &s.annotations {
+pub(crate) fn build_sidebar_annotation_items(
+    records: &[AnnotationRecord],
+    is_notes: bool,
+    toc: &[pdf::TocItem],
+    sort_mode: u8, // 0 = Document Order (chapters), 1 = Newest First, 2 = Oldest First
+) -> Vec<AnnotationItemData> {
+    // 1. Filter
+    let mut filtered: Vec<&AnnotationRecord> = records
+        .iter()
+        .filter(|a| {
+            if is_notes {
+                a.kind == "note" || !a.comment.trim().is_empty()
+            } else {
+                a.kind != "note"
+            }
+        })
+        .collect();
+
+    let get_chapter_heading = |a: &AnnotationRecord| -> String {
+        if !toc.is_empty() {
+            export::resolve_toc_heading(a.page, toc)
+                .unwrap_or_else(|| format!("Page {}", a.page + 1))
+        } else {
+            format!("Page {}", a.page + 1)
+        }
+    };
+
+    // 2. Sort
+    filtered.sort_by(|a, b| {
+        match sort_mode {
+            1 => {
+                // Newest First
+                let raw_a = if !a.creation_date.is_empty() { &a.creation_date } else { &a.mod_date };
+                let raw_b = if !b.creation_date.is_empty() { &b.creation_date } else { &b.mod_date };
+                raw_b.cmp(raw_a).then_with(|| b.id.cmp(&a.id))
+            }
+            2 => {
+                // Oldest First
+                let raw_a = if !a.creation_date.is_empty() { &a.creation_date } else { &a.mod_date };
+                let raw_b = if !b.creation_date.is_empty() { &b.creation_date } else { &b.mod_date };
+                raw_a.cmp(raw_b).then_with(|| a.id.cmp(&b.id))
+            }
+            _ => {
+                // Document Order: page, min_y, id
+                let y_a = get_annotation_min_y(a);
+                let y_b = get_annotation_min_y(b);
+                let y_cmp = y_a.partial_cmp(&y_b).unwrap_or(std::cmp::Ordering::Equal);
+                a.page.cmp(&b.page).then(y_cmp).then_with(|| a.id.cmp(&b.id))
+            }
+        }
+    });
+
+    // 3. Assign group headers and construct AnnotationItemData
+    let mut items = Vec::with_capacity(filtered.len());
+    let mut last_group = String::new();
+
+    for annot in filtered {
         let swatch_col = get_color(annot.color_index).1;
         let col = parse_slint_color(&annot.color_hex).unwrap_or(swatch_col);
-        let item_data = AnnotationItemData {
+        let raw_date = if !annot.mod_date.is_empty() {
+            &annot.mod_date
+        } else {
+            &annot.creation_date
+        };
+        let display_date = pdf::format_pdf_date(raw_date);
+
+        // In Document Order (0), group under chapter/page headers; in date modes (1, 2), flat list
+        let group_header = if sort_mode == 0 {
+            let heading = get_chapter_heading(annot);
+            if heading != last_group {
+                last_group = heading.clone();
+                heading
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        items.push(AnnotationItemData {
             id: annot.id,
             page: annot.page,
             kind: annot.kind.clone().into(),
@@ -1056,15 +1160,36 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
             snippet: annot.snippet.clone().into(),
             comment: annot.comment.clone().into(),
             display_page: format!("{}", annot.page + 1).into(),
-        };
+            display_date: display_date.into(),
+            author: annot.author.clone().into(),
+            group_header: group_header.into(),
+        });
+    }
 
+    items
+}
+
+fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
+    let highlights = build_sidebar_annotation_items(
+        &s.annotations,
+        false,
+        &s.toc,
+        s.annotation_sort_mode,
+    );
+
+    let notes = build_sidebar_annotation_items(
+        &s.annotations,
+        true,
+        &s.toc,
+        s.annotation_sort_mode,
+    );
+
+    let mut visuals = Vec::new();
+
+    for annot in &s.annotations {
+        let swatch_col = get_color(annot.color_index).1;
+        let col = parse_slint_color(&annot.color_hex).unwrap_or(swatch_col);
         let has_note = annot.kind == "note" || !annot.comment.trim().is_empty();
-        if has_note {
-            notes.push(item_data.clone());
-        }
-        if annot.kind != "note" {
-            highlights.push(item_data);
-        }
 
         // All annotations (including highlights) provide visual hitboxes for hover & click interaction
         let (unrot_w, unrot_h) = s.get_unrotated_page_size(annot.page);
@@ -1096,6 +1221,8 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
 
     let v_model = std::rc::Rc::new(slint::VecModel::from(visuals));
     ui.set_page_annotations(v_model.into());
+
+    ui.set_annotation_sort_mode(s.annotation_sort_mode as i32);
 
     // Update active selection rects according to the current zoom level
     if !s.active_selections.is_empty() {
@@ -1928,6 +2055,9 @@ fn collect_annotations_to_save(s: &AppState) -> Vec<pdf::SaveAnnotationData> {
                 snippet: a.snippet.clone(),
                 comment: a.comment.clone(),
                 line_rects_pt: a.line_rects_pt.clone(),
+                creation_date: a.creation_date.clone(),
+                mod_date: a.mod_date.clone(),
+                author: a.author.clone(),
             }
         })
         .collect()
@@ -2825,6 +2955,8 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                         Vec::new()
                     };
 
+                    let now_date = pdf::now_pdf_date();
+                    let author = get_current_author();
                     for sel in selections {
                         if sel.line_rects_pt.is_empty() {
                             continue;
@@ -2840,6 +2972,9 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             comment: String::new(),
                             line_rects_pt: sel.line_rects_pt.clone(),
                             is_from_pdf: false,
+                            creation_date: now_date.clone(),
+                            mod_date: now_date.clone(),
+                            author: author.clone(),
                         };
                         s.next_annot_id += 1;
                         s.push_undo(UndoAction::Created(annot.clone()));
@@ -2945,6 +3080,8 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     };
 
                     if target_page >= 0 && !line_rects.is_empty() {
+                        let now_date = pdf::now_pdf_date();
+                        let author = get_current_author();
                         let annot = AnnotationRecord {
                             id: s.next_annot_id,
                             page: target_page,
@@ -2955,6 +3092,9 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                             comment: comment.to_string(),
                             line_rects_pt: line_rects,
                             is_from_pdf: false,
+                            creation_date: now_date.clone(),
+                            mod_date: now_date,
+                            author,
                         };
                         s.next_annot_id += 1;
                         s.push_undo(UndoAction::Created(annot.clone()));
@@ -3074,6 +3214,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                         update_page = Some(page);
                         s.annotations[pos].color_index = new_color_idx;
                         s.annotations[pos].color_hex = hex;
+                        s.annotations[pos].mod_date = pdf::now_pdf_date();
                         s.annotations[pos].is_from_pdf = false;
                         need_sync = true;
 
@@ -3124,6 +3265,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                                 new_comment: comment_str.clone(),
                             });
                             s.annotations[pos].comment = comment_str;
+                            s.annotations[pos].mod_date = pdf::now_pdf_date();
                             s.annotations[pos].is_from_pdf = false;
                             need_sync = true;
                         }
@@ -3453,6 +3595,26 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
                     }
                 }
             });
+        });
+    }
+
+    // Set Annotation Sort Mode
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_set_annotation_sort_mode(move |sort_mode| {
+            let sm = (sort_mode.clamp(0, 2)) as u8;
+            if let Ok(mut lock) = state_lock.lock() {
+                if let Some(s) = lock.as_mut() {
+                    s.annotation_sort_mode = sm;
+                    history::update_app_config(|cfg| {
+                        cfg.annotation_sort_mode = sm;
+                    });
+                    if let Some(ui) = app_weak.upgrade() {
+                        sync_annotations_to_ui(s, &ui);
+                    }
+                }
+            }
         });
     }
 
@@ -4130,6 +4292,7 @@ mod tests {
             is_dual_page: false,
             paper_theme: pdf::PaperTheme::Light,
             doc_properties: pdf::DocumentProperties::default(),
+            annotation_sort_mode: 0,
         };
 
         (state, test_pdf_path)
@@ -4159,6 +4322,9 @@ mod tests {
             comment: "".to_string(),
             line_rects_pt: vec![(10.0, 20.0, 100.0, 30.0)],
             is_from_pdf: false,
+            creation_date: String::new(),
+            mod_date: String::new(),
+            author: String::new(),
         };
 
         // Create
@@ -4200,6 +4366,9 @@ mod tests {
             comment: "".to_string(),
             line_rects_pt: vec![(10.0, 20.0, 100.0, 30.0)],
             is_from_pdf: false,
+            creation_date: String::new(),
+            mod_date: String::new(),
+            author: String::new(),
         };
 
         state.annotations.push(annot.clone());
@@ -4241,6 +4410,9 @@ mod tests {
             comment: "".to_string(),
             line_rects_pt: vec![(10.0, 20.0, 100.0, 30.0)],
             is_from_pdf: false,
+            creation_date: String::new(),
+            mod_date: String::new(),
+            author: String::new(),
         };
 
         state.annotations.push(annot);
@@ -4287,6 +4459,9 @@ mod tests {
             comment: "".to_string(),
             line_rects_pt: vec![(10.0, 20.0, 100.0, 30.0)],
             is_from_pdf: false,
+            creation_date: String::new(),
+            mod_date: String::new(),
+            author: String::new(),
         };
 
         state.annotations.push(annot);
@@ -4330,6 +4505,9 @@ mod tests {
                 comment: "".to_string(),
                 line_rects_pt: vec![],
                 is_from_pdf: false,
+                creation_date: String::new(),
+                mod_date: String::new(),
+                author: String::new(),
             };
             state.push_undo(UndoAction::Created(annot));
         }
@@ -4354,6 +4532,9 @@ mod tests {
             comment: "".to_string(),
             line_rects_pt: vec![],
             is_from_pdf: false,
+            creation_date: String::new(),
+            mod_date: String::new(),
+            author: String::new(),
         };
         state.push_undo(UndoAction::Created(new_annot));
         assert_eq!(state.redo_stack.len(), 0);
@@ -4665,6 +4846,7 @@ mod tests {
             &crate::history::AppConfig {
                 dark_mode: false,
                 paper_theme: 2, // Scientific Dark
+                annotation_sort_mode: 1,
             },
             &test_config_path,
         );
@@ -4672,6 +4854,7 @@ mod tests {
         let loaded = crate::history::load_app_config_from(&test_config_path);
         assert_eq!(loaded.dark_mode, false);
         assert_eq!(loaded.paper_theme, 2);
+        assert_eq!(loaded.annotation_sort_mode, 1);
 
         // 2. Cold start: active UI theme is not yet set (-1 or unset) -> resolves to config theme (Scientific Dark = 2)
         let cold_start_theme = super::resolve_initial_paper_theme(-1, loaded.paper_theme);
@@ -4689,12 +4872,133 @@ mod tests {
         crate::history::update_app_config_at(&test_config_path, |c| {
             c.dark_mode = true;
             c.paper_theme = 1;
+            c.annotation_sort_mode = 2;
         });
 
         let updated = crate::history::load_app_config_from(&test_config_path);
         assert_eq!(updated.dark_mode, true);
         assert_eq!(updated.paper_theme, 1);
+        assert_eq!(updated.annotation_sort_mode, 2);
 
         let _ = std::fs::remove_file(&test_config_path);
+    }
+
+    #[test]
+    fn test_sidebar_annotation_sorting_and_grouping() {
+        let toc = vec![
+            pdf::TocItem {
+                id: 1,
+                title: "Chapter 1".to_string(),
+                page: 0,
+                depth: 0,
+                has_children: false,
+            },
+            pdf::TocItem {
+                id: 2,
+                title: "Chapter 2".to_string(),
+                page: 2,
+                depth: 0,
+                has_children: false,
+            },
+        ];
+
+        let annots = vec![
+            AnnotationRecord {
+                id: 1,
+                page: 0,
+                kind: "highlight".to_string(),
+                color_index: 0,
+                color_hex: "#facc15".to_string(),
+                snippet: "Snippet 1".to_string(),
+                comment: "".to_string(),
+                line_rects_pt: vec![(10.0, 100.0, 100.0, 120.0)],
+                is_from_pdf: false,
+                creation_date: "D:20261031100000Z".to_string(),
+                mod_date: "".to_string(),
+                author: "User".to_string(),
+            },
+            AnnotationRecord {
+                id: 2,
+                page: 0,
+                kind: "highlight".to_string(),
+                color_index: 0,
+                color_hex: "#facc15".to_string(),
+                snippet: "Snippet 2".to_string(),
+                comment: "".to_string(),
+                line_rects_pt: vec![(10.0, 200.0, 100.0, 220.0)],
+                is_from_pdf: false,
+                creation_date: "D:20261031120000Z".to_string(),
+                mod_date: "".to_string(),
+                author: "User".to_string(),
+            },
+            AnnotationRecord {
+                id: 3,
+                page: 2,
+                kind: "highlight".to_string(),
+                color_index: 0,
+                color_hex: "#facc15".to_string(),
+                snippet: "Snippet 3".to_string(),
+                comment: "".to_string(),
+                line_rects_pt: vec![(10.0, 50.0, 100.0, 70.0)],
+                is_from_pdf: false,
+                creation_date: "D:20261031080000Z".to_string(),
+                mod_date: "".to_string(),
+                author: "User".to_string(),
+            },
+        ];
+
+        // 1. Mode 0: Document Order (groups by outline chapter / page, sorted page -> y -> id)
+        let items = super::build_sidebar_annotation_items(&annots, false, &toc, 0);
+        let ids: Vec<i32> = items.iter().map(|i| i.id).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert_eq!(items.len(), 3);
+        assert!(items[0].group_header.contains("Chapter 1"));
+        assert_eq!(items[1].group_header.as_str(), "");
+        assert!(items[2].group_header.contains("Chapter 2"));
+
+        // 2. Mode 1: Newest First (flat list sorted by creation/mod date descending)
+        let items = super::build_sidebar_annotation_items(&annots, false, &toc, 1);
+        let ids: Vec<i32> = items.iter().map(|i| i.id).collect();
+        assert_eq!(ids, vec![2, 1, 3]);
+        assert!(items.iter().all(|i| i.group_header.as_str().is_empty()));
+
+        // 3. Mode 2: Oldest First (flat list sorted by creation/mod date ascending)
+        let items = super::build_sidebar_annotation_items(&annots, false, &toc, 2);
+        let ids: Vec<i32> = items.iter().map(|i| i.id).collect();
+        assert_eq!(ids, vec![3, 1, 2]);
+        assert!(items.iter().all(|i| i.group_header.as_str().is_empty()));
+    }
+
+    #[test]
+    fn test_six_highlight_colors_and_presets() {
+        assert_eq!(super::STATIC_COLORS.len(), 6);
+        assert_eq!(super::HIGHLIGHT_BLEND_COLORS.len(), 6);
+
+        // Indices: 0=Yellow, 1=Green, 2=Blue, 3=Pink, 4=Orange, 5=Purple
+        let expected_static_hex = [
+            "#facc15", "#4ade80", "#60a5fa", "#f472b6", "#fb923c", "#c084fc",
+        ];
+        let expected_blend_rgb = [
+            [254, 240, 138], // Yellow
+            [187, 247, 208], // Green
+            [191, 219, 254], // Blue
+            [251, 207, 232], // Pink
+            [254, 215, 170], // Orange
+            [233, 213, 255], // Purple
+        ];
+
+        for i in 0..6 {
+            let (hex, _) = super::get_color(i);
+            assert_eq!(hex, expected_static_hex[i as usize]);
+            let rgb = super::get_highlight_blend_rgb(i);
+            assert_eq!(rgb, expected_blend_rgb[i as usize]);
+        }
+
+        // Test purple index matching
+        let purple_vibrant_rgb = (192.0 / 255.0, 132.0 / 255.0, 252.0 / 255.0);
+        assert_eq!(super::match_closest_color_index(purple_vibrant_rgb), 5);
+
+        let purple_pastel_rgb = (233.0 / 255.0, 213.0 / 255.0, 255.0 / 255.0);
+        assert_eq!(super::match_closest_color_index(purple_pastel_rgb), 5);
     }
 }

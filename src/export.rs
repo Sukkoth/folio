@@ -21,7 +21,7 @@ fn format_kind_word(kind: &str) -> &'static str {
 
 /// Finds the most relevant TOC heading for a given page.
 /// If the active item is a child (depth > 0), resolves the parent name to produce "Chapter — Section".
-fn resolve_toc_heading(page: i32, toc: &[TocItem]) -> Option<String> {
+pub fn resolve_toc_heading(page: i32, toc: &[TocItem]) -> Option<String> {
     if toc.is_empty() {
         return None;
     }
