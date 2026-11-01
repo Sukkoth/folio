@@ -1951,9 +1951,7 @@ fn update_page_indicator(state: &AppState, ui: &AppWindow) {
     ui.set_can_next(state.current_page < state.total_pages - 1);
 }
 
-fn sync_nav_history_to_ui(state: &AppState, ui: &AppWindow) {
-    ui.set_can_nav_back(state.nav_history.can_go_back());
-    ui.set_can_nav_forward(state.nav_history.can_go_forward());
+fn sync_nav_history_to_ui(_state: &AppState, _ui: &AppWindow) {
 }
 
 pub fn compute_transformed_links(
