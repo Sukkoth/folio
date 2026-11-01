@@ -155,7 +155,7 @@ pub struct PageSelection {
     pub line_rects_pt: Vec<(f32, f32, f32, f32)>,
 }
 
-struct AppState {
+pub(crate) struct AppState {
     file_path: String,
     current_page: i32, // 0-indexed
     total_pages: i32,
@@ -199,6 +199,62 @@ struct AppState {
     pub paper_theme: pdf::PaperTheme,
     pub doc_properties: pdf::DocumentProperties,
     pub annotation_sort_mode: u8,
+}
+
+pub(crate) struct DocumentTab {
+    pub(crate) id: usize,
+    pub(crate) file_path: String,
+    pub(crate) display_name: String,
+    pub(crate) state: AppState,
+    pub(crate) saved_scroll_y: f32,
+    pub(crate) is_dirty: bool,
+}
+
+pub(crate) struct TabManager {
+    pub(crate) next_tab_id: usize,
+    pub(crate) tabs: Vec<DocumentTab>,
+    pub(crate) active_tab_index: usize,
+}
+
+impl TabManager {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_tab_id: 1,
+            tabs: Vec::new(),
+            active_tab_index: 0,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn as_ref(&self) -> Option<&AppState> {
+        self.active_tab().map(|t| &t.state)
+    }
+
+    #[inline]
+    pub(crate) fn as_mut(&mut self) -> Option<&mut AppState> {
+        self.active_tab_mut().map(|t| &mut t.state)
+    }
+
+    pub(crate) fn active_tab(&self) -> Option<&DocumentTab> {
+        self.tabs.get(self.active_tab_index)
+    }
+
+    pub(crate) fn active_tab_mut(&mut self) -> Option<&mut DocumentTab> {
+        self.tabs.get_mut(self.active_tab_index)
+    }
+
+    pub(crate) fn find_tab_by_path(&self, path: &str) -> Option<usize> {
+        self.tabs.iter().position(|t| t.file_path == path)
+    }
+
+    pub(crate) fn find_tab_by_id(&self, id: usize) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == id)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn find_tab_by_id_mut(&mut self, id: usize) -> Option<&mut DocumentTab> {
+        self.tabs.iter_mut().find(|t| t.id == id)
+    }
 }
 
 pub fn transform_rect_for_rotation(
@@ -392,6 +448,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     app.set_sidebar_width(initial_sidebar_w);
 
+    // Initialize multi-tab manager and register all document callbacks once
+    let tab_manager = Arc::new(Mutex::new(TabManager::new()));
+    setup_callbacks(&app, &tab_manager);
+
     // Register global UI callbacks (Theme toggle & Open document)
     {
         app.on_save_sidebar_width(move |w| {
@@ -415,8 +475,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let app_weak = app.as_weak();
+        let tab_mgr = Arc::clone(&tab_manager);
         app.on_open_document(move || {
             let app_weak = app_weak.clone();
+            let tab_mgr = Arc::clone(&tab_mgr);
             std::thread::spawn(move || {
                 let res = rfd::FileDialog::new()
                     .add_filter("PDF document (*.pdf)", &["pdf"])
@@ -429,7 +491,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .and_then(|n| n.to_str())
                             .unwrap_or("document.pdf")
                             .to_string();
-                        let _ = setup_document(&ui, &path, display_name);
+                        let _ = open_or_activate_document(&ui, &tab_mgr, &path, display_name);
                         update_recent_books_model(&ui);
                     });
                 }
@@ -439,6 +501,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let app_weak = app.as_weak();
+        let tab_mgr = Arc::clone(&tab_manager);
         app.on_open_recent_book(move |path_str| {
             if let Some(ui) = app_weak.upgrade() {
                 ui.set_show_recent_books(false);
@@ -449,7 +512,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .and_then(|n| n.to_str())
                         .unwrap_or("document.pdf")
                         .to_string();
-                    let _ = setup_document(&ui, &path, display_name);
+                    let _ = open_or_activate_document(&ui, &tab_mgr, &path, display_name);
                     update_recent_books_model(&ui);
                 } else {
                     trigger_toast(&ui, "File not found");
@@ -460,35 +523,78 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     update_recent_books_model(&app);
 
-    let pdf_path_arg = env::args().nth(1);
+    let cli_paths: Vec<PathBuf> = env::args()
+        .skip(1)
+        .map(PathBuf::from)
+        .collect();
 
-    match pdf_path_arg {
-        None => {
-            app.set_file_title("Folio".into());
-            app.set_file_path("No PDF file specified".into());
-            app.set_has_error(true);
-            app.set_error_message(
-                "Open a PDF document to begin reading with rich annotations and dual-page view."
-                    .into(),
-            );
+    let mut initial_paths: Vec<PathBuf> = Vec::new();
+
+    // 1. Restore remembered open tabs from persistent config
+    for p_str in &config.open_tabs {
+        let p = PathBuf::from(p_str);
+        if p.exists() && !initial_paths.contains(&p) {
+            initial_paths.push(p);
         }
-        Some(raw_path) => {
-            let path = PathBuf::from(&raw_path);
-            let display_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&raw_path)
-                .to_string();
+    }
 
-            if !path.exists() {
-                app.set_file_title(display_name.clone().into());
-                app.set_file_path(raw_path.clone().into());
-                app.set_has_error(true);
-                app.set_error_message(format!("File does not exist:\n{}", path.display()).into());
+    // 2. Add any valid CLI arguments that are not already in initial_paths
+    let mut cli_target_idx: Option<usize> = None;
+    for cli_p in &cli_paths {
+        if cli_p.exists() {
+            let canonical = std::fs::canonicalize(cli_p).unwrap_or_else(|_| cli_p.clone());
+            if let Some(pos) = initial_paths.iter().position(|p| {
+                let p_canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+                p_canon == canonical
+            }) {
+                if cli_target_idx.is_none() {
+                    cli_target_idx = Some(pos);
+                }
             } else {
-                setup_document(&app, &path, display_name)?;
+                let pos = initial_paths.len();
+                initial_paths.push(cli_p.clone());
+                if cli_target_idx.is_none() {
+                    cli_target_idx = Some(pos);
+                }
             }
         }
+    }
+
+    if !cli_paths.is_empty() && cli_target_idx.is_none() && initial_paths.is_empty() {
+        let first = &cli_paths[0];
+        let display_name = first
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("document.pdf")
+            .to_string();
+        app.set_file_title(display_name.into());
+        app.set_file_path(first.to_string_lossy().to_string().into());
+        app.set_has_error(true);
+        app.set_error_message(format!("File does not exist:\n{}", first.display()).into());
+    } else if !initial_paths.is_empty() {
+        for p in &initial_paths {
+            let display_name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("document.pdf")
+                .to_string();
+            let _ = open_or_activate_document(&app, &tab_manager, p, display_name);
+        }
+
+        let target_idx = if let Some(idx) = cli_target_idx {
+            idx
+        } else {
+            config.active_tab_index.min(initial_paths.len().saturating_sub(1))
+        };
+        switch_to_tab(&app, &tab_manager, target_idx);
+    } else {
+        app.set_file_title("Folio".into());
+        app.set_file_path("No PDF file specified".into());
+        app.set_has_error(true);
+        app.set_error_message(
+            "Open a PDF document to begin reading with rich annotations and dual-page view."
+                .into(),
+        );
     }
 
     let app_weak = app.as_weak();
@@ -499,6 +605,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     app.run()?;
+
+    // Final persist on exit
+    if let Ok(mgr) = tab_manager.lock() {
+        if let Some(active_tab) = mgr.active_tab() {
+            save_current_session_direct(&active_tab.state, &app);
+        }
+        let tab_paths: Vec<String> = mgr.tabs.iter().map(|t| t.file_path.clone()).collect();
+        let active_idx = mgr.active_tab_index;
+        history::save_open_tabs(&tab_paths, active_idx);
+    }
+
     Ok(())
 }
 
@@ -530,20 +647,279 @@ fn to_slint_doc_info(props: &pdf::DocumentProperties) -> DocInfoData {
     }
 }
 
-fn setup_document(
+fn sync_tabs_to_ui(app: &AppWindow, mgr: &TabManager) {
+    let items: Vec<TabItemData> = mgr
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(idx, tab)| TabItemData {
+            id: tab.id as i32,
+            title: slint::SharedString::from(&tab.display_name),
+            path: slint::SharedString::from(&tab.file_path),
+            is_active: idx == mgr.active_tab_index,
+            is_dirty: tab.is_dirty,
+        })
+        .collect();
+    app.set_open_tabs(slint::ModelRc::new(slint::VecModel::from(items)));
+    app.set_active_tab_index(mgr.active_tab_index as i32);
+}
+
+fn switch_to_active_tab_ui(ui: &AppWindow, mgr: &mut TabManager) {
+    let tab = match mgr.active_tab_mut() {
+        Some(t) => t,
+        None => return,
+    };
+
+    let title = tab.display_name.clone();
+    let file_path = tab.file_path.clone();
+    let state = &mut tab.state;
+
+    ui.set_file_title(title.into());
+    ui.set_file_path(file_path.into());
+    ui.set_has_error(false);
+    ui.set_total_pages(state.total_pages);
+    ui.set_current_page(state.current_page);
+    ui.set_zoom_level(state.zoom_level);
+    ui.set_zoom_display(format!("{}%", (state.zoom_level * 100.0).round() as i32).into());
+    ui.set_is_scroll_view(state.is_scroll_view);
+    ui.set_rotation(state.rotation);
+    ui.set_is_dual_page(state.is_dual_page);
+    ui.set_paper_theme(state.paper_theme as i32);
+    ui.set_doc_info(to_slint_doc_info(&state.doc_properties));
+    ui.set_is_dirty(tab.is_dirty);
+
+    let (p0_w, p0_h) = state.get_page_size(state.current_page);
+    let standard_h = if state.page_sizes.len() > 1 {
+        state.page_sizes[1].1
+    } else {
+        p0_h
+    };
+    let card_w = p0_w * state.zoom_level;
+    let card_h = p0_h * state.zoom_level;
+    let scroll_item_h = standard_h * state.zoom_level + 24.0;
+    ui.set_page_width(card_w);
+    ui.set_page_height(card_h);
+    ui.set_scroll_item_height(scroll_item_h);
+
+    let mut items = Vec::with_capacity(state.total_pages as usize);
+    let mut cur_offset = 0.0f32;
+    for (i, &(w_pt, h_pt)) in state.page_sizes.iter().enumerate() {
+        let pw = w_pt * state.zoom_level;
+        let ph = h_pt * state.zoom_level;
+        let img = state
+            .cache
+            .get(i as i32, state.zoom_level, state.rotation, state.paper_theme)
+            .and_then(|c| rgba_to_image(&c.rgba, c.width, c.height))
+            .unwrap_or_default();
+        items.push(PageItemData {
+            page_index: i as i32,
+            offset_y: cur_offset,
+            width: pw,
+            height: ph,
+            image: img,
+        });
+        cur_offset += ph + 24.0;
+    }
+    ui.set_total_scroll_height(cur_offset + 12.0);
+    ui.set_scroll_pages(slint::ModelRc::new(slint::VecModel::from(items)));
+
+    update_page_indicator(state, ui);
+    rebuild_toc_model(state, ui);
+    sync_annotations_to_ui(state, ui);
+    sync_links_to_ui(state, ui);
+    sync_search_to_ui(state, ui);
+
+    if state.is_scroll_view {
+        ui.set_scroll_content_y(tab.saved_scroll_y);
+        trigger_scroll_page_render(state, state.current_page, ui);
+    } else {
+        update_view_with_state(state, ui);
+    }
+
+    save_current_session_direct(state, ui);
+    update_recent_books_model(ui);
+    sync_tabs_to_ui(ui, mgr);
+}
+
+fn switch_to_tab(ui: &AppWindow, tab_manager: &Arc<Mutex<TabManager>>, new_idx: usize) {
+    let mut mgr = match tab_manager.lock() {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    if new_idx >= mgr.tabs.len() {
+        return;
+    }
+    if new_idx == mgr.active_tab_index && !mgr.tabs.is_empty() {
+        sync_tabs_to_ui(ui, &mgr);
+        return;
+    }
+
+    let old_idx = mgr.active_tab_index;
+    if old_idx < mgr.tabs.len() {
+        mgr.tabs[old_idx].saved_scroll_y = ui.get_scroll_content_y();
+        mgr.tabs[old_idx].state.current_page = ui.get_current_page();
+        save_current_session_direct(&mgr.tabs[old_idx].state, ui);
+    }
+
+    mgr.active_tab_index = new_idx;
+    switch_to_active_tab_ui(ui, &mut mgr);
+
+    let tab_paths: Vec<String> = mgr.tabs.iter().map(|t| t.file_path.clone()).collect();
+    let active_idx = mgr.active_tab_index;
+    history::save_open_tabs(&tab_paths, active_idx);
+}
+
+fn close_tab(ui: &AppWindow, tab_manager: &Arc<Mutex<TabManager>>, idx_to_close: usize) {
+    let mut mgr = match tab_manager.lock() {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    if idx_to_close >= mgr.tabs.len() {
+        return;
+    }
+
+    save_current_session_direct(&mgr.tabs[idx_to_close].state, ui);
+    let _ = mgr.tabs.remove(idx_to_close);
+
+    if mgr.tabs.is_empty() {
+        mgr.active_tab_index = 0;
+        ui.set_file_title("Folio".into());
+        ui.set_file_path("No PDF file specified".into());
+        ui.set_has_error(true);
+        ui.set_error_message(
+            "Open a PDF document to begin reading with rich annotations and dual-page view.".into(),
+        );
+        ui.set_page_image(slint::Image::default());
+        ui.set_secondary_page_image(slint::Image::default());
+        ui.set_scroll_pages(slint::ModelRc::new(slint::VecModel::default()));
+        ui.set_is_dirty(false);
+        ui.set_show_sidebar(false);
+        ui.set_sidebar_tab(0);
+        ui.set_show_note_input(false);
+        ui.set_current_note_text("".into());
+        ui.set_toc_items(slint::ModelRc::new(slint::VecModel::default()));
+        ui.set_highlight_items(slint::ModelRc::new(slint::VecModel::default()));
+        ui.set_note_items(slint::ModelRc::new(slint::VecModel::default()));
+        ui.set_page_annotations(slint::ModelRc::new(slint::VecModel::default()));
+        ui.set_page_links(slint::ModelRc::new(slint::VecModel::default()));
+        ui.set_search_results(slint::ModelRc::new(slint::VecModel::default()));
+        ui.set_show_search(false);
+        ui.set_total_pages(1);
+        ui.set_current_page(0);
+        ui.set_page_display("1 / 1".into());
+        ui.set_doc_info(to_slint_doc_info(&pdf::DocumentProperties::default()));
+        ui.set_selection_rects(slint::ModelRc::new(slint::VecModel::default()));
+        ui.set_has_selection(false);
+        ui.set_show_popup(false);
+        ui.set_can_prev(false);
+        ui.set_can_next(false);
+        ui.set_can_undo(false);
+        ui.set_can_redo(false);
+        sync_tabs_to_ui(ui, &mgr);
+        update_recent_books_model(ui);
+        history::save_open_tabs(&[], 0);
+        return;
+    }
+
+    if idx_to_close == mgr.active_tab_index {
+        mgr.active_tab_index = idx_to_close.min(mgr.tabs.len() - 1);
+        switch_to_active_tab_ui(ui, &mut mgr);
+    } else if idx_to_close < mgr.active_tab_index {
+        mgr.active_tab_index -= 1;
+        sync_tabs_to_ui(ui, &mgr);
+    } else {
+        sync_tabs_to_ui(ui, &mgr);
+    }
+
+    let tab_paths: Vec<String> = mgr.tabs.iter().map(|t| t.file_path.clone()).collect();
+    let active_idx = mgr.active_tab_index;
+    history::save_open_tabs(&tab_paths, active_idx);
+}
+
+fn close_other_tabs(ui: &AppWindow, tab_manager: &Arc<Mutex<TabManager>>, target_idx: usize) {
+    let mut mgr = match tab_manager.lock() {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    if target_idx >= mgr.tabs.len() {
+        return;
+    }
+
+    for (i, tab) in mgr.tabs.iter().enumerate() {
+        if i != target_idx {
+            save_current_session_direct(&tab.state, ui);
+        }
+    }
+
+    let kept_tab = mgr.tabs.remove(target_idx);
+    mgr.tabs.clear();
+    mgr.tabs.push(kept_tab);
+    mgr.active_tab_index = 0;
+
+    switch_to_active_tab_ui(ui, &mut mgr);
+
+    let tab_paths: Vec<String> = mgr.tabs.iter().map(|t| t.file_path.clone()).collect();
+    let active_idx = mgr.active_tab_index;
+    history::save_open_tabs(&tab_paths, active_idx);
+}
+
+fn close_tabs_to_the_right(ui: &AppWindow, tab_manager: &Arc<Mutex<TabManager>>, target_idx: usize) {
+    let mut mgr = match tab_manager.lock() {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    if target_idx >= mgr.tabs.len() {
+        return;
+    }
+
+    for tab in mgr.tabs.iter().skip(target_idx + 1) {
+        save_current_session_direct(&tab.state, ui);
+    }
+
+    mgr.tabs.truncate(target_idx + 1);
+
+    if mgr.active_tab_index > target_idx {
+        mgr.active_tab_index = target_idx;
+        switch_to_active_tab_ui(ui, &mut mgr);
+    } else {
+        sync_tabs_to_ui(ui, &mgr);
+    }
+
+    let tab_paths: Vec<String> = mgr.tabs.iter().map(|t| t.file_path.clone()).collect();
+    let active_idx = mgr.active_tab_index;
+    history::save_open_tabs(&tab_paths, active_idx);
+}
+
+fn open_or_activate_document(
     app: &AppWindow,
+    tab_manager: &Arc<Mutex<TabManager>>,
     path: &Path,
     display_name: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path_str = path.to_string_lossy().to_string();
 
+    // Check if already open
+    {
+        let mgr = tab_manager.lock().unwrap();
+        if let Some(existing_idx) = mgr.find_tab_by_path(&path_str) {
+            drop(mgr);
+            switch_to_tab(app, tab_manager, existing_idx);
+            return Ok(());
+        }
+    }
+
     let meta = match pdf::read_pdf_info(&path_str) {
         Ok(m) => m,
         Err(err) => {
-            app.set_file_title(display_name.into());
-            app.set_file_path(path_str.into());
-            app.set_has_error(true);
-            app.set_error_message(err.into());
+            let mgr = tab_manager.lock().unwrap();
+            if mgr.tabs.is_empty() {
+                app.set_file_title(display_name.into());
+                app.set_file_path(path_str.into());
+                app.set_has_error(true);
+                app.set_error_message(err.into());
+            } else {
+                trigger_toast(app, &format!("Failed to open document: {}", err));
+            }
             return Ok(());
         }
     };
@@ -553,17 +929,8 @@ fn setup_document(
         file_path: path_str.clone(),
         ..Default::default()
     });
-    app.set_doc_info(to_slint_doc_info(&doc_props));
 
-    app.set_file_title(display_name.into());
-    app.set_file_path(path_str.clone().into());
-    app.set_has_error(false);
-    app.set_total_pages(meta.page_count);
-
-    // Default zoom value: 200% (2.0)
     let default_zoom = 2.0;
-
-    // Restore saved session history if available
     let saved_session = history::load_document_session(&path_str);
     let (initial_page, initial_zoom, initial_is_scroll, initial_scroll_y) = if let Some(ref s) = saved_session {
         let p = s.page.clamp(0, (meta.page_count - 1).max(0));
@@ -573,36 +940,9 @@ fn setup_document(
         (0, default_zoom, true, 0.0)
     };
 
-    // Maintain active paper theme across files: either from the currently running UI or global config
     let config = history::load_app_config();
     let initial_paper_theme = resolve_initial_paper_theme(app.get_paper_theme(), config.paper_theme);
 
-    let (p0_w, p0_h) = meta.page_sizes.first().copied().unwrap_or((meta.initial_width_pt, meta.initial_height_pt));
-    let standard_h = if meta.page_sizes.len() > 1 {
-        meta.page_sizes[1].1
-    } else {
-        p0_h
-    };
-    let card_w = p0_w * initial_zoom;
-    let card_h = p0_h * initial_zoom;
-    let scroll_item_h = standard_h * initial_zoom + 24.0;
-
-    app.set_page_width(card_w);
-    app.set_page_height(card_h);
-    app.set_scroll_item_height(scroll_item_h);
-    app.set_is_scroll_view(initial_is_scroll);
-    app.set_current_page(initial_page);
-    app.set_zoom_level(initial_zoom);
-    app.set_zoom_display(format!("{}%", (initial_zoom * 100.0).round() as i32).into());
-    app.set_page_display(format!("{} / {}", initial_page + 1, meta.page_count).into());
-    app.set_can_prev(initial_page > 0);
-    app.set_can_next(initial_page < meta.page_count - 1);
-    app.set_paper_theme(initial_paper_theme as i32);
-
-    // Table of Contents (Outline) presence
-    let has_toc = !meta.toc.is_empty();
-
-    // Extract any existing annotations (highlights, underlines, notes) from the PDF
     let existing_annots = pdf::extract_document_annotations(&path_str);
     let mut initial_annotations = Vec::with_capacity(existing_annots.len());
     let mut next_annot_id = 1;
@@ -637,42 +977,27 @@ fn setup_document(
         next_annot_id += 1;
     }
 
+    let has_toc = !meta.toc.is_empty();
     let has_annotations = !initial_annotations.is_empty();
     app.set_show_sidebar(has_toc || has_annotations);
     if !has_toc && has_annotations {
         app.set_sidebar_tab(1);
     }
 
-    // Initialize the scroll-pages model for continuous scroll view with exact per-page geometry
-    let mut items = Vec::with_capacity(meta.page_count as usize);
-    let mut cur_offset = 0.0f32;
-    for (i, &(w_pt, h_pt)) in meta.page_sizes.iter().enumerate() {
-        let pw = w_pt * initial_zoom;
-        let ph = h_pt * initial_zoom;
-        items.push(PageItemData {
-            page_index: i as i32,
-            offset_y: cur_offset,
-            width: pw,
-            height: ph,
-            image: slint::Image::default(),
-        });
-        cur_offset += ph + 24.0;
-    }
-    app.set_total_scroll_height(cur_offset + 12.0);
-    let model = std::rc::Rc::new(slint::VecModel::from(items));
-    app.set_scroll_pages(model.into());
+    let tab_id = {
+        let mut mgr = tab_manager.lock().unwrap();
+        let id = mgr.next_tab_id;
+        mgr.next_tab_id += 1;
+        id
+    };
 
-    let state: Arc<Mutex<Option<AppState>>> = Arc::new(Mutex::new(None));
-    let state_for_worker = Arc::clone(&state);
+    let tab_manager_for_worker = Arc::clone(tab_manager);
     let ui_weak = app.as_weak();
-
-    // Spawn dedicated background worker thread
     let worker = PdfWorker::spawn(path_str.clone(), move |rendered: RenderedPage| {
         let ui_weak = ui_weak.clone();
-        let state_lock = Arc::clone(&state_for_worker);
-
+        let tab_mgr_lock = Arc::clone(&tab_manager_for_worker);
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            handle_rendered_page(&ui, &state_lock, rendered);
+            handle_rendered_page(&ui, &tab_mgr_lock, tab_id, rendered);
         });
     })
     .map_err(|e| format!("Failed to spawn worker: {e}"))?;
@@ -685,7 +1010,7 @@ fn setup_document(
         .collect();
 
     let app_state = AppState {
-        file_path: path_str,
+        file_path: path_str.clone(),
         current_page: initial_page,
         total_pages: meta.page_count,
         zoom_level: initial_zoom,
@@ -727,43 +1052,32 @@ fn setup_document(
         annotation_sort_mode: config.annotation_sort_mode,
     };
 
-    update_page_indicator(&app_state, app);
-    rebuild_toc_model(&app_state, app);
+    let doc_tab = DocumentTab {
+        id: tab_id,
+        file_path: path_str,
+        display_name,
+        state: app_state,
+        saved_scroll_y: initial_scroll_y,
+        is_dirty: false,
+    };
 
-    app.set_rotation(0);
-    app.set_is_dual_page(false);
-    app.set_has_secondary_page(false);
-
-    if let Ok(mut lock) = state.lock() {
-        *lock = Some(app_state);
-    }
-
-    // Set up UI callbacks
-    setup_callbacks(app, &state);
-
-    // Initial render of page
-    update_view(app, &state);
-
-    // Restore exact scroll position or jump to page
-    if initial_is_scroll {
-        if initial_scroll_y != 0.0 {
-            app.set_scroll_content_y(initial_scroll_y);
-        } else if initial_page > 0 {
-            app.invoke_scroll_to_page(initial_page);
+    {
+        let mut mgr = tab_manager.lock().unwrap();
+        let active_idx = mgr.active_tab_index;
+        if !mgr.tabs.is_empty() && active_idx < mgr.tabs.len() {
+            mgr.tabs[active_idx].saved_scroll_y = app.get_scroll_content_y();
+            mgr.tabs[active_idx].state.current_page = app.get_current_page();
+            save_current_session_direct(&mgr.tabs[active_idx].state, app);
         }
-        if let Ok(mut lock) = state.lock() {
-            if let Some(s) = lock.as_mut() {
-                trigger_scroll_page_render(s, initial_page, app);
-            }
-        }
-    }
+        mgr.tabs.push(doc_tab);
+        let new_idx = mgr.tabs.len() - 1;
+        mgr.active_tab_index = new_idx;
+        switch_to_active_tab_ui(app, &mut mgr);
 
-    if let Ok(lock) = state.lock() {
-        if let Some(s) = lock.as_ref() {
-            save_current_session_direct(s, app);
-        }
+        let tab_paths: Vec<String> = mgr.tabs.iter().map(|t| t.file_path.clone()).collect();
+        let active_idx = mgr.active_tab_index;
+        history::save_open_tabs(&tab_paths, active_idx);
     }
-    update_recent_books_model(app);
 
     Ok(())
 }
@@ -783,17 +1097,23 @@ fn update_recent_books_model(ui: &AppWindow) {
 
 fn handle_rendered_page(
     ui: &AppWindow,
-    state_lock: &Arc<Mutex<Option<AppState>>>,
+    tab_manager: &Arc<Mutex<TabManager>>,
+    tab_id: usize,
     rendered: RenderedPage,
 ) {
-    let mut lock = match state_lock.lock() {
+    let mut mgr = match tab_manager.lock() {
         Ok(guard) => guard,
         Err(_) => return,
     };
-    let state = match lock.as_mut() {
-        Some(s) => s,
+    let active_tab_idx = mgr.active_tab_index;
+    let tab_idx = match mgr.find_tab_by_id(tab_id) {
+        Some(idx) => idx,
         None => return,
     };
+
+    let is_active_tab = tab_idx == active_tab_idx;
+    let tab = &mut mgr.tabs[tab_idx];
+    let state = &mut tab.state;
 
     // Drop stale results from different rotation
     if rendered.rotation != state.rotation {
@@ -831,23 +1151,23 @@ fn handle_rendered_page(
             },
         );
 
-        // Update single-page view image if currently active
-        if rendered.page == state.current_page {
-            ui.set_page_image(image.clone());
-            ui.set_page_opacity(1.0);
-        }
+        // If this render belongs to active tab, update active single/dual page image & active scroll model row
+        if is_active_tab {
+            if rendered.page == state.current_page {
+                ui.set_page_image(image.clone());
+                ui.set_page_opacity(1.0);
+            }
 
-        // Update secondary page if in dual-page spread
-        if state.is_dual_page && !state.is_scroll_view && rendered.page == state.current_page + 1 {
-            ui.set_secondary_page_image(image.clone());
-        }
+            if state.is_dual_page && !state.is_scroll_view && rendered.page == state.current_page + 1 {
+                ui.set_secondary_page_image(image.clone());
+            }
 
-        // Update scroll-pages model row
-        let pages_model = ui.get_scroll_pages();
-        let idx = rendered.page as usize;
-        if let Some(mut item) = pages_model.row_data(idx) {
-            item.image = image;
-            pages_model.set_row_data(idx, item);
+            let pages_model = ui.get_scroll_pages();
+            let idx = rendered.page as usize;
+            if let Some(mut item) = pages_model.row_data(idx) {
+                item.image = image;
+                pages_model.set_row_data(idx, item);
+            }
         }
     }
 }
@@ -1684,17 +2004,24 @@ fn save_current_session_direct(s: &AppState, ui: &AppWindow) {
     }
 }
 
-fn save_current_session(state_lock: &Arc<Mutex<Option<AppState>>>, ui: &AppWindow) {
-    if let Ok(lock) = state_lock.lock() {
-        if let Some(s) = lock.as_ref() {
-            save_current_session_direct(s, ui);
+fn save_current_session(state_lock: &Arc<Mutex<TabManager>>, ui: &AppWindow) {
+    if let Ok(mut mgr) = state_lock.lock() {
+        let scroll_y = ui.get_scroll_content_y();
+        let cur_page = ui.get_current_page();
+        if let Some(tab) = mgr.active_tab_mut() {
+            tab.saved_scroll_y = scroll_y;
+            tab.state.current_page = cur_page;
+            save_current_session_direct(&tab.state, ui);
         }
+        let tab_paths: Vec<String> = mgr.tabs.iter().map(|t| t.file_path.clone()).collect();
+        let active_idx = mgr.active_tab_index;
+        history::save_open_tabs(&tab_paths, active_idx);
     }
 }
 
 fn trigger_search(
     query: String,
-    state_lock: Arc<Mutex<Option<AppState>>>,
+    state_lock: Arc<Mutex<TabManager>>,
     ui_weak: slint::Weak<AppWindow>,
     search_generation: Arc<AtomicU64>,
 ) {
@@ -1778,7 +2105,7 @@ fn trigger_search(
         .ok();
 }
 
-fn update_view(ui: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
+fn update_view(ui: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
     let mut lock = match state_lock.lock() {
         Ok(guard) => guard,
         Err(_) => return,
@@ -2299,7 +2626,7 @@ fn build_annotations_markdown_from_state(s: &AppState) -> String {
     export::generate_annotations_markdown(doc_title, &export_annots, &s.toc)
 }
 
-fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
+fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
     let search_generation = Arc::new(AtomicU64::new(0));
     let search_debounce: std::rc::Rc<std::cell::RefCell<Option<slint::Timer>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -2333,6 +2660,117 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<Option<AppState>>>) {
             }
         }
     };
+
+    // Multi-Tab Callbacks
+    {
+        let app_weak = app.as_weak();
+        let tab_mgr = Arc::clone(state_lock);
+        app.on_select_tab(move |idx| {
+            if let Some(ui) = app_weak.upgrade() {
+                switch_to_tab(&ui, &tab_mgr, idx as usize);
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let tab_mgr = Arc::clone(state_lock);
+        app.on_close_tab(move |idx| {
+            if let Some(ui) = app_weak.upgrade() {
+                close_tab(&ui, &tab_mgr, idx as usize);
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let tab_mgr = Arc::clone(state_lock);
+        app.on_close_other_tabs(move |idx| {
+            if let Some(ui) = app_weak.upgrade() {
+                close_other_tabs(&ui, &tab_mgr, idx as usize);
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let tab_mgr = Arc::clone(state_lock);
+        app.on_close_tabs_to_the_right(move |idx| {
+            if let Some(ui) = app_weak.upgrade() {
+                close_tabs_to_the_right(&ui, &tab_mgr, idx as usize);
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let tab_mgr = Arc::clone(state_lock);
+        app.on_new_tab(move || {
+            let app_weak = app_weak.clone();
+            let tab_mgr = Arc::clone(&tab_mgr);
+            std::thread::spawn(move || {
+                let res = rfd::FileDialog::new()
+                    .add_filter("PDF document (*.pdf)", &["pdf"])
+                    .pick_file();
+
+                if let Some(path) = res {
+                    let _ = app_weak.upgrade_in_event_loop(move |ui| {
+                        let display_name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("document.pdf")
+                            .to_string();
+                        let _ = open_or_activate_document(&ui, &tab_mgr, &path, display_name);
+                        update_recent_books_model(&ui);
+                    });
+                }
+            });
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let tab_mgr = Arc::clone(state_lock);
+        app.on_next_tab(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let next_idx = {
+                    let mgr = match tab_mgr.lock() {
+                        Ok(m) => m,
+                        Err(_) => return,
+                    };
+                    if mgr.tabs.is_empty() {
+                        return;
+                    }
+                    (mgr.active_tab_index + 1) % mgr.tabs.len()
+                };
+                switch_to_tab(&ui, &tab_mgr, next_idx);
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let tab_mgr = Arc::clone(state_lock);
+        app.on_prev_tab(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let prev_idx = {
+                    let mgr = match tab_mgr.lock() {
+                        Ok(m) => m,
+                        Err(_) => return,
+                    };
+                    if mgr.tabs.is_empty() {
+                        return;
+                    }
+                    if mgr.active_tab_index == 0 {
+                        mgr.tabs.len() - 1
+                    } else {
+                        mgr.active_tab_index - 1
+                    }
+                };
+                switch_to_tab(&ui, &tab_mgr, prev_idx);
+            }
+        });
+    }
 
     // Toggle Search Bar
     {
@@ -4165,7 +4603,7 @@ static LAST_ZOOM_INSTANT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 fn perform_zoom(
     ui: &AppWindow,
-    state_lock: &Arc<Mutex<Option<AppState>>>,
+    state_lock: &Arc<Mutex<TabManager>>,
     factor: f32,
     target_page: Option<i32>,
 ) {
@@ -4862,6 +5300,8 @@ mod tests {
                 paper_theme: 2, // Scientific Dark
                 annotation_sort_mode: 1,
                 sidebar_width: 380.0,
+                open_tabs: Vec::new(),
+                active_tab_index: 0,
             },
             &test_config_path,
         );
@@ -5016,5 +5456,326 @@ mod tests {
 
         let purple_pastel_rgb = (233.0 / 255.0, 213.0 / 255.0, 255.0 / 255.0);
         assert_eq!(super::match_closest_color_index(purple_pastel_rgb), 5);
+    }
+
+    #[test]
+    fn test_tab_manager_tabs_and_path_lookup() {
+        let temp_dir = std::env::temp_dir();
+        let pdf1_path = temp_dir.join("folio_tab_test_1.pdf");
+        let pdf2_path = temp_dir.join("folio_tab_test_2.pdf");
+        let pdf3_path = temp_dir.join("folio_tab_test_3.pdf");
+
+        for p in &[&pdf1_path, &pdf2_path, &pdf3_path] {
+            let path_str = p.to_str().unwrap();
+            let mut doc = mupdf::pdf::PdfDocument::new();
+            doc.new_page((500.0, 700.0)).unwrap();
+            doc.save(path_str).unwrap();
+        }
+
+        let mut mgr = super::TabManager::new();
+        assert_eq!(mgr.tabs.len(), 0);
+        assert!(mgr.active_tab().is_none());
+        assert!(mgr.as_ref().is_none());
+
+        let create_tab = |id: usize, path: &std::path::Path, name: &str| {
+            let path_str = path.to_string_lossy().to_string();
+            let worker = super::PdfWorker::spawn(path_str.clone(), |_| {}).unwrap();
+            super::DocumentTab {
+                id,
+                file_path: path_str.clone(),
+                display_name: name.to_string(),
+                state: super::AppState {
+                    file_path: path_str,
+                    current_page: 0,
+                    total_pages: 1,
+                    zoom_level: 2.0,
+                    is_scroll_view: true,
+                    page_width_pt: 500.0,
+                    page_height_pt: 700.0,
+                    page_sizes: vec![(500.0, 700.0)],
+                    cache: super::PageCache::new(4),
+                    worker,
+                    annotations: Vec::new(),
+                    next_annot_id: 1,
+                    undo_stack: std::collections::VecDeque::new(),
+                    redo_stack: std::collections::VecDeque::new(),
+                    cached_text_page: -1,
+                    cached_text: super::pdf::PageTextData::default(),
+                    page_text_cache: std::collections::HashMap::new(),
+                    sel_start_page: 0,
+                    sel_start_pt: (0.0, 0.0),
+                    active_selections: Vec::new(),
+                    active_selection_page: 0,
+                    active_selection_snippet: String::new(),
+                    active_selection_line_rects: Vec::new(),
+                    is_zooming: false,
+                    search_query: String::new(),
+                    search_matches: Vec::new(),
+                    active_search_index: -1,
+                    is_searching: false,
+                    search_match_case: false,
+                    search_match_whole_word: false,
+                    toc: Vec::new(),
+                    collapsed_toc_ids: std::collections::HashSet::new(),
+                    page_links_cache: std::collections::HashMap::new(),
+                    has_logical_pages: false,
+                    page_labels: vec!["1".to_string()],
+                    rotation: 0,
+                    is_dual_page: false,
+                    paper_theme: super::pdf::PaperTheme::Light,
+                    doc_properties: super::pdf::DocumentProperties::default(),
+                    annotation_sort_mode: 0,
+                },
+                saved_scroll_y: 0.0,
+                is_dirty: false,
+            }
+        };
+
+        // 1. Add Tab 1
+        let tab1 = create_tab(1, &pdf1_path, "doc1.pdf");
+        mgr.tabs.push(tab1);
+        mgr.active_tab_index = 0;
+        assert_eq!(mgr.tabs.len(), 1);
+        assert_eq!(mgr.active_tab().unwrap().display_name, "doc1.pdf");
+        assert_eq!(mgr.as_ref().unwrap().file_path, pdf1_path.to_str().unwrap());
+
+        // 2. Add Tab 2 and Tab 3
+        let tab2 = create_tab(2, &pdf2_path, "doc2.pdf");
+        mgr.tabs.push(tab2);
+        let tab3 = create_tab(3, &pdf3_path, "doc3.pdf");
+        mgr.tabs.push(tab3);
+
+        assert_eq!(mgr.tabs.len(), 3);
+        assert_eq!(mgr.find_tab_by_path(pdf2_path.to_str().unwrap()), Some(1));
+        assert_eq!(mgr.find_tab_by_path(pdf3_path.to_str().unwrap()), Some(2));
+        assert_eq!(mgr.find_tab_by_id(2), Some(1));
+        assert_eq!(mgr.find_tab_by_id(3), Some(2));
+        assert_eq!(mgr.find_tab_by_id(999), None);
+
+        // 3. Tab switching
+        mgr.active_tab_index = 2;
+        assert_eq!(mgr.active_tab().unwrap().display_name, "doc3.pdf");
+
+        // 4. Dirty tracking
+        mgr.active_tab_mut().unwrap().is_dirty = true;
+        assert!(mgr.active_tab().unwrap().is_dirty);
+        assert!(!mgr.tabs[0].is_dirty);
+
+        // 5. Remove middle tab (Tab 2 at index 1) while Tab 3 (index 2) is active
+        mgr.tabs.remove(1);
+        assert_eq!(mgr.tabs.len(), 2);
+        // Active tab index adjusted
+        mgr.active_tab_index -= 1;
+        assert_eq!(mgr.active_tab().unwrap().display_name, "doc3.pdf");
+
+        // 6. Close active tab (Tab 3 at index 1)
+        mgr.tabs.remove(1);
+        assert_eq!(mgr.tabs.len(), 1);
+        mgr.active_tab_index = 0;
+        assert_eq!(mgr.active_tab().unwrap().display_name, "doc1.pdf");
+
+        // 7. Close last tab
+        mgr.tabs.remove(0);
+        assert_eq!(mgr.tabs.len(), 0);
+        assert!(mgr.active_tab().is_none());
+        assert!(mgr.as_ref().is_none());
+    }
+
+    #[test]
+    fn test_tab_manager_close_others_and_close_to_right() {
+        let temp_dir = std::env::temp_dir();
+        let pdf1_path = temp_dir.join("folio_close_test_1.pdf");
+        let pdf2_path = temp_dir.join("folio_close_test_2.pdf");
+        let pdf3_path = temp_dir.join("folio_close_test_3.pdf");
+        let pdf4_path = temp_dir.join("folio_close_test_4.pdf");
+
+        for p in [&pdf1_path, &pdf2_path, &pdf3_path, &pdf4_path] {
+            let mut doc = mupdf::pdf::PdfDocument::new();
+            doc.new_page((500.0, 700.0)).unwrap();
+            doc.save(p.to_str().unwrap()).unwrap();
+        }
+
+        let mut mgr = TabManager::new();
+        let create_tab = |id: usize, path: &std::path::Path, name: &str| {
+            let path_str = path.to_str().unwrap().to_string();
+            let worker = PdfWorker::spawn(path_str.clone(), |_| {}).unwrap();
+            DocumentTab {
+                id,
+                file_path: path_str.clone(),
+                display_name: name.to_string(),
+                state: AppState {
+                    file_path: path_str,
+                    current_page: 0,
+                    total_pages: 1,
+                    zoom_level: 1.0,
+                    is_scroll_view: false,
+                    page_width_pt: 500.0,
+                    page_height_pt: 700.0,
+                    page_sizes: vec![(500.0, 700.0)],
+                    cache: PageCache::new(4),
+                    worker,
+                    annotations: Vec::new(),
+                    next_annot_id: 1,
+                    undo_stack: VecDeque::new(),
+                    redo_stack: VecDeque::new(),
+                    cached_text_page: -1,
+                    cached_text: super::pdf::PageTextData::default(),
+                    page_text_cache: std::collections::HashMap::new(),
+                    sel_start_page: 0,
+                    sel_start_pt: (0.0, 0.0),
+                    active_selections: Vec::new(),
+                    active_selection_page: 0,
+                    active_selection_snippet: String::new(),
+                    active_selection_line_rects: Vec::new(),
+                    is_zooming: false,
+                    search_query: String::new(),
+                    search_matches: Vec::new(),
+                    active_search_index: -1,
+                    is_searching: false,
+                    search_match_case: false,
+                    search_match_whole_word: false,
+                    toc: Vec::new(),
+                    collapsed_toc_ids: std::collections::HashSet::new(),
+                    page_links_cache: std::collections::HashMap::new(),
+                    has_logical_pages: false,
+                    page_labels: vec!["1".to_string()],
+                    rotation: 0,
+                    is_dual_page: false,
+                    paper_theme: super::pdf::PaperTheme::Light,
+                    doc_properties: super::pdf::DocumentProperties::default(),
+                    annotation_sort_mode: 0,
+                },
+                saved_scroll_y: 0.0,
+                is_dirty: false,
+            }
+        };
+
+        // Populate 4 tabs
+        mgr.tabs.push(create_tab(1, &pdf1_path, "doc1.pdf"));
+        mgr.tabs.push(create_tab(2, &pdf2_path, "doc2.pdf"));
+        mgr.tabs.push(create_tab(3, &pdf3_path, "doc3.pdf"));
+        mgr.tabs.push(create_tab(4, &pdf4_path, "doc4.pdf"));
+        mgr.active_tab_index = 3; // doc4 is active
+
+        // Test Close Tabs to the Right of index 1 (doc2)
+        // tabs to right of 1 are doc3 and doc4
+        let target_idx = 1;
+        mgr.tabs.truncate(target_idx + 1);
+        if mgr.active_tab_index > target_idx {
+            mgr.active_tab_index = target_idx;
+        }
+
+        assert_eq!(mgr.tabs.len(), 2);
+        assert_eq!(mgr.tabs[0].display_name, "doc1.pdf");
+        assert_eq!(mgr.tabs[1].display_name, "doc2.pdf");
+        assert_eq!(mgr.active_tab_index, 1);
+        assert_eq!(mgr.active_tab().unwrap().display_name, "doc2.pdf");
+
+        // Repopulate tabs for Close Others test
+        mgr.tabs.push(create_tab(3, &pdf3_path, "doc3.pdf"));
+        mgr.tabs.push(create_tab(4, &pdf4_path, "doc4.pdf"));
+        assert_eq!(mgr.tabs.len(), 4);
+
+        // Close other tabs keeping index 2 (doc3)
+        let keep_idx = 2;
+        let kept = mgr.tabs.remove(keep_idx);
+        mgr.tabs.clear();
+        mgr.tabs.push(kept);
+        mgr.active_tab_index = 0;
+
+        assert_eq!(mgr.tabs.len(), 1);
+        assert_eq!(mgr.tabs[0].display_name, "doc3.pdf");
+        assert_eq!(mgr.active_tab_index, 0);
+        assert_eq!(mgr.active_tab().unwrap().display_name, "doc3.pdf");
+    }
+
+    #[test]
+    fn test_persistent_tab_session_flow() {
+        let temp_dir = std::env::temp_dir();
+        let test_config_path = temp_dir.join("folio_test_tab_persistence.json");
+        let _ = std::fs::remove_file(&test_config_path);
+
+        let doc1 = temp_dir.join("folio_persist_1.pdf");
+        let doc2 = temp_dir.join("folio_persist_2.pdf");
+        let doc3 = temp_dir.join("folio_persist_3.pdf");
+        let doc4 = temp_dir.join("folio_persist_4.pdf");
+
+        for p in [&doc1, &doc2, &doc3, &doc4] {
+            let mut doc = mupdf::pdf::PdfDocument::new();
+            doc.new_page((500.0, 700.0)).unwrap();
+            doc.save(p.to_str().unwrap()).unwrap();
+        }
+
+        let p1 = doc1.to_str().unwrap().to_string();
+        let p2 = doc2.to_str().unwrap().to_string();
+        let p3 = doc3.to_str().unwrap().to_string();
+
+        // 1. Save 3 open tabs with active index 1 (doc2)
+        crate::history::save_open_tabs_at(
+            &test_config_path,
+            &[p1.clone(), p2.clone(), p3.clone()],
+            1,
+        );
+
+        let cfg = crate::history::load_app_config_from(&test_config_path);
+        assert_eq!(cfg.open_tabs, vec![p1.clone(), p2.clone(), p3.clone()]);
+        assert_eq!(cfg.active_tab_index, 1);
+
+        // 2. Simulate startup with no CLI args
+        let mut initial_paths: Vec<std::path::PathBuf> = Vec::new();
+        for p_str in &cfg.open_tabs {
+            let p = std::path::PathBuf::from(p_str);
+            if p.exists() && !initial_paths.contains(&p) {
+                initial_paths.push(p);
+            }
+        }
+        assert_eq!(initial_paths.len(), 3);
+        let active_idx = cfg.active_tab_index.min(initial_paths.len().saturating_sub(1));
+        assert_eq!(active_idx, 1); // doc2 restored as active
+
+        // 3. Simulate startup with CLI arg for an already-open file (doc3)
+        let cli_paths = vec![doc3.clone()];
+        let mut cli_target_idx: Option<usize> = None;
+        for cli_p in &cli_paths {
+            if cli_p.exists() {
+                let canonical = std::fs::canonicalize(cli_p).unwrap_or_else(|_| cli_p.clone());
+                if let Some(pos) = initial_paths.iter().position(|p| {
+                    let p_canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+                    p_canon == canonical
+                }) {
+                    if cli_target_idx.is_none() {
+                        cli_target_idx = Some(pos);
+                    }
+                }
+            }
+        }
+        assert_eq!(cli_target_idx, Some(2)); // points to doc3
+
+        // 4. Simulate startup with CLI arg for a new file (doc4)
+        let cli_paths_new = vec![doc4.clone()];
+        let mut cli_target_new_idx: Option<usize> = None;
+        for cli_p in &cli_paths_new {
+            if cli_p.exists() {
+                let canonical = std::fs::canonicalize(cli_p).unwrap_or_else(|_| cli_p.clone());
+                if let Some(pos) = initial_paths.iter().position(|p| {
+                    let p_canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+                    p_canon == canonical
+                }) {
+                    if cli_target_new_idx.is_none() {
+                        cli_target_new_idx = Some(pos);
+                    }
+                } else {
+                    let pos = initial_paths.len();
+                    initial_paths.push(cli_p.clone());
+                    if cli_target_new_idx.is_none() {
+                        cli_target_new_idx = Some(pos);
+                    }
+                }
+            }
+        }
+        assert_eq!(initial_paths.len(), 4);
+        assert_eq!(cli_target_new_idx, Some(3)); // points to new doc4
+
+        let _ = std::fs::remove_file(&test_config_path);
     }
 }

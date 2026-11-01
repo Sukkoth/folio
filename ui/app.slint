@@ -231,6 +231,116 @@ component ViewModeSegment inherits Rectangle {
     }
 }
 
+component TabItem inherits Rectangle {
+    in property <string> title: "";
+    in property <bool> is-active: false;
+    in property <bool> is-dirty: false;
+    callback clicked();
+    callback close-clicked();
+    callback context-menu(length, length);
+
+    min-width: 100px;
+    max-width: 220px;
+    height: 34px;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    background: root.is-active ? Theme.card-bg : tab-ta.has-hover ? Theme.hover-bg : transparent;
+    border-width: 1px;
+    border-color: root.is-active ? Theme.border : transparent;
+    clip: true;
+
+    // Top active indicator line
+    if root.is-active: Rectangle {
+        y: 0;
+        height: 2px;
+        width: 100%;
+        background: Theme.accent;
+    }
+
+    tab-ta := TouchArea {
+        clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                root.context-menu(self.mouse-x, self.mouse-y);
+            }
+        }
+        mouse-cursor: pointer;
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 6px;
+        spacing: 6px;
+        alignment: space-between;
+
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+
+            Image {
+                source: @image-url("../assets/icons/file-text.svg");
+                width: 14px;
+                height: 14px;
+                colorize: root.is-active ? Theme.accent : Theme.text-secondary;
+                y: (parent.height - self.height) / 2;
+            }
+
+            Text {
+                text: root.title;
+                font-family: "Inter";
+                font-size: 13px;
+                font-weight: root.is-active ? 600 : 500;
+                color: root.is-active ? Theme.text-primary : Theme.text-secondary;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            alignment: end;
+
+            if root.is-dirty: Rectangle {
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: #f59e0b;
+                y: (parent.height - self.height) / 2;
+            }
+
+            Rectangle {
+                width: 20px;
+                height: 20px;
+                border-radius: 4px;
+                background: close-ta.pressed ? Theme.active-bg : close-ta.has-hover ? Theme.hover-bg : transparent;
+                y: (parent.height - self.height) / 2;
+
+                Image {
+                    source: @image-url("../assets/icons/x.svg");
+                    width: 11px;
+                    height: 11px;
+                    colorize: close-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                close-ta := TouchArea {
+                    clicked => { root.close-clicked(); }
+                    mouse-cursor: pointer;
+                }
+            }
+        }
+    }
+}
+
+export struct TabItemData {
+    id: int,
+    title: string,
+    path: string,
+    is-active: bool,
+    is-dirty: bool,
+}
+
 export struct PageItemData {
     page-index: int,
     offset-y: length,
@@ -438,6 +548,21 @@ export component AppWindow inherits Window {
 
     in property <string> file-title: "";
     in property <string> file-path: "";
+
+    // Multi-Tab properties & callbacks
+    in property <[TabItemData]> open-tabs: [];
+    in-out property <int> active-tab-index: 0;
+    callback select-tab(int);
+    callback close-tab(int);
+    callback close-other-tabs(int);
+    callback close-tabs-to-the-right(int);
+    callback new-tab();
+    callback next-tab();
+    callback prev-tab();
+    in-out property <bool> show-tab-menu: false;
+    in-out property <int> tab-menu-index: -1;
+    in-out property <length> tab-menu-x: 0px;
+    in-out property <length> tab-menu-y: 38px;
     in property <[RecentBookItem]> recent-books: [];
     in-out property <bool> show-recent-books: false;
     callback open-recent-book(string);
@@ -638,7 +763,7 @@ keyboard-handler := FocusScope {
                 return accept;
             }
 
-            if (event.modifiers.control || event.text == "\u{1a}" || event.text == "\u{13}" || event.text == "\u{19}" || event.text == "\u{15}" || event.text == "\u{2}" || event.text == "\u{14}" || event.text == "\u{6}") {
+            if (event.modifiers.control || event.text == "\u{1a}" || event.text == "\u{13}" || event.text == "\u{19}" || event.text == "\u{15}" || event.text == "\u{2}" || event.text == "\u{14}" || event.text == "\u{17}" || event.text == "\u{6}") {
                 if (event.modifiers.shift || (event.modifiers.control && (event.text == "Z" || event.text == "S"))) {
                     // Ctrl + Shift + S: Save As
                     if (event.text == "s" || event.text == "S" || event.text == "\u{13}") {
@@ -669,8 +794,61 @@ keyboard-handler := FocusScope {
                         return accept;
                     }
                 } else {
+                    // Multi-tab shortcuts:
+                    // Ctrl + T: New Tab
+                    if (event.text == "t" || event.text == "T" || event.text == "\u{14}") {
+                        root.new-tab();
+                        return accept;
+                    // Ctrl + W: Close current Tab
+                    } else if (event.text == "w" || event.text == "W" || event.text == "\u{17}") {
+                        root.close-tab(root.active-tab-index);
+                        return accept;
+                    // Ctrl + Tab: Next Tab, Ctrl + Shift + Tab: Previous Tab
+                    } else if (event.text == Key.Tab) {
+                        if (event.modifiers.shift) {
+                            root.prev-tab();
+                        } else {
+                            root.next-tab();
+                        }
+                        return accept;
+                    // Ctrl + PageDown: Next Tab
+                    } else if (event.text == Key.PageDown) {
+                        root.next-tab();
+                        return accept;
+                    // Ctrl + PageUp: Previous Tab
+                    } else if (event.text == Key.PageUp) {
+                        root.prev-tab();
+                        return accept;
+                    // Ctrl + 1..9: Select Tab 1..9
+                    } else if (event.text == "1") {
+                        root.select-tab(0);
+                        return accept;
+                    } else if (event.text == "2") {
+                        root.select-tab(1);
+                        return accept;
+                    } else if (event.text == "3") {
+                        root.select-tab(2);
+                        return accept;
+                    } else if (event.text == "4") {
+                        root.select-tab(3);
+                        return accept;
+                    } else if (event.text == "5") {
+                        root.select-tab(4);
+                        return accept;
+                    } else if (event.text == "6") {
+                        root.select-tab(5);
+                        return accept;
+                    } else if (event.text == "7") {
+                        root.select-tab(6);
+                        return accept;
+                    } else if (event.text == "8") {
+                        root.select-tab(7);
+                        return accept;
+                    } else if (event.text == "9") {
+                        root.select-tab(8);
+                        return accept;
                     // Ctrl + F: Toggle Search
-                    if (event.text == "f" || event.text == "F" || event.text == "\u{6}") {
+                    } else if (event.text == "f" || event.text == "F" || event.text == "\u{6}") {
                         root.toggle-search();
                         return accept;
                     // Ctrl + G: Go to page
@@ -720,13 +898,17 @@ keyboard-handler := FocusScope {
                     } else if (event.text == "d" || event.text == "D" || (event.modifiers.control && event.text == "\u{4}")) {
                         root.show-doc-info = !root.show-doc-info;
                         return accept;
-                    } else if (event.text == "b" || event.text == "B" || event.text == "\u{2}" || event.text == "t" || event.text == "T" || event.text == "\u{14}") {
+                    } else if (event.text == "b" || event.text == "B" || event.text == "\u{2}") {
                         root.toggle-sidebar();
                         return accept;
                     }
                 }
             } else {
                 if (event.text == Key.Escape) {
+                    if (root.show-tab-menu) {
+                        root.show-tab-menu = false;
+                        return accept;
+                    }
                     if (root.show-doc-info) {
                         root.show-doc-info = false;
                         return accept;
@@ -799,6 +981,67 @@ keyboard-handler := FocusScope {
 VerticalLayout {
             padding: 0;
             spacing: 0;
+
+            // Top Tab Bar (38px)
+            if !root.is-zen-mode && root.open-tabs.length > 0: Rectangle {
+                height: 38px;
+                background: Theme.sidebar-bg;
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    width: 100%;
+                    background: Theme.border;
+                }
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 4px;
+                    spacing: 4px;
+                    alignment: start;
+
+                    for tab[idx] in root.open-tabs : tab-item := TabItem {
+                        title: tab.title;
+                        is-active: tab.is-active;
+                        is-dirty: tab.is-dirty;
+                        clicked => { root.select-tab(idx); }
+                        close-clicked => { root.close-tab(idx); }
+                        context-menu(local-x, local-y) => {
+                            root.tab-menu-index = idx;
+                            root.tab-menu-x = min(root.width - 210px, max(8px, tab-item.x + local-x));
+                            root.tab-menu-y = 38px;
+                            root.show-tab-menu = true;
+                        }
+                    }
+
+                    // New Tab Button (+)
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 6px;
+                        background: new-tab-ta.pressed ? Theme.active-bg : new-tab-ta.has-hover ? Theme.hover-bg : transparent;
+                        border-width: 1px;
+                        border-color: new-tab-ta.has-hover ? Theme.border-subtle : transparent;
+                        y: (parent.height - self.height) / 2;
+
+                        Text {
+                            text: "+";
+                            font-family: "Inter";
+                            font-size: 18px;
+                            font-weight: 500;
+                            color: new-tab-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        new-tab-ta := TouchArea {
+                            clicked => { root.new-tab(); }
+                            mouse-cursor: pointer;
+                        }
+                    }
+                }
+            }
 
             // Top Header Bar (60px)
             if !root.is-zen-mode: Rectangle {
@@ -1378,7 +1621,7 @@ VerticalLayout {
 
                 // Sidebar Drawer (Contents, Highlights, Notes, Search)
                 sidebar := Rectangle {
-                    width: (root.show-sidebar && !root.is-zen-mode) ? root.sidebar-width : 0px;
+                    width: (root.show-sidebar && !root.is-zen-mode && !root.has-error) ? root.sidebar-width : 0px;
                     clip: true;
                     background: Theme.card-bg;
                     animate width { duration: root.is-sidebar-resizing ? 0ms : 160ms; easing: ease-out; }
@@ -2419,7 +2662,7 @@ VerticalLayout {
                 }
 
                 // Sidebar Splitter / Drag Resize Handle
-                if root.show-sidebar && !root.is-zen-mode: sidebar-splitter := Rectangle {
+                if root.show-sidebar && !root.is-zen-mode && !root.has-error: sidebar-splitter := Rectangle {
                     width: 5px;
                     background: (splitter-ta.has-hover || root.is-sidebar-resizing) ? Theme.accent : transparent;
                     animate background { duration: 100ms; }
@@ -2461,8 +2704,8 @@ VerticalLayout {
                     clip: true;
 
                     if root.has-error: Rectangle {
-                        width: 460px;
-                        height: 260px;
+                        width: root.recent-books.length > 0 ? 520px : 460px;
+                        height: root.recent-books.length > 0 ? min(parent.height - 48px, 520px) : 260px;
                         x: (parent.width - self.width) / 2;
                         y: (parent.height - self.height) / 2;
                         background: Theme.card-bg;
@@ -2471,16 +2714,17 @@ VerticalLayout {
                         border-color: Theme.border;
                         drop-shadow-blur: 24px;
                         drop-shadow-color: Theme.dark ? #000000a0 : #00000015;
+                        clip: true;
 
                         VerticalLayout {
-                            padding: 32px;
-                            spacing: 16px;
-                            alignment: center;
+                            padding: root.recent-books.length > 0 ? 24px : 32px;
+                            spacing: root.recent-books.length > 0 ? 14px : 16px;
+                            alignment: root.recent-books.length > 0 ? start : center;
 
                             Rectangle {
-                                width: 52px;
-                                height: 52px;
-                                border-radius: 16px;
+                                width: root.recent-books.length > 0 ? 44px : 52px;
+                                height: root.recent-books.length > 0 ? 44px : 52px;
+                                border-radius: 14px;
                                 background: Theme.accent-subtle;
                                 border-width: 1px;
                                 border-color: Theme.accent-border;
@@ -2488,8 +2732,8 @@ VerticalLayout {
 
                                 Image {
                                     source: @image-url("../assets/icons/folder-open.svg");
-                                    width: 24px;
-                                    height: 24px;
+                                    width: root.recent-books.length > 0 ? 20px : 24px;
+                                    height: root.recent-books.length > 0 ? 20px : 24px;
                                     colorize: Theme.on-accent;
                                     x: (parent.width - self.width) / 2;
                                     y: (parent.height - self.height) / 2;
@@ -2497,7 +2741,7 @@ VerticalLayout {
                             }
 
                             VerticalLayout {
-                                spacing: 6px;
+                                spacing: 4px;
                                 alignment: center;
 
                                 Text {
@@ -2524,6 +2768,133 @@ VerticalLayout {
                                 text: "Select PDF Document";
                                 x: (parent.width - self.width) / 2;
                                 clicked => { root.open-document(); }
+                            }
+
+                            if root.recent-books.length > 0: Rectangle {
+                                height: 1px;
+                                background: Theme.border-subtle;
+                            }
+
+                            if root.recent-books.length > 0: HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                alignment: space-between;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: start;
+
+                                    Image {
+                                        source: @image-url("../assets/icons/clock.svg");
+                                        width: 13px;
+                                        height: 13px;
+                                        colorize: Theme.text-secondary;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    Text {
+                                        text: "RECENT DOCUMENTS";
+                                        font-family: "Inter";
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: Theme.text-secondary;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Text {
+                                    text: "\{root.recent-books.length} recent";
+                                    font-family: "Inter";
+                                    font-size: 11px;
+                                    color: Theme.text-muted;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            if root.recent-books.length > 0: ScrollView {
+                                width: 100%;
+                                height: min(200px, root.recent-books.length * 44px);
+
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    padding-right: 6px;
+
+                                    for item in root.recent-books : Rectangle {
+                                        height: 40px;
+                                        border-radius: 8px;
+                                        background: welcome-rec-ta.has-hover ? Theme.hover-bg : transparent;
+                                        animate background { duration: 80ms; }
+
+                                        HorizontalLayout {
+                                            padding-left: 8px;
+                                            padding-right: 8px;
+                                            spacing: 10px;
+                                            alignment: space-between;
+
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                alignment: start;
+
+                                                Image {
+                                                    source: @image-url("../assets/icons/file-text.svg");
+                                                    width: 15px;
+                                                    height: 15px;
+                                                    colorize: welcome-rec-ta.has-hover ? Theme.accent : Theme.text-secondary;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    spacing: 1px;
+
+                                                    Text {
+                                                        text: item.filename;
+                                                        font-family: "Inter";
+                                                        font-size: 13px;
+                                                        font-weight: 500;
+                                                        color: Theme.text-primary;
+                                                        overflow: elide;
+                                                        max-width: 320px;
+                                                    }
+
+                                                    Text {
+                                                        text: item.path;
+                                                        font-family: "Inter";
+                                                        font-size: 11px;
+                                                        color: Theme.text-muted;
+                                                        overflow: elide;
+                                                        max-width: 320px;
+                                                    }
+                                                }
+                                            }
+
+                                            Rectangle {
+                                                width: 58px;
+                                                height: 22px;
+                                                border-radius: 4px;
+                                                background: Theme.accent-subtle;
+                                                y: (parent.height - self.height) / 2;
+
+                                                Text {
+                                                    text: "p. \{item.page}";
+                                                    font-family: "Inter";
+                                                    font-size: 11px;
+                                                    font-weight: 500;
+                                                    color: Theme.on-accent;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+
+                                        welcome-rec-ta := TouchArea {
+                                            clicked => {
+                                                root.open-recent-book(item.path);
+                                            }
+                                            mouse-cursor: pointer;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -4741,6 +5112,169 @@ VerticalLayout {
                 font-weight: 600;
                 color: Theme.text-primary;
                 vertical-alignment: center;
+            }
+        }
+    }
+
+    // Dismiss overlay for Tab Context Menu
+    if root.show-tab-menu: TouchArea {
+        width: 100%;
+        height: 100%;
+        z: 94;
+        clicked => {
+            root.show-tab-menu = false;
+        }
+    }
+
+    // Tab Context Menu Popover
+    if root.show-tab-menu: Rectangle {
+        x: root.tab-menu-x;
+        y: root.tab-menu-y;
+        width: 200px;
+        height: tab-cm-vl.preferred-height;
+        z: 105;
+        background: Theme.card-bg;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: Theme.dark ? #00000099 : #00000020;
+        clip: true;
+
+        tab-cm-vl := VerticalLayout {
+            padding: 6px;
+            spacing: 2px;
+
+            // Close Tab
+            Rectangle {
+                height: 32px;
+                border-radius: 6px;
+                background: cm-close-ta.has-hover ? Theme.hover-bg : transparent;
+                animate background { duration: 80ms; }
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    Image {
+                        source: @image-url("../assets/icons/x.svg");
+                        width: 13px;
+                        height: 13px;
+                        colorize: Theme.text-primary;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: "Close Tab";
+                        font-family: "Inter";
+                        font-size: 13px;
+                        font-weight: 500;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                    }
+                }
+
+                cm-close-ta := TouchArea {
+                    clicked => {
+                        root.show-tab-menu = false;
+                        root.close-tab(root.tab-menu-index);
+                    }
+                    mouse-cursor: pointer;
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
+            // Close Other Tabs
+            cm-other-row := Rectangle {
+                property <bool> is-row-enabled: root.open-tabs.length > 1;
+                height: 32px;
+                border-radius: 6px;
+                background: self.is-row-enabled && cm-other-ta.has-hover ? Theme.hover-bg : transparent;
+                animate background { duration: 80ms; }
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    Image {
+                        source: @image-url("../assets/icons/x.svg");
+                        width: 13px;
+                        height: 13px;
+                        colorize: cm-other-row.is-row-enabled ? Theme.text-secondary : Theme.text-muted;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: "Close Other Tabs";
+                        font-family: "Inter";
+                        font-size: 13px;
+                        font-weight: 500;
+                        color: cm-other-row.is-row-enabled ? Theme.text-primary : Theme.text-muted;
+                        vertical-alignment: center;
+                    }
+                }
+
+                cm-other-ta := TouchArea {
+                    clicked => {
+                        if (cm-other-row.is-row-enabled) {
+                            root.show-tab-menu = false;
+                            root.close-other-tabs(root.tab-menu-index);
+                        }
+                    }
+                    mouse-cursor: cm-other-row.is-row-enabled ? pointer : default;
+                }
+            }
+
+            // Close Tabs to the Right
+            cm-right-row := Rectangle {
+                property <bool> is-row-enabled: root.tab-menu-index < root.open-tabs.length - 1;
+                height: 32px;
+                border-radius: 6px;
+                background: self.is-row-enabled && cm-right-ta.has-hover ? Theme.hover-bg : transparent;
+                animate background { duration: 80ms; }
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    Image {
+                        source: @image-url("../assets/icons/chevron-right.svg");
+                        width: 13px;
+                        height: 13px;
+                        colorize: cm-right-row.is-row-enabled ? Theme.text-secondary : Theme.text-muted;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: "Close Tabs to the Right";
+                        font-family: "Inter";
+                        font-size: 13px;
+                        font-weight: 500;
+                        color: cm-right-row.is-row-enabled ? Theme.text-primary : Theme.text-muted;
+                        vertical-alignment: center;
+                    }
+                }
+
+                cm-right-ta := TouchArea {
+                    clicked => {
+                        if (cm-right-row.is-row-enabled) {
+                            root.show-tab-menu = false;
+                            root.close-tabs-to-the-right(root.tab-menu-index);
+                        }
+                    }
+                    mouse-cursor: cm-right-row.is-row-enabled ? pointer : default;
+                }
             }
         }
     }

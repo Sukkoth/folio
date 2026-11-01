@@ -14,6 +14,10 @@ pub struct AppConfig {
     pub annotation_sort_mode: u8, // 0 = Document Order (chapters), 1 = Newest First, 2 = Oldest First
     #[serde(default = "default_sidebar_width")]
     pub sidebar_width: f32,
+    #[serde(default)]
+    pub open_tabs: Vec<String>,
+    #[serde(default)]
+    pub active_tab_index: usize,
 }
 
 fn default_dark_mode() -> bool {
@@ -31,6 +35,8 @@ impl Default for AppConfig {
             paper_theme: 0,
             annotation_sort_mode: 0,
             sidebar_width: 350.0,
+            open_tabs: Vec::new(),
+            active_tab_index: 0,
         }
     }
 }
@@ -104,6 +110,21 @@ pub fn update_app_config_at<F: FnOnce(&mut AppConfig)>(config_path: &Path, updat
     let mut config = load_app_config_from(config_path);
     updater(&mut config);
     save_app_config_to(&config, config_path);
+}
+
+pub fn save_open_tabs(open_tabs: &[String], active_tab_index: usize) {
+    update_app_config(|c| {
+        c.open_tabs = open_tabs.to_vec();
+        c.active_tab_index = active_tab_index;
+    });
+}
+
+#[allow(dead_code)]
+pub fn save_open_tabs_at(config_path: &Path, open_tabs: &[String], active_tab_index: usize) {
+    update_app_config_at(config_path, |c| {
+        c.open_tabs = open_tabs.to_vec();
+        c.active_tab_index = active_tab_index;
+    });
 }
 
 fn history_file_path() -> Option<PathBuf> {
@@ -360,6 +381,8 @@ mod tests {
         assert_eq!(initial.paper_theme, 0);
         assert_eq!(initial.annotation_sort_mode, 0);
         assert_eq!(initial.sidebar_width, 350.0);
+        assert!(initial.open_tabs.is_empty());
+        assert_eq!(initial.active_tab_index, 0);
 
         // Save customized config
         let custom = AppConfig {
@@ -367,6 +390,8 @@ mod tests {
             paper_theme: 2,
             annotation_sort_mode: 1,
             sidebar_width: 420.0,
+            open_tabs: vec!["/test/doc1.pdf".to_string(), "/test/doc2.pdf".to_string()],
+            active_tab_index: 1,
         };
         save_app_config_to(&custom, &test_config_path);
 
@@ -375,6 +400,8 @@ mod tests {
         assert_eq!(loaded.paper_theme, 2);
         assert_eq!(loaded.annotation_sort_mode, 1);
         assert_eq!(loaded.sidebar_width, 420.0);
+        assert_eq!(loaded.open_tabs, vec!["/test/doc1.pdf", "/test/doc2.pdf"]);
+        assert_eq!(loaded.active_tab_index, 1);
 
         // Update single field
         update_app_config_at(&test_config_path, |c| {
@@ -388,6 +415,14 @@ mod tests {
         assert_eq!(updated.paper_theme, 1);
         assert_eq!(updated.annotation_sort_mode, 2);
         assert_eq!(updated.sidebar_width, 460.0);
+        assert_eq!(updated.open_tabs, vec!["/test/doc1.pdf", "/test/doc2.pdf"]);
+        assert_eq!(updated.active_tab_index, 1);
+
+        // Save open tabs
+        save_open_tabs_at(&test_config_path, &["/test/doc3.pdf".to_string()], 0);
+        let tab_updated = load_app_config_from(&test_config_path);
+        assert_eq!(tab_updated.open_tabs, vec!["/test/doc3.pdf"]);
+        assert_eq!(tab_updated.active_tab_index, 0);
 
         let _ = fs::remove_file(&test_config_path);
     }
