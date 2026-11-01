@@ -262,6 +262,7 @@ pub(crate) struct AppState {
     pub page_labels: Vec<String>,
     pub rotation: i32, // 0, 90, 180, 270
     pub is_dual_page: bool,
+    pub dual_page_cover_alone: bool,
     pub paper_theme: pdf::PaperTheme,
     pub doc_properties: pdf::DocumentProperties,
     pub annotation_sort_mode: u8,
@@ -508,6 +509,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = history::load_app_config();
     app.set_dark_mode(config.dark_mode);
     app.set_paper_theme(config.paper_theme as i32);
+    app.set_dual_page_cover_alone(config.dual_page_cover_alone);
     let initial_sidebar_w = if config.sidebar_width >= 240.0 && config.sidebar_width <= 800.0 {
         config.sidebar_width
     } else {
@@ -1141,6 +1143,7 @@ fn open_or_activate_document(
         page_labels: meta.page_labels,
         rotation: 0,
         is_dual_page: false,
+        dual_page_cover_alone: config.dual_page_cover_alone,
         paper_theme: initial_paper_theme,
         doc_properties: doc_props,
         annotation_sort_mode: config.annotation_sort_mode,
@@ -1254,8 +1257,11 @@ fn handle_rendered_page(
                 ui.set_page_opacity(1.0);
             }
 
-            if state.is_dual_page && !state.is_scroll_view && rendered.page == state.current_page + 1 {
-                ui.set_secondary_page_image(image.clone());
+            if state.is_dual_page && !state.is_scroll_view {
+                let (_, sec_opt) = compute_dual_page_pair(state.current_page, state.dual_page_cover_alone, state.total_pages);
+                if sec_opt == Some(rendered.page) {
+                    ui.set_secondary_page_image(image.clone());
+                }
             }
 
             let pages_model = ui.get_scroll_pages();
@@ -1920,13 +1926,20 @@ fn resolve_page_input(input: &str, state: &AppState) -> Option<i32> {
 }
 
 fn update_page_indicator(state: &AppState, ui: &AppWindow) {
-    if state.is_dual_page && state.current_page + 1 < state.total_pages {
-        let p1_paper = state.current_page + 1;
-        let p2_paper = state.current_page + 2;
+    let is_dual = state.is_dual_page && !state.is_scroll_view;
+    let (primary_page, sec_opt) = if is_dual {
+        compute_dual_page_pair(state.current_page, state.dual_page_cover_alone, state.total_pages)
+    } else {
+        (state.current_page, None)
+    };
+
+    if let Some(sec_page) = sec_opt {
+        let p1_paper = primary_page + 1;
+        let p2_paper = sec_page + 1;
         let p1_label = if state.has_logical_pages {
             state
                 .page_labels
-                .get(state.current_page as usize)
+                .get(primary_page as usize)
                 .cloned()
                 .unwrap_or_else(|| format!("{p1_paper}"))
         } else {
@@ -1935,7 +1948,7 @@ fn update_page_indicator(state: &AppState, ui: &AppWindow) {
         let p2_label = if state.has_logical_pages {
             state
                 .page_labels
-                .get((state.current_page + 1) as usize)
+                .get(sec_page as usize)
                 .cloned()
                 .unwrap_or_else(|| format!("{p2_paper}"))
         } else {
@@ -1956,11 +1969,11 @@ fn update_page_indicator(state: &AppState, ui: &AppWindow) {
         ui.set_page_suffix_display(suffix.clone().into());
         ui.set_page_display(format!("{} {}", cur_input, suffix).into());
     } else {
-        let paper = state.current_page + 1;
+        let paper = primary_page + 1;
         let label = if state.has_logical_pages {
             state
                 .page_labels
-                .get(state.current_page as usize)
+                .get(primary_page as usize)
                 .cloned()
                 .unwrap_or_else(|| format!("{paper}"))
         } else {
@@ -1979,8 +1992,15 @@ fn update_page_indicator(state: &AppState, ui: &AppWindow) {
         ui.set_page_display(format!("{} {}", label, suffix).into());
     }
 
-    ui.set_can_prev(state.current_page > 0);
-    ui.set_can_next(state.current_page < state.total_pages - 1);
+    if is_dual {
+        let can_prev = compute_dual_page_prev(state.current_page, state.dual_page_cover_alone, state.total_pages).is_some();
+        let can_next = compute_dual_page_next(state.current_page, state.dual_page_cover_alone, state.total_pages).is_some();
+        ui.set_can_prev(can_prev);
+        ui.set_can_next(can_next);
+    } else {
+        ui.set_can_prev(state.current_page > 0);
+        ui.set_can_next(state.current_page < state.total_pages - 1);
+    }
 }
 
 fn sync_nav_history_to_ui(_state: &AppState, _ui: &AppWindow) {
@@ -2021,10 +2041,11 @@ fn sync_links_to_ui(state: &mut AppState, ui: &AppWindow) {
         let max_p = (state.current_page + 3).min(state.total_pages - 1);
         (min_p..=max_p).collect()
     } else if state.is_dual_page {
-        if state.current_page + 1 < state.total_pages {
-            vec![state.current_page, state.current_page + 1]
+        let (primary, sec) = compute_dual_page_pair(state.current_page, state.dual_page_cover_alone, state.total_pages);
+        if let Some(s) = sec {
+            vec![primary, s]
         } else {
-            vec![state.current_page]
+            vec![primary]
         }
     } else {
         vec![state.current_page]
@@ -2234,26 +2255,38 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
     let actual_render_zoom = compute_actual_render_zoom(state.zoom_level, scale_factor);
 
     // Update toolbar page indicator: e.g. "1 / 120" or "1-2 / 120"
-    ui.set_current_page(state.current_page);
-    ui.set_rotation(state.rotation);
     let is_dual = state.is_dual_page && !state.is_scroll_view;
-    let has_secondary = is_dual && (state.current_page + 1 < state.total_pages);
+    let (primary_page, secondary_opt) = if is_dual {
+        compute_dual_page_pair(state.current_page, state.dual_page_cover_alone, state.total_pages)
+    } else {
+        (state.current_page, None)
+    };
+    if is_dual {
+        state.current_page = primary_page;
+    }
+    let has_secondary = secondary_opt.is_some();
+    let sec_page = secondary_opt.unwrap_or(-1);
+
+    ui.set_current_page(primary_page);
+    ui.set_secondary_page(sec_page);
+    ui.set_rotation(state.rotation);
     ui.set_is_dual_page(state.is_dual_page);
     ui.set_has_secondary_page(has_secondary);
+    ui.set_dual_page_cover_alone(state.dual_page_cover_alone);
 
     update_page_indicator(state, ui);
     ui.set_zoom_display(format!("{}%", (state.zoom_level * 100.0).round() as i32).into());
     ui.set_zoom_level(state.zoom_level);
 
     // Update displayed page dimensions for single page view with current page's exact geometry
-    let (cur_w_pt, cur_h_pt) = state.get_page_size(state.current_page);
+    let (cur_w_pt, cur_h_pt) = state.get_page_size(primary_page);
     let card_w = cur_w_pt * state.zoom_level;
     let card_h = cur_h_pt * state.zoom_level;
     ui.set_page_width(card_w);
     ui.set_page_height(card_h);
 
-    if has_secondary {
-        let (sec_w_pt, sec_h_pt) = state.get_page_size(state.current_page + 1);
+    if let Some(sp) = secondary_opt {
+        let (sec_w_pt, sec_h_pt) = state.get_page_size(sp);
         ui.set_secondary_page_width(sec_w_pt * state.zoom_level);
         ui.set_secondary_page_height(sec_h_pt * state.zoom_level);
     }
@@ -2351,8 +2384,7 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
     }
 
     // If dual-page spread, check and request companion page
-    if has_secondary {
-        let sec_page = state.current_page + 1;
+    if let Some(sec_page) = secondary_opt {
         let cached_sec = state.cache.get(sec_page, state.zoom_level, state.rotation, state.paper_theme).cloned();
         let mut sec_needs_render = true;
         if let Some(cached_render) = cached_sec {
@@ -3789,7 +3821,7 @@ fn setup_callbacks(
                         if target_page == ui.get_current_page() {
                             ui.set_page_image(img.clone());
                         }
-                        if ui.get_is_dual_page() && target_page == ui.get_current_page() + 1 {
+                        if ui.get_is_dual_page() && ui.get_has_secondary_page() && target_page == ui.get_secondary_page() {
                             ui.set_secondary_page_image(img);
                         }
                     }
@@ -4538,6 +4570,27 @@ fn setup_callbacks(
         });
     }
 
+    // Toggle Cover Page Offset in Dual View
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        let save_session = make_session_saver();
+        app.on_toggle_cover_alone(move |cover_alone| {
+            if let Ok(mut lock) = state_lock.lock() {
+                if let Some(s) = lock.as_mut() {
+                    s.dual_page_cover_alone = cover_alone;
+                }
+            }
+            history::update_app_config(|c| c.dual_page_cover_alone = cover_alone);
+
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_dual_page_cover_alone(cover_alone);
+                update_view(&ui, &state_lock);
+                save_session();
+            }
+        });
+    }
+
     // Rotate Clockwise
     {
         let state_lock = Arc::clone(state_lock);
@@ -4701,9 +4754,17 @@ fn setup_callbacks(
             let changed = {
                 if let Ok(mut lock) = state_lock.lock() {
                     if let Some(s) = lock.as_mut() {
-                        let step = if s.is_dual_page && !s.is_scroll_view { 2 } else { 1 };
-                        if s.current_page > 0 {
-                            s.current_page = (s.current_page - step).max(0);
+                        if s.is_dual_page && !s.is_scroll_view {
+                            if let Some(prv) = compute_dual_page_prev(s.current_page, s.dual_page_cover_alone, s.total_pages) {
+                                s.current_page = prv;
+                                is_scroll = false;
+                                new_page = s.current_page;
+                                true
+                            } else {
+                                false
+                            }
+                        } else if s.current_page > 0 {
+                            s.current_page -= 1;
                             is_scroll = s.is_scroll_view;
                             new_page = s.current_page;
                             true
@@ -4749,14 +4810,17 @@ fn setup_callbacks(
             let changed = {
                 if let Ok(mut lock) = state_lock.lock() {
                     if let Some(s) = lock.as_mut() {
-                        let step = if s.is_dual_page && !s.is_scroll_view { 2 } else { 1 };
-                        if s.current_page + step < s.total_pages {
-                            s.current_page += step;
-                            is_scroll = s.is_scroll_view;
-                            new_page = s.current_page;
-                            true
+                        if s.is_dual_page && !s.is_scroll_view {
+                            if let Some(nxt) = compute_dual_page_next(s.current_page, s.dual_page_cover_alone, s.total_pages) {
+                                s.current_page = nxt;
+                                is_scroll = false;
+                                new_page = s.current_page;
+                                true
+                            } else {
+                                false
+                            }
                         } else if s.current_page < s.total_pages - 1 {
-                            s.current_page = s.total_pages - 1;
+                            s.current_page += 1;
                             is_scroll = s.is_scroll_view;
                             new_page = s.current_page;
                             true
@@ -4876,7 +4940,13 @@ fn setup_callbacks(
                 let factor = if let Ok(lock) = state_lock.lock() {
                     if let Some(s) = lock.as_ref() {
                         let (pw, ph) = s.get_page_size(s.current_page);
-                        let total_w = if s.is_dual_page { pw * 2.0 + 24.0 } else { pw };
+                        let (_, sec_opt) = if s.is_dual_page && !s.is_scroll_view {
+                            compute_dual_page_pair(s.current_page, s.dual_page_cover_alone, s.total_pages)
+                        } else {
+                            (s.current_page, None)
+                        };
+                        let is_dual_active = s.is_dual_page && !s.is_scroll_view && sec_opt.is_some();
+                        let total_w = if is_dual_active { pw * 2.0 + 24.0 } else { pw };
                         let fit_w = avail_w / total_w.max(1.0);
                         let fit_h = avail_h / ph.max(1.0);
                         let target_zoom = fit_w.min(fit_h).clamp(0.2, 5.0);
@@ -4907,7 +4977,13 @@ fn setup_callbacks(
                 let factor = if let Ok(lock) = state_lock.lock() {
                     if let Some(s) = lock.as_ref() {
                         let (pw, _) = s.get_page_size(s.current_page);
-                        let target_zoom = compute_fit_width_zoom(avail_w, pw, s.is_dual_page);
+                        let (_, sec_opt) = if s.is_dual_page && !s.is_scroll_view {
+                            compute_dual_page_pair(s.current_page, s.dual_page_cover_alone, s.total_pages)
+                        } else {
+                            (s.current_page, None)
+                        };
+                        let is_dual_active = s.is_dual_page && !s.is_scroll_view && sec_opt.is_some();
+                        let target_zoom = compute_fit_width_zoom(avail_w, pw, is_dual_active);
                         target_zoom / s.zoom_level
                     } else {
                         1.0
@@ -5041,6 +5117,86 @@ fn setup_callbacks(
 pub fn compute_fit_width_zoom(avail_w: f32, page_w_pt: f32, is_dual_page: bool) -> f32 {
     let total_w = if is_dual_page { page_w_pt * 2.0 + 24.0 } else { page_w_pt };
     (avail_w / total_w.max(1.0)).clamp(0.2, 5.0)
+}
+
+/// Computes the left and optional right page index for dual-page spread.
+/// If `cover_alone` is true:
+/// - Page 0 is displayed alone (0, None).
+/// - Subsequent pages are paired as spreads: [1, 2], [3, 4], [5, 6], etc.
+/// - If current_page falls within a spread (e.g., page 2), it returns the spread start (1, Some(2)).
+/// If `cover_alone` is false:
+/// - Spreads are paired starting from 0: [0, 1], [2, 3], [4, 5], etc.
+pub fn compute_dual_page_pair(
+    current_page: i32,
+    cover_alone: bool,
+    total_pages: i32,
+) -> (i32, Option<i32>) {
+    if total_pages <= 0 {
+        return (0, None);
+    }
+    let p = current_page.clamp(0, total_pages - 1);
+    if cover_alone {
+        if p == 0 {
+            (0, None)
+        } else {
+            let left = if p % 2 == 1 { p } else { p - 1 };
+            let right = if left + 1 < total_pages {
+                Some(left + 1)
+            } else {
+                None
+            };
+            (left, right)
+        }
+    } else {
+        let left = (p / 2) * 2;
+        let right = if left + 1 < total_pages {
+            Some(left + 1)
+        } else {
+            None
+        };
+        (left, right)
+    }
+}
+
+/// Computes the next page target when advancing one spread.
+pub fn compute_dual_page_next(
+    current_page: i32,
+    cover_alone: bool,
+    total_pages: i32,
+) -> Option<i32> {
+    if total_pages <= 0 {
+        return None;
+    }
+    let (left, _) = compute_dual_page_pair(current_page, cover_alone, total_pages);
+    let next_target = if cover_alone && left == 0 {
+        1
+    } else {
+        left + 2
+    };
+    if next_target < total_pages {
+        Some(next_target)
+    } else {
+        None
+    }
+}
+
+/// Computes the previous page target when stepping back one spread.
+pub fn compute_dual_page_prev(
+    current_page: i32,
+    cover_alone: bool,
+    total_pages: i32,
+) -> Option<i32> {
+    if total_pages <= 0 {
+        return None;
+    }
+    let (left, _) = compute_dual_page_pair(current_page, cover_alone, total_pages);
+    if left == 0 {
+        None
+    } else if cover_alone && left == 1 {
+        Some(0)
+    } else {
+        Some((left - 2).max(0))
+    }
 }
 
 static LAST_ZOOM_INSTANT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
@@ -5187,6 +5343,7 @@ mod tests {
             page_labels: vec!["1".to_string()],
             rotation: 0,
             is_dual_page: false,
+            dual_page_cover_alone: true,
             paper_theme: pdf::PaperTheme::Light,
             doc_properties: pdf::DocumentProperties::default(),
             annotation_sort_mode: 0,
@@ -5748,6 +5905,7 @@ mod tests {
                 sidebar_width: 380.0,
                 open_tabs: Vec::new(),
                 active_tab_index: 0,
+                dual_page_cover_alone: true,
             },
             &test_config_path,
         );
@@ -5969,6 +6127,7 @@ mod tests {
                     page_labels: vec!["1".to_string()],
                     rotation: 0,
                     is_dual_page: false,
+                    dual_page_cover_alone: true,
                     paper_theme: super::pdf::PaperTheme::Light,
                     doc_properties: super::pdf::DocumentProperties::default(),
                     annotation_sort_mode: 0,
@@ -6091,6 +6250,7 @@ mod tests {
                     page_labels: vec!["1".to_string()],
                     rotation: 0,
                     is_dual_page: false,
+                    dual_page_cover_alone: true,
                     paper_theme: super::pdf::PaperTheme::Light,
                     doc_properties: super::pdf::DocumentProperties::default(),
                     annotation_sort_mode: 0,
@@ -6382,5 +6542,76 @@ mod tests {
         assert_eq!(bounded_hist.back_stack.len(), 50);
         assert_eq!(bounded_hist.back_stack.first().unwrap().page, 20);
         assert_eq!(bounded_hist.back_stack.last().unwrap().page, 69);
+    }
+
+    #[test]
+    fn test_dual_page_spread_cover_offset() {
+        let total = 6;
+
+        // 1. Cover alone = true
+        // Page 0 is the cover page alone
+        assert_eq!(compute_dual_page_pair(0, true, total), (0, None));
+
+        // Pages 1 & 2 form the first facing spread [1, 2]
+        assert_eq!(compute_dual_page_pair(1, true, total), (1, Some(2)));
+        assert_eq!(compute_dual_page_pair(2, true, total), (1, Some(2)));
+
+        // Pages 3 & 4 form the second facing spread [3, 4]
+        assert_eq!(compute_dual_page_pair(3, true, total), (3, Some(4)));
+        assert_eq!(compute_dual_page_pair(4, true, total), (3, Some(4)));
+
+        // Page 5 is the final page alone (odd total pages left)
+        assert_eq!(compute_dual_page_pair(5, true, total), (5, None));
+
+        // 2. Cover alone = false (standard pairs starting from 0)
+        assert_eq!(compute_dual_page_pair(0, false, total), (0, Some(1)));
+        assert_eq!(compute_dual_page_pair(1, false, total), (0, Some(1)));
+        assert_eq!(compute_dual_page_pair(2, false, total), (2, Some(3)));
+        assert_eq!(compute_dual_page_pair(3, false, total), (2, Some(3)));
+        assert_eq!(compute_dual_page_pair(4, false, total), (4, Some(5)));
+        assert_eq!(compute_dual_page_pair(5, false, total), (4, Some(5)));
+
+        // 3. Single-page document edge case
+        assert_eq!(compute_dual_page_pair(0, true, 1), (0, None));
+        assert_eq!(compute_dual_page_pair(0, false, 1), (0, None));
+
+        // 4. Zero pages edge case
+        assert_eq!(compute_dual_page_pair(0, true, 0), (0, None));
+    }
+
+    #[test]
+    fn test_dual_page_navigation_steps() {
+        let total = 6;
+
+        // Cover alone = true:
+        // [0] -> [1, 2] -> [3, 4] -> [5]
+        assert_eq!(compute_dual_page_prev(0, true, total), None);
+        assert_eq!(compute_dual_page_next(0, true, total), Some(1));
+
+        assert_eq!(compute_dual_page_prev(1, true, total), Some(0));
+        assert_eq!(compute_dual_page_next(1, true, total), Some(3));
+
+        assert_eq!(compute_dual_page_prev(2, true, total), Some(0));
+        assert_eq!(compute_dual_page_next(2, true, total), Some(3));
+
+        assert_eq!(compute_dual_page_prev(3, true, total), Some(1));
+        assert_eq!(compute_dual_page_next(3, true, total), Some(5));
+
+        assert_eq!(compute_dual_page_prev(4, true, total), Some(1));
+        assert_eq!(compute_dual_page_next(4, true, total), Some(5));
+
+        assert_eq!(compute_dual_page_prev(5, true, total), Some(3));
+        assert_eq!(compute_dual_page_next(5, true, total), None);
+
+        // Cover alone = false:
+        // [0, 1] -> [2, 3] -> [4, 5]
+        assert_eq!(compute_dual_page_prev(0, false, total), None);
+        assert_eq!(compute_dual_page_next(0, false, total), Some(2));
+
+        assert_eq!(compute_dual_page_prev(2, false, total), Some(0));
+        assert_eq!(compute_dual_page_next(2, false, total), Some(4));
+
+        assert_eq!(compute_dual_page_prev(4, false, total), Some(2));
+        assert_eq!(compute_dual_page_next(4, false, total), None);
     }
 }

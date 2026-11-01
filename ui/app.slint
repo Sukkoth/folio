@@ -534,6 +534,9 @@ export component AppWindow inherits Window {
     in property <length> secondary-page-width: 595px;
     in property <length> secondary-page-height: 842px;
     in property <bool> has-secondary-page: false;
+    in-out property <int> secondary-page: -1;
+    in-out property <bool> dual-page-cover-alone: true;
+    callback toggle-cover-alone(bool);
 
     // Page Rotation (0, 90, 180, 270)
     in-out property <int> rotation: 0;
@@ -833,6 +836,12 @@ export component AppWindow inherits Window {
                     } else if (event.text == "d" || event.text == "D" || event.text == "\u{4}") {
                         root.set-dual-page(!root.is-dual-page);
                         return accept;
+                    // Ctrl + Alt + C: Toggle Cover Page Offset
+                    } else if (event.text == "c" || event.text == "C" || event.text == "\u{3}") {
+                        if (root.is-dual-page) {
+                            root.toggle-cover-alone(!root.dual-page-cover-alone);
+                            return accept;
+                        }
                     }
                 } else {
                     // Multi-tab shortcuts:
@@ -1345,6 +1354,48 @@ VerticalLayout {
                                         root.set-view-mode(true);
                                     }
                                 }
+                            }
+                        }
+
+                        // Cover Page Offset Toggle (visible in Dual-Page view)
+                        if root.is-dual-page && !root.is-scroll-view: Rectangle {
+                            height: 38px;
+                            border-radius: 19px;
+                            y: (parent.height - self.height) / 2;
+                            background: root.dual-page-cover-alone ? Theme.card-bg : Theme.pill-track;
+                            border-width: 1px;
+                            border-color: root.dual-page-cover-alone ? Theme.border-strong : Theme.border;
+                            animate background { duration: 120ms; easing: ease-out; }
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 12px;
+                                spacing: 6px;
+                                alignment: center;
+
+                                Image {
+                                    source: @image-url("../assets/icons/book-open.svg");
+                                    width: 15px;
+                                    height: 15px;
+                                    colorize: root.dual-page-cover-alone ? Theme.text-primary : Theme.text-secondary;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                Text {
+                                    text: "Cover";
+                                    font-family: "Inter";
+                                    font-size: 13px;
+                                    font-weight: root.dual-page-cover-alone ? 700 : 500;
+                                    color: root.dual-page-cover-alone ? Theme.text-primary : Theme.text-secondary;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            cover-ta := TouchArea {
+                                clicked => {
+                                    root.toggle-cover-alone(!root.dual-page-cover-alone);
+                                }
+                                mouse-cursor: pointer;
                             }
                         }
 
@@ -4029,7 +4080,7 @@ VerticalLayout {
                                 // Interactive Text Selection Highlights on Secondary Page
                                 if root.has-selection: Rectangle {
                                     for sel-r in root.selection-rects: Rectangle {
-                                        if sel-r.page == root.current-page + 1: Rectangle {
+                                        if sel-r.page == root.secondary-page: Rectangle {
                                             x: sel-r.x;
                                             y: sel-r.y;
                                             width: sel-r.width;
@@ -4042,7 +4093,7 @@ VerticalLayout {
 
                                 // Embedded Document Links on Secondary Page
                                 for link in root.page-links: Rectangle {
-                                    if link.page == root.current-page + 1: Rectangle {
+                                    if link.page == root.secondary-page: Rectangle {
                                         x: link.x;
                                         y: link.y;
                                         width: link.width;

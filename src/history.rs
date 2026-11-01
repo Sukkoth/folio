@@ -18,6 +18,12 @@ pub struct AppConfig {
     pub open_tabs: Vec<String>,
     #[serde(default)]
     pub active_tab_index: usize,
+    #[serde(default = "default_dual_page_cover_alone")]
+    pub dual_page_cover_alone: bool,
+}
+
+fn default_dual_page_cover_alone() -> bool {
+    true
 }
 
 fn default_dark_mode() -> bool {
@@ -37,6 +43,7 @@ impl Default for AppConfig {
             sidebar_width: 350.0,
             open_tabs: Vec::new(),
             active_tab_index: 0,
+            dual_page_cover_alone: true,
         }
     }
 }
@@ -392,6 +399,7 @@ mod tests {
             sidebar_width: 420.0,
             open_tabs: vec!["/test/doc1.pdf".to_string(), "/test/doc2.pdf".to_string()],
             active_tab_index: 1,
+            dual_page_cover_alone: false,
         };
         save_app_config_to(&custom, &test_config_path);
 
@@ -402,12 +410,14 @@ mod tests {
         assert_eq!(loaded.sidebar_width, 420.0);
         assert_eq!(loaded.open_tabs, vec!["/test/doc1.pdf", "/test/doc2.pdf"]);
         assert_eq!(loaded.active_tab_index, 1);
+        assert_eq!(loaded.dual_page_cover_alone, false);
 
         // Update single field
         update_app_config_at(&test_config_path, |c| {
             c.paper_theme = 1;
             c.annotation_sort_mode = 2;
             c.sidebar_width = 460.0;
+            c.dual_page_cover_alone = true;
         });
 
         let updated = load_app_config_from(&test_config_path);
@@ -417,6 +427,7 @@ mod tests {
         assert_eq!(updated.sidebar_width, 460.0);
         assert_eq!(updated.open_tabs, vec!["/test/doc1.pdf", "/test/doc2.pdf"]);
         assert_eq!(updated.active_tab_index, 1);
+        assert_eq!(updated.dual_page_cover_alone, true);
 
         // Save open tabs
         save_open_tabs_at(&test_config_path, &["/test/doc3.pdf".to_string()], 0);
