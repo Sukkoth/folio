@@ -669,6 +669,8 @@ export component AppWindow inherits Window {
     callback zoom-out-at(int);
     callback zoom-reset();
     callback zoom-fit();
+    callback zoom-fit-width();
+    in-out property <bool> is-fit-width: false;
     callback set-view-mode(bool);
     callback visible-page-changed(int);
     callback toggle-sidebar();
@@ -689,6 +691,7 @@ export component AppWindow inherits Window {
     callback select-search-result(int);
 
     // Text selection & annotation callbacks
+    callback copy-selection();
     callback selection-started(int, length, length); // (page, x, y)
     callback selection-dragged(int, length, length); // (page, x, y)
     callback selection-completed(int, length, length); // (page, x, y)
@@ -750,8 +753,13 @@ export component AppWindow inherits Window {
         }
     }
 
-    
-keyboard-handler := FocusScope {
+    changed width => {
+        if (root.is-fit-width) {
+            root.zoom-fit-width();
+        }
+    }
+
+    keyboard-handler := FocusScope {
         init => { self.focus(); }
         key-pressed(event) => {
             if (event.modifiers.control || event.text == Key.Control || event.text == Key.ControlR || event.text == "\u{11}" || event.text == "\u{16}") {
@@ -763,8 +771,8 @@ keyboard-handler := FocusScope {
                 return accept;
             }
 
-            if (event.modifiers.control || event.text == "\u{1a}" || event.text == "\u{13}" || event.text == "\u{19}" || event.text == "\u{15}" || event.text == "\u{2}" || event.text == "\u{14}" || event.text == "\u{17}" || event.text == "\u{6}") {
-                if (event.modifiers.shift || (event.modifiers.control && (event.text == "Z" || event.text == "S"))) {
+            if (event.modifiers.control || event.text == "\u{1a}" || event.text == "\u{13}" || event.text == "\u{19}" || event.text == "\u{15}" || event.text == "\u{2}" || event.text == "\u{14}" || event.text == "\u{17}" || event.text == "\u{6}" || event.text == "\u{3}") {
+                if (event.modifiers.shift || (event.modifiers.control && (event.text == "Z" || event.text == "S" || event.text == "W" || event.text == "F"))) {
                     // Ctrl + Shift + S: Save As
                     if (event.text == "s" || event.text == "S" || event.text == "\u{13}") {
                         root.save-document-as();
@@ -772,6 +780,16 @@ keyboard-handler := FocusScope {
                     // Ctrl + Shift + Z: Redo
                     } else if (event.text == "z" || event.text == "Z" || event.text == "\u{1a}") {
                         root.redo();
+                        return accept;
+                    // Ctrl + Shift + W: Fit to Width
+                    } else if (event.text == "w" || event.text == "W" || event.text == "\u{17}") {
+                        root.is-fit-width = true;
+                        root.zoom-fit-width();
+                        return accept;
+                    // Ctrl + Shift + F: Fit to Page (Window)
+                    } else if (event.text == "f" || event.text == "F" || event.text == "\u{6}") {
+                        root.is-fit-width = false;
+                        root.zoom-fit();
                         return accept;
                     }
                 } else if (event.modifiers.alt) {
@@ -859,6 +877,12 @@ keyboard-handler := FocusScope {
                     } else if (event.text == "s" || event.text == "S" || event.text == "\u{13}") {
                         root.save-document();
                         return accept;
+                    // Ctrl + C: Copy selection or selected annotation
+                    } else if (event.text == "c" || event.text == "C" || event.text == "\u{3}") {
+                        if (root.has-selection || root.selected-annotation-id > 0) {
+                            root.copy-selection();
+                            return accept;
+                        }
                     // Ctrl + Z: Undo
                     } else if (event.text == "z" || event.text == "Z" || event.text == "\u{1a}") {
                         root.undo();
@@ -959,6 +983,10 @@ keyboard-handler := FocusScope {
                     return accept;
                 } else if (event.text == "t" || event.text == "T" || event.text == "p" || event.text == "P") {
                     root.cycle-paper-theme();
+                    return accept;
+                } else if (event.text == "w" || event.text == "W") {
+                    root.is-fit-width = true;
+                    root.zoom-fit-width();
                     return accept;
                 }
             }
@@ -1397,7 +1425,7 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
-                                    clicked => { root.zoom-out(); }
+                                    clicked => { root.is-fit-width = false; root.zoom-out(); }
                                 }
 
                                 Rectangle {
@@ -1416,7 +1444,7 @@ VerticalLayout {
                                     }
 
                                     zoom-ta := TouchArea {
-                                        clicked => { root.zoom-reset(); }
+                                        clicked => { root.is-fit-width = false; root.zoom-reset(); }
                                         mouse-cursor: pointer;
                                     }
                                 }
@@ -1427,7 +1455,7 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
-                                    clicked => { root.zoom-in(); }
+                                    clicked => { root.is-fit-width = false; root.zoom-in(); }
                                 }
 
                                 IconButton {
@@ -1436,7 +1464,17 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
-                                    clicked => { root.zoom-fit(); }
+                                    clicked => { root.is-fit-width = false; root.zoom-fit(); }
+                                }
+
+                                IconButton {
+                                    icon: @image-url("../assets/icons/fit-to-width.svg");
+                                    size: 30px;
+                                    icon-size: 18px;
+                                    border-radius: 15px;
+                                    active: root.is-fit-width;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.is-fit-width = true; root.zoom-fit-width(); }
                                 }
 
                                 IconButton {
@@ -3245,7 +3283,7 @@ VerticalLayout {
                                 if root.show-popup && root.popup-page == root.current-page: popup := Rectangle {
                                     x: round(root.popup-x / 1px) * 1px;
                                     y: round(root.popup-y / 1px) * 1px;
-                                    width: root.show-note-input ? max(root.note-input-width + 16px, 340px) : (root.selected-annotation-id > 0 ? 280px : 320px);
+                                    width: root.show-note-input ? max(root.note-input-width + 16px, 350px) : (root.selected-annotation-id > 0 ? 310px : 350px);
                                     height: root.show-note-input ? (root.note-input-height + 66px) : 54px;
                                     border-radius: 12px;
                                     background: Theme.card-bg;
@@ -3307,6 +3345,26 @@ VerticalLayout {
                                             HorizontalLayout {
                                                 spacing: 4px;
                                                 alignment: start;
+
+                                                // Copy Icon
+                                                Rectangle {
+                                                    width: 28px;
+                                                    height: 28px;
+                                                    border-radius: 6px;
+                                                    background: cp-ta-edit.has-hover ? Theme.hover-bg : transparent;
+                                                    Image {
+                                                        source: @image-url("../assets/icons/copy.svg");
+                                                        width: 17px;
+                                                        height: 17px;
+                                                        colorize: Theme.text-primary;
+                                                        x: (parent.width - self.width) / 2;
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                    cp-ta-edit := TouchArea {
+                                                        clicked => { root.copy-selection(); }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
 
                                                 Rectangle {
                                                     width: 28px;
@@ -3535,10 +3593,30 @@ VerticalLayout {
                                             spacing: 6px;
                                             alignment: space-between;
 
-                                            // 4 Action Icons + Done Button (if note active)
+                                            // Action Icons + Done Button (if note active)
                                             HorizontalLayout {
                                                 spacing: 3px;
                                                 alignment: start;
+
+                                                // Copy Icon
+                                                Rectangle {
+                                                    width: 28px;
+                                                    height: 28px;
+                                                    border-radius: 6px;
+                                                    background: cp-ta.has-hover ? Theme.hover-bg : transparent;
+                                                    Image {
+                                                        source: @image-url("../assets/icons/copy.svg");
+                                                        width: 17px;
+                                                        height: 17px;
+                                                        colorize: Theme.text-primary;
+                                                        x: (parent.width - self.width) / 2;
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                    cp-ta := TouchArea {
+                                                        clicked => { root.copy-selection(); }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
 
                                                 // Highlight Icon
                                                 Rectangle {
@@ -4303,7 +4381,7 @@ VerticalLayout {
                                 if root.show-popup && root.popup-page == page-item.page-index: popup2 := Rectangle {
                                     x: round(root.popup-x / 1px) * 1px;
                                     y: round(root.popup-y / 1px) * 1px;
-                                    width: root.show-note-input ? max(root.note-input-width + 16px, 340px) : (root.selected-annotation-id > 0 ? 280px : 320px);
+                                    width: root.show-note-input ? max(root.note-input-width + 16px, 350px) : (root.selected-annotation-id > 0 ? 310px : 350px);
                                     height: root.show-note-input ? (root.note-input-height + 66px) : 54px;
                                     border-radius: 12px;
                                     background: Theme.card-bg;
@@ -4365,6 +4443,26 @@ VerticalLayout {
                                             HorizontalLayout {
                                                 spacing: 4px;
                                                 alignment: start;
+
+                                                // Copy Icon
+                                                Rectangle {
+                                                    width: 28px;
+                                                    height: 28px;
+                                                    border-radius: 6px;
+                                                    background: cp-ta-edit2.has-hover ? Theme.hover-bg : transparent;
+                                                    Image {
+                                                        source: @image-url("../assets/icons/copy.svg");
+                                                        width: 17px;
+                                                        height: 17px;
+                                                        colorize: Theme.text-primary;
+                                                        x: (parent.width - self.width) / 2;
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                    cp-ta-edit2 := TouchArea {
+                                                        clicked => { root.copy-selection(); }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
 
                                                 Rectangle {
                                                     width: 28px;
@@ -4593,10 +4691,30 @@ VerticalLayout {
                                             spacing: 6px;
                                             alignment: space-between;
 
-                                            // 4 Action Icons + Done Button (if note active)
+                                            // Action Icons + Done Button (if note active)
                                             HorizontalLayout {
                                                 spacing: 3px;
                                                 alignment: start;
+
+                                                // Copy Icon
+                                                Rectangle {
+                                                    width: 28px;
+                                                    height: 28px;
+                                                    border-radius: 6px;
+                                                    background: cp-ta2.has-hover ? Theme.hover-bg : transparent;
+                                                    Image {
+                                                        source: @image-url("../assets/icons/copy.svg");
+                                                        width: 17px;
+                                                        height: 17px;
+                                                        colorize: Theme.text-primary;
+                                                        x: (parent.width - self.width) / 2;
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                    cp-ta2 := TouchArea {
+                                                        clicked => { root.copy-selection(); }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
 
                                                 // Highlight Icon
                                                 Rectangle {
@@ -4998,7 +5116,7 @@ VerticalLayout {
             IconButton {
                 icon: @image-url("../assets/icons/zoom-out.svg");
                 y: (parent.height - self.height) / 2;
-                clicked => { root.zoom-out(); }
+                clicked => { root.is-fit-width = false; root.zoom-out(); }
             }
 
             Text {
@@ -5013,13 +5131,20 @@ VerticalLayout {
             IconButton {
                 icon: @image-url("../assets/icons/zoom-in.svg");
                 y: (parent.height - self.height) / 2;
-                clicked => { root.zoom-in(); }
+                clicked => { root.is-fit-width = false; root.zoom-in(); }
             }
 
             IconButton {
-                icon: @image-url("../assets/icons/maximize.svg");
+                icon: @image-url("../assets/icons/fit-to-page.svg");
                 y: (parent.height - self.height) / 2;
-                clicked => { root.zoom-fit(); }
+                clicked => { root.is-fit-width = false; root.zoom-fit(); }
+            }
+
+            IconButton {
+                icon: @image-url("../assets/icons/fit-to-width.svg");
+                active: root.is-fit-width;
+                y: (parent.height - self.height) / 2;
+                clicked => { root.is-fit-width = true; root.zoom-fit-width(); }
             }
 
             IconButton {

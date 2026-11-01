@@ -3373,7 +3373,52 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
                     ui.set_show_note_input(false);
                     ui.set_current_note_text("".into());
                     ui.set_selected_annotation_id(-1);
-                ui.set_selected_annotation_kind("".into());
+                    ui.set_selected_annotation_kind("".into());
+                }
+            }
+        });
+    }
+
+    // Copy Selection or Active Annotation to Clipboard
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_copy_selection(move || {
+            let mut text_to_copy = String::new();
+            let annot_id = app_weak.upgrade().map(|ui| ui.get_selected_annotation_id()).unwrap_or(-1);
+
+            if let Ok(lock) = state_lock.lock() {
+                if let Some(s) = lock.as_ref() {
+                    if !s.active_selection_snippet.trim().is_empty() {
+                        text_to_copy = s.active_selection_snippet.clone();
+                    } else if annot_id > 0 {
+                        if let Some(a) = s.annotations.iter().find(|a| a.id == annot_id) {
+                            text_to_copy = if !a.snippet.is_empty() {
+                                a.snippet.clone()
+                            } else {
+                                a.comment.clone()
+                            };
+                        }
+                    }
+                }
+            }
+
+            if !text_to_copy.is_empty() {
+                match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text_to_copy)) {
+                    Ok(_) => {
+                        if let Some(ui) = app_weak.upgrade() {
+                            trigger_toast(&ui, "✓ Copied to clipboard");
+                            ui.set_has_selection(false);
+                            ui.set_show_popup(false);
+                            ui.set_show_note_input(false);
+                            ui.set_selected_annotation_id(-1);
+                            ui.set_selected_annotation_kind("".into());
+                            ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to copy to clipboard: {e}");
+                    }
                 }
             }
         });
@@ -4576,14 +4621,15 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
                 ui.set_suppress_page_change(true);
                 let phys_size = ui.window().size();
                 let scale_factor = ui.window().scale_factor().max(1.0);
-                let sidebar_w = if ui.get_show_sidebar() { 290.0 } else { 0.0 };
-                let avail_w = (phys_size.width as f32 / scale_factor) - 80.0 - sidebar_w;
-                let avail_h = (phys_size.height as f32 / scale_factor) - 120.0;
+                let sidebar_w = if ui.get_show_sidebar() { ui.get_sidebar_width() } else { 0.0 };
+                let avail_w = ((phys_size.width as f32 / scale_factor) - 88.0 - sidebar_w).max(100.0);
+                let avail_h = ((phys_size.height as f32 / scale_factor) - 120.0).max(100.0);
 
                 let factor = if let Ok(lock) = state_lock.lock() {
                     if let Some(s) = lock.as_ref() {
                         let (pw, ph) = s.get_page_size(s.current_page);
-                        let fit_w = avail_w / pw.max(1.0);
+                        let total_w = if s.is_dual_page { pw * 2.0 + 24.0 } else { pw };
+                        let fit_w = avail_w / total_w.max(1.0);
                         let fit_h = avail_h / ph.max(1.0);
                         let target_zoom = fit_w.min(fit_h).clamp(0.2, 5.0);
                         target_zoom / s.zoom_level
@@ -4597,6 +4643,39 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
             }
         });
     }
+
+    // Zoom Fit Width
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_zoom_fit_width(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_suppress_page_change(true);
+                let phys_size = ui.window().size();
+                let scale_factor = ui.window().scale_factor().max(1.0);
+                let sidebar_w = if ui.get_show_sidebar() { ui.get_sidebar_width() } else { 0.0 };
+                let avail_w = ((phys_size.width as f32 / scale_factor) - 88.0 - sidebar_w).max(100.0);
+
+                let factor = if let Ok(lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_ref() {
+                        let (pw, _) = s.get_page_size(s.current_page);
+                        let target_zoom = compute_fit_width_zoom(avail_w, pw, s.is_dual_page);
+                        target_zoom / s.zoom_level
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                };
+                perform_zoom(&ui, &state_lock, factor, None);
+            }
+        });
+    }
+}
+
+pub fn compute_fit_width_zoom(avail_w: f32, page_w_pt: f32, is_dual_page: bool) -> f32 {
+    let total_w = if is_dual_page { page_w_pt * 2.0 + 24.0 } else { page_w_pt };
+    (avail_w / total_w.max(1.0)).clamp(0.2, 5.0)
 }
 
 static LAST_ZOOM_INSTANT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
@@ -5777,5 +5856,97 @@ mod tests {
         assert_eq!(cli_target_new_idx, Some(3)); // points to new doc4
 
         let _ = std::fs::remove_file(&test_config_path);
+    }
+
+    #[test]
+    fn test_compute_fit_width_zoom() {
+        let page_w = 595.0;
+
+        // Viewport 1190px available: exactly 2.0x zoom
+        let z = compute_fit_width_zoom(1190.0, page_w, false);
+        assert!((z - 2.0).abs() < 1e-4);
+
+        // Viewport 595px available: 1.0x zoom
+        let z = compute_fit_width_zoom(595.0, page_w, false);
+        assert!((z - 1.0).abs() < 1e-4);
+
+        // Very narrow screen: clamped to min 0.2
+        let z = compute_fit_width_zoom(50.0, page_w, false);
+        assert_eq!(z, 0.2);
+
+        // Ultra-wide screen: clamped to max 5.0
+        let z = compute_fit_width_zoom(10000.0, page_w, false);
+        assert_eq!(z, 5.0);
+
+        // Dual page mode: two pages side-by-side + 24px gap = 595*2 + 24 = 1214.0 pt
+        let z_dual = compute_fit_width_zoom(1214.0, page_w, true);
+        assert!((z_dual - 1.0).abs() < 1e-4);
+
+        let z_dual_2x = compute_fit_width_zoom(2428.0, page_w, true);
+        assert!((z_dual_2x - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_copy_selection_snippet_resolution() {
+        let selections = vec![
+            PageSelection {
+                page: 0,
+                snippet: "First line of selected text.".to_string(),
+                line_rects_pt: vec![(10.0, 10.0, 100.0, 20.0)],
+            },
+            PageSelection {
+                page: 1,
+                snippet: "Second line on next page.".to_string(),
+                line_rects_pt: vec![(10.0, 10.0, 100.0, 20.0)],
+            },
+        ];
+
+        let combined = selections.iter().map(|p| p.snippet.as_str()).collect::<Vec<_>>().join("\n");
+        assert_eq!(combined, "First line of selected text.\nSecond line on next page.");
+
+        // Fallback to annotation snippet or comment
+        let annot_with_snippet = AnnotationRecord {
+            id: 1,
+            page: 0,
+            kind: "highlight".to_string(),
+            color_index: 0,
+            color_hex: "#ffff00".to_string(),
+            snippet: "Annotated snippet text".to_string(),
+            comment: "User note".to_string(),
+            line_rects_pt: vec![],
+            is_from_pdf: false,
+            creation_date: "".to_string(),
+            mod_date: "".to_string(),
+            author: "Tester".to_string(),
+        };
+
+        let copy_text_1 = if !annot_with_snippet.snippet.is_empty() {
+            annot_with_snippet.snippet.clone()
+        } else {
+            annot_with_snippet.comment.clone()
+        };
+        assert_eq!(copy_text_1, "Annotated snippet text");
+
+        let annot_note_only = AnnotationRecord {
+            id: 2,
+            page: 0,
+            kind: "note".to_string(),
+            color_index: 0,
+            color_hex: "#ffff00".to_string(),
+            snippet: "".to_string(),
+            comment: "Standalone user comment".to_string(),
+            line_rects_pt: vec![],
+            is_from_pdf: false,
+            creation_date: "".to_string(),
+            mod_date: "".to_string(),
+            author: "Tester".to_string(),
+        };
+
+        let copy_text_2 = if !annot_note_only.snippet.is_empty() {
+            annot_note_only.snippet.clone()
+        } else {
+            annot_note_only.comment.clone()
+        };
+        assert_eq!(copy_text_2, "Standalone user comment");
     }
 }
