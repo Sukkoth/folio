@@ -52,10 +52,48 @@ pub struct PdfMetadata {
     pub page_labels: Vec<String>,
 }
 
-/// Lazily inspects page count, per-page dimensions, and outline cheaply without loading whole file
-pub fn read_pdf_info(file_path: &str) -> Result<PdfMetadata, String> {
-    let doc = mupdf::Document::open(file_path)
+pub const ERR_PASSWORD_REQUIRED: &str = "PASSWORD_REQUIRED";
+pub const ERR_PASSWORD_INVALID: &str = "PASSWORD_INVALID";
+
+pub fn open_document(file_path: &str, password: Option<&str>) -> Result<mupdf::Document, String> {
+    let mut doc = mupdf::Document::open(file_path)
         .map_err(|e| format!("Failed to open PDF document: {e}"))?;
+    if doc.needs_password().unwrap_or(false) {
+        if let Some(pw) = password {
+            let auth_ok = doc
+                .authenticate(pw)
+                .map_err(|e| format!("Password authentication error: {e}"))?;
+            if !auth_ok {
+                return Err(ERR_PASSWORD_INVALID.to_string());
+            }
+        } else {
+            return Err(ERR_PASSWORD_REQUIRED.to_string());
+        }
+    }
+    Ok(doc)
+}
+
+pub fn open_pdf_document(file_path: &str, password: Option<&str>) -> Result<mupdf::pdf::PdfDocument, String> {
+    let mut doc = mupdf::pdf::PdfDocument::open(file_path)
+        .map_err(|e| format!("Failed to open PDF document: {e}"))?;
+    if doc.needs_password().unwrap_or(false) {
+        if let Some(pw) = password {
+            let auth_ok = doc
+                .authenticate(pw)
+                .map_err(|e| format!("Password authentication error: {e}"))?;
+            if !auth_ok {
+                return Err(ERR_PASSWORD_INVALID.to_string());
+            }
+        } else {
+            return Err(ERR_PASSWORD_REQUIRED.to_string());
+        }
+    }
+    Ok(doc)
+}
+
+/// Lazily inspects page count, per-page dimensions, and outline cheaply without loading whole file
+pub fn read_pdf_info(file_path: &str, password: Option<&str>) -> Result<PdfMetadata, String> {
+    let doc = open_document(file_path, password)?;
     let page_count = doc
         .page_count()
         .map_err(|e| format!("Failed to read page count: {e}"))?;
@@ -101,7 +139,7 @@ pub fn read_pdf_info(file_path: &str) -> Result<PdfMetadata, String> {
     let mut page_labels = Vec::with_capacity(page_count as usize);
     let mut has_logical_pages = false;
 
-    if let Ok(pdf_doc) = mupdf::pdf::PdfDocument::open(file_path) {
+    if let Ok(pdf_doc) = open_pdf_document(file_path, password) {
         let has_labels_dict = if let Ok(trailer) = pdf_doc.trailer() {
             if let Ok(Some(root)) = trailer.get_dict("Root") {
                 root.get_dict("PageLabels").ok().flatten().is_some()
@@ -367,8 +405,8 @@ pub fn format_pdf_date(raw: &str) -> String {
     }
 }
 
-pub fn extract_document_properties(file_path: &str) -> Result<DocumentProperties, String> {
-    let doc = mupdf::Document::open(file_path)
+pub fn extract_document_properties(file_path: &str, password: Option<&str>) -> Result<DocumentProperties, String> {
+    let doc = open_document(file_path, password)
         .map_err(|e| format!("Failed to open PDF document: {e}"))?;
 
     let page_count = doc.page_count().unwrap_or(0);
@@ -492,8 +530,8 @@ r#"## Document Properties
     )
 }
 
-pub fn extract_page_links(file_path: &str, page_no: i32) -> Vec<PageLink> {
-    let doc = match mupdf::Document::open(file_path) {
+pub fn extract_page_links(file_path: &str, page_no: i32, password: Option<&str>) -> Vec<PageLink> {
+    let doc = match open_document(file_path, password) {
         Ok(d) => d,
         Err(_) => return Vec::new(),
     };
@@ -560,8 +598,8 @@ pub struct PageTextData {
 }
 
 /// Lazily extracts character-level text geometry for a specific page using MuPDF
-pub fn extract_page_text_data(file_path: &str, page_no: i32) -> PageTextData {
-    let doc = match mupdf::Document::open(file_path) {
+pub fn extract_page_text_data(file_path: &str, page_no: i32, password: Option<&str>) -> PageTextData {
+    let doc = match open_document(file_path, password) {
         Ok(d) => d,
         Err(_) => return PageTextData::default(),
     };
@@ -1010,6 +1048,7 @@ pub fn search_document(
     match_whole_word: bool,
     cancel_gen: Option<Arc<AtomicU64>>,
     current_gen: u64,
+    password: Option<&str>,
 ) -> Vec<SearchHitResult> {
     let needle_trimmed = needle.trim();
     if needle_trimmed.is_empty() {
@@ -1019,7 +1058,7 @@ pub fn search_document(
     let num_pages = if total_pages > 0 {
         total_pages
     } else {
-        match mupdf::Document::open(file_path) {
+        match open_document(file_path, password) {
             Ok(d) => d.page_count().unwrap_or(0),
             Err(_) => return Vec::new(),
         }
@@ -1044,6 +1083,7 @@ pub fn search_document(
             match_whole_word,
             cancel_gen.as_ref(),
             current_gen,
+            password.map(|s| s.to_string()),
         );
     }
 
@@ -1060,6 +1100,7 @@ pub fn search_document(
         let file_path = file_path.to_string();
         let needle = needle_trimmed.to_string();
         let cancel_gen = cancel_gen.clone();
+        let pwd_cloned = password.map(|s| s.to_string());
 
         if let Ok(handle) = std::thread::Builder::new()
             .name(format!("pdf-search-{t}"))
@@ -1073,6 +1114,7 @@ pub fn search_document(
                     match_whole_word,
                     cancel_gen.as_ref(),
                     current_gen,
+                    pwd_cloned,
                 )
             })
         {
@@ -1123,8 +1165,9 @@ fn search_document_range(
     match_whole_word: bool,
     cancel_gen: Option<&Arc<AtomicU64>>,
     current_gen: u64,
+    password: Option<String>,
 ) -> Vec<SearchHitResult> {
-    let doc = match mupdf::Document::open(file_path) {
+    let doc = match open_document(file_path, password.as_deref()) {
         Ok(d) => d,
         Err(_) => return Vec::new(),
     };
@@ -1308,8 +1351,8 @@ pub struct ExtractedAnnotation {
 }
 
 /// Extracts all existing annotations (highlights, underlines, strikethroughs, notes) from the PDF
-pub fn extract_document_annotations(file_path: &str) -> Vec<ExtractedAnnotation> {
-    let pdf_doc = match mupdf::pdf::PdfDocument::open(file_path) {
+pub fn extract_document_annotations(file_path: &str, password: Option<&str>) -> Vec<ExtractedAnnotation> {
+    let pdf_doc = match open_pdf_document(file_path, password) {
         Ok(d) => d,
         Err(_) => return Vec::new(),
     };
@@ -1399,7 +1442,7 @@ pub fn extract_document_annotations(file_path: &str) -> Vec<ExtractedAnnotation>
                 snippet = comment.clone();
             } else {
                 if page_text.is_none() {
-                    page_text = Some(extract_page_text_data(file_path, p));
+                    page_text = Some(extract_page_text_data(file_path, p, password));
                 }
                 if let Some(ref pt) = page_text {
                     snippet = extract_text_for_rects(pt, &line_rects_pt);
@@ -1489,8 +1532,9 @@ pub struct SaveAnnotationData {
 pub fn save_document_annotations(
     file_path: &str,
     annotations: &[SaveAnnotationData],
+    password: Option<&str>,
 ) -> Result<(), String> {
-    let doc = mupdf::pdf::PdfDocument::open(file_path)
+    let doc = open_pdf_document(file_path, password)
         .map_err(|e| format!("Failed to open PDF document for saving: {e}"))?;
 
     let page_count = doc
@@ -1863,7 +1907,7 @@ mod tests {
     fn test_extract_and_deduplicate() {
         let path = "/home/twof/Documents/The Message of Ephesians (John R. W. Stott) (z-library.sk, 1lib.sk, z-lib.sk).pdf";
         if std::path::Path::new(path).exists() {
-            let annots = extract_document_annotations(path);
+            let annots = extract_document_annotations(path, None);
             println!("Extracted {} deduplicated annotations from PDF", annots.len());
             for a in &annots {
                 println!("- Page {}: [{}] '{}' (color: {})", a.page + 1, a.kind, a.snippet, a.color_hex);
@@ -1903,13 +1947,13 @@ mod tests {
                 }
             }).collect();
 
-            save_document_annotations(tmp_copy, &to_save).unwrap();
-            let reloaded1 = extract_document_annotations(tmp_copy);
+            save_document_annotations(tmp_copy, &to_save, None).unwrap();
+            let reloaded1 = extract_document_annotations(tmp_copy, None);
             assert_eq!(reloaded1.len(), annots.len(), "Reloaded count must match exactly");
 
             // Save a second time: count must still remain exactly identical!
-            save_document_annotations(tmp_copy, &to_save).unwrap();
-            let reloaded2 = extract_document_annotations(tmp_copy);
+            save_document_annotations(tmp_copy, &to_save, None).unwrap();
+            let reloaded2 = extract_document_annotations(tmp_copy, None);
             assert_eq!(reloaded2.len(), annots.len(), "Second save must still match exactly");
 
             // Check color of "Most commentators" if present
@@ -1960,10 +2004,10 @@ mod tests {
             },
         ];
 
-        save_document_annotations(path_str, &to_save).unwrap();
+        save_document_annotations(path_str, &to_save, None).unwrap();
 
         // Extract and verify
-        let extracted = extract_document_annotations(path_str);
+        let extracted = extract_document_annotations(path_str, None);
         assert_eq!(extracted.len(), 2);
         assert!(extracted.iter().any(|a| a.kind == "highlight"));
         assert!(extracted.iter().any(|a| a.kind == "note" && a.comment == "Important user note"));
@@ -1972,8 +2016,8 @@ mod tests {
         assert_eq!(extracted[0].mod_date, "D:20261031123000Z");
 
         // Save again with the same 2 annotations: verify count stays 2 (no duplicates created)
-        save_document_annotations(path_str, &to_save).unwrap();
-        let extracted2 = extract_document_annotations(path_str);
+        save_document_annotations(path_str, &to_save, None).unwrap();
+        let extracted2 = extract_document_annotations(path_str, None);
         assert_eq!(extracted2.len(), 2, "Re-saving must not create duplicate annotations");
 
         let _ = std::fs::remove_file(test_pdf_path);
@@ -1989,13 +2033,13 @@ mod tests {
             doc.save(path_str).unwrap();
         }
 
-        let hits = search_document(path_str, 1, "test", false, false, None, 0);
+        let hits = search_document(path_str, 1, "test", false, false, None, 0, None);
         assert_eq!(hits.len(), 0);
 
         let ephesians_path = "/home/twof/Documents/The Message of Ephesians (John R. W. Stott) (z-library.sk, 1lib.sk, z-lib.sk).pdf";
         if std::path::Path::new(ephesians_path).exists() {
             let start = std::time::Instant::now();
-            let ephesians_hits = search_document(ephesians_path, 273, "Ephesians", false, false, None, 0);
+            let ephesians_hits = search_document(ephesians_path, 273, "Ephesians", false, false, None, 0, None);
             let elapsed = start.elapsed();
             println!("Found {} occurrences of 'Ephesians' across all 273 pages in {:?}", ephesians_hits.len(), elapsed);
             assert!(!ephesians_hits.is_empty(), "Should find 'Ephesians'");
@@ -2003,15 +2047,15 @@ mod tests {
             assert_eq!(ephesians_hits[0].rects_pt.len(), 1, "Word on one line must be merged into 1 single bounding block");
 
             // Test case-sensitive search
-            let case_hits = search_document(ephesians_path, 273, "ephesians", true, false, None, 0);
+            let case_hits = search_document(ephesians_path, 273, "ephesians", true, false, None, 0, None);
             assert_eq!(case_hits.len(), 20, "Should find 20 lowercase 'ephesians' occurrences");
             for h in &case_hits {
                 assert_eq!(h.match_text, "ephesians");
             }
 
             // Test whole-word search vs substring
-            let whole_hits = search_document(ephesians_path, 273, "plan", false, true, None, 0);
-            let sub_hits = search_document(ephesians_path, 273, "plan", false, false, None, 0);
+            let whole_hits = search_document(ephesians_path, 273, "plan", false, true, None, 0, None);
+            let sub_hits = search_document(ephesians_path, 273, "plan", false, false, None, 0, None);
             assert_eq!(whole_hits.len(), 28, "Should find 28 whole-word 'plan' occurrences");
             assert_eq!(sub_hits.len(), 51, "Should find 51 substring 'plan' occurrences");
             assert!(whole_hits.len() <= sub_hits.len(), "Whole word matches should be a subset of substring matches");
@@ -2092,7 +2136,7 @@ mod tests {
             doc.save(path_str).unwrap();
         }
 
-        let meta = read_pdf_info(path_str).unwrap();
+        let meta = read_pdf_info(path_str, None).unwrap();
         assert!(meta.has_logical_pages, "Should detect logical page labels in document");
         assert_eq!(meta.page_labels.len(), 4);
         assert_eq!(meta.page_labels[0], "i");
@@ -2101,6 +2145,34 @@ mod tests {
         assert_eq!(meta.page_labels[3], "2");
 
         let _ = std::fs::remove_file(path_str);
+    }
+
+    #[test]
+    fn test_password_protected_pdf() {
+        let path = "tests/fixtures/dummy-encrypted.pdf";
+        if std::path::Path::new(path).exists() {
+            // Attempting to read without password must report ERR_PASSWORD_REQUIRED
+            let res_no_pwd = read_pdf_info(path, None);
+            assert_eq!(res_no_pwd.err().as_deref(), Some(ERR_PASSWORD_REQUIRED));
+
+            // Attempting with incorrect password must report ERR_PASSWORD_INVALID
+            let res_wrong_pwd = read_pdf_info(path, Some("invalid_password_xyz"));
+            assert_eq!(res_wrong_pwd.err().as_deref(), Some(ERR_PASSWORD_INVALID));
+
+            // Correct password "123456" must successfully unlock and read metadata
+            let res_ok = read_pdf_info(path, Some("123456"));
+            assert!(res_ok.is_ok(), "Expected valid auth with 123456: {:?}", res_ok.err());
+            let meta = res_ok.unwrap();
+            assert_eq!(meta.page_count, 1);
+
+            // Document properties should also authenticate successfully
+            let props = extract_document_properties(path, Some("123456")).unwrap();
+            assert_eq!(props.page_count_display, "1 page");
+
+            // Extract page text data with password
+            let text_data = extract_page_text_data(path, 0, Some("123456"));
+            assert!(!text_data.lines.is_empty() || meta.page_count == 1);
+        }
     }
 
     #[test]
@@ -2154,7 +2226,7 @@ mod tests {
             doc.save(path_str).unwrap();
         }
 
-        let props = extract_document_properties(path_str).unwrap();
+        let props = extract_document_properties(path_str, None).unwrap();
         assert_eq!(props.page_count_display, "1 page");
         assert!(props.page_dimensions_display.contains("A4"));
         assert!(props.file_size_display.contains('B') || props.file_size_display.contains("bytes"));

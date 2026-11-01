@@ -64,7 +64,7 @@ pub enum WorkerMessage {
     Render(RenderRequest),
     #[allow(dead_code)]
     Reload,
-    SwitchDocument(String),
+    SwitchDocument(String, Option<String>),
 }
 
 pub struct PdfWorker {
@@ -73,7 +73,7 @@ pub struct PdfWorker {
 }
 
 impl PdfWorker {
-    pub fn spawn<F>(file_path: String, on_rendered: F) -> Result<Self, String>
+    pub fn spawn<F>(file_path: String, password: Option<String>, on_rendered: F) -> Result<Self, String>
     where
         F: Fn(RenderedPage) + Send + Sync + 'static,
     {
@@ -86,7 +86,7 @@ impl PdfWorker {
         thread::Builder::new()
             .name("pdf-worker".to_string())
             .spawn(move || {
-                worker_loop(file_path, receiver, worker_gen, callback);
+                worker_loop(file_path, password, receiver, worker_gen, callback);
             })
             .map_err(|e| format!("Failed to spawn worker thread: {e}"))?;
 
@@ -100,8 +100,8 @@ impl PdfWorker {
         let _ = self.sender.send(WorkerMessage::Render(req));
     }
 
-    pub fn switch_document(&self, new_path: String) {
-        let _ = self.sender.send(WorkerMessage::SwitchDocument(new_path));
+    pub fn switch_document(&self, new_path: String, password: Option<String>) {
+        let _ = self.sender.send(WorkerMessage::SwitchDocument(new_path, password));
     }
 
     #[allow(dead_code)]
@@ -120,12 +120,14 @@ impl PdfWorker {
 
 fn worker_loop(
     file_path: String,
+    password: Option<String>,
     receiver: Receiver<WorkerMessage>,
     current_generation: Arc<AtomicU64>,
     on_rendered: Arc<dyn Fn(RenderedPage) + Send + Sync + 'static>,
 ) {
     let mut file_path = file_path;
-    let mut doc = match mupdf::Document::open(&file_path) {
+    let mut password = password;
+    let mut doc = match crate::pdf::open_document(&file_path, password.as_deref()) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("PDF worker failed to open {file_path}: {e}");
@@ -135,14 +137,15 @@ fn worker_loop(
 
     while let Ok(msg) = receiver.recv() {
         match msg {
-            WorkerMessage::SwitchDocument(new_path) => {
-                if let Ok(new_doc) = mupdf::Document::open(&new_path) {
+            WorkerMessage::SwitchDocument(new_path, new_pwd) => {
+                if let Ok(new_doc) = crate::pdf::open_document(&new_path, new_pwd.as_deref()) {
                     doc = new_doc;
                     file_path = new_path;
+                    password = new_pwd;
                 }
             }
             WorkerMessage::Reload => {
-                if let Ok(new_doc) = mupdf::Document::open(&file_path) {
+                if let Ok(new_doc) = crate::pdf::open_document(&file_path, password.as_deref()) {
                     doc = new_doc;
                 }
             }

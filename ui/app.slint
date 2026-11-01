@@ -584,6 +584,27 @@ export component AppWindow inherits Window {
     in property <bool> can-undo: false;
     in property <bool> can-redo: false;
 
+    // Password Unlock Modal
+    in-out property <bool> show-password-modal: false;
+    in-out property <string> password-file-name: "";
+    in-out property <string> password-input: "";
+    in-out property <string> password-error: "";
+    callback submit-password(string);
+    callback cancel-password();
+
+    // Print Modal
+    in-out property <bool> show-print-modal: false;
+    in-out property <[string]> available-printers: [];
+    in-out property <string> selected-printer: "";
+    in-out property <int> print-page-mode: 0; // 0: all, 1: current, 2: custom
+    in-out property <string> print-page-range: "";
+    in-out property <int> print-copies: 1;
+    in-out property <string> print-error: "";
+    callback open-print-dialog();
+    callback cycle-printer();
+    callback request-print(string, int, string, int); // (printer, mode, range, copies)
+    callback cancel-print();
+
     in-out property <bool> is-scroll-view: true;
     in-out property <length> scroll-content-y: 0px;
     in property <length> scroll-item-height: 842px + 24px;
@@ -924,6 +945,10 @@ export component AppWindow inherits Window {
                     } else if (event.text == "d" || event.text == "D" || (event.modifiers.control && event.text == "\u{4}")) {
                         root.show-doc-info = !root.show-doc-info;
                         return accept;
+                    // Ctrl + P: Print Document
+                    } else if (event.text == "p" || event.text == "P" || (event.modifiers.control && event.text == "\u{10}")) {
+                        root.open-print-dialog();
+                        return accept;
                     } else if (event.text == "b" || event.text == "B" || event.text == "\u{2}") {
                         root.toggle-sidebar();
                         return accept;
@@ -931,6 +956,14 @@ export component AppWindow inherits Window {
                 }
             } else {
                 if (event.text == Key.Escape) {
+                    if (root.show-password-modal) {
+                        root.cancel-password();
+                        return accept;
+                    }
+                    if (root.show-print-modal) {
+                        root.cancel-print();
+                        return accept;
+                    }
                     if (root.show-tab-menu) {
                         root.show-tab-menu = false;
                         return accept;
@@ -953,6 +986,15 @@ export component AppWindow inherits Window {
                     }
                     if (root.is-zen-mode) {
                         root.exit-zen-mode();
+                        return accept;
+                    }
+                } else if (event.text == Key.Return) {
+                    if (root.show-password-modal) {
+                        root.submit-password(root.password-input);
+                        return accept;
+                    }
+                    if (root.show-print-modal) {
+                        root.request-print(root.selected-printer, root.print-page-mode, root.print-page-range, root.print-copies);
                         return accept;
                     }
                 } else if (root.selected-annotation-id > 0) {
@@ -1524,6 +1566,22 @@ VerticalLayout {
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
                                     clicked => { root.show-doc-info = true; }
+                                }
+
+                                Rectangle {
+                                    width: 1px;
+                                    height: 20px;
+                                    background: Theme.border;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                IconButton {
+                                    icon: @image-url("../assets/icons/printer.svg");
+                                    size: 30px;
+                                    icon-size: 18px;
+                                    border-radius: 15px;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.open-print-dialog(); }
                                 }
                             }
                         }
@@ -5973,6 +6031,49 @@ VerticalLayout {
                             mouse-cursor: pointer;
                         }
                     }
+
+                    // Print Document Button
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 16px;
+                        background: doc-info-print-ta.has-hover ? Theme.hover-bg : Theme.surface-subtle;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        animate background { duration: 80ms; }
+                        y: (parent.height - self.height) / 2;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            Image {
+                                source: @image-url("../assets/icons/printer.svg");
+                                width: 15px;
+                                height: 15px;
+                                colorize: Theme.text-primary;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            Text {
+                                text: "Print";
+                                font-family: "Inter";
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        doc-info-print-ta := TouchArea {
+                            clicked => {
+                                root.show-doc-info = false;
+                                root.open-print-dialog();
+                            }
+                            mouse-cursor: pointer;
+                        }
+                    }
                 }
 
                 // Done Close Button
@@ -6003,6 +6104,602 @@ VerticalLayout {
                     done-ta := TouchArea {
                         clicked => {
                             root.show-doc-info = false;
+                        }
+                        mouse-cursor: pointer;
+                    }
+                }
+            }
+        }
+    }
+
+    // Password Modal Backdrop TouchArea
+    if root.show-password-modal: TouchArea {
+        width: 100%;
+        height: 100%;
+        z: 205;
+        clicked => { root.cancel-password(); }
+    }
+
+    // Password Modal Dim Backdrop
+    if root.show-password-modal: Rectangle {
+        width: 100%;
+        height: 100%;
+        z: 210;
+        background: Theme.dark ? #000000a6 : #00000045;
+        animate background { duration: 140ms; }
+    }
+
+    // Password Modal Card
+    if root.show-password-modal: Rectangle {
+        width: root.width > 500px ? 440px : root.width - 32px;
+        height: pwd-modal-vl.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        z: 215;
+        background: Theme.card-bg;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 32px;
+        drop-shadow-color: Theme.dark ? #000000bb : #00000028;
+
+        pwd-modal-vl := VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            alignment: start;
+
+            // Header with Lock Icon Badge
+            HorizontalLayout {
+                spacing: 14px;
+                alignment: start;
+
+                Rectangle {
+                    width: 44px;
+                    height: 44px;
+                    border-radius: 22px;
+                    background: Theme.accent-subtle;
+                    border-width: 1px;
+                    border-color: Theme.accent-border;
+                    y: (parent.height - self.height) / 2;
+
+                    Image {
+                        source: @image-url("../assets/icons/lock.svg");
+                        width: 20px;
+                        height: 20px;
+                        colorize: Theme.accent;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 3px;
+                    alignment: center;
+
+                    Text {
+                        text: "Password Required";
+                        font-family: "Inter";
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                    }
+
+                    Text {
+                        text: root.password-file-name != "" ? root.password-file-name : "Encrypted Document";
+                        font-family: "Inter";
+                        font-size: 13px;
+                        color: Theme.text-secondary;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            Text {
+                text: "This document is password protected. Enter the password below to decrypt and read it.";
+                font-family: "Inter";
+                font-size: 13px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            // Password Input Box
+            Rectangle {
+                height: 42px;
+                border-radius: 8px;
+                background: Theme.surface-subtle;
+                border-width: 1.5px;
+                border-color: root.password-error != "" ? #e06c75 : pwd-input-box.has-focus ? Theme.accent : Theme.border;
+
+                pwd-input-box := TextInput {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: parent.height;
+                    text <=> root.password-input;
+                    input-type: password;
+                    font-family: "Inter";
+                    font-size: 14px;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                    accepted => {
+                        root.submit-password(self.text);
+                    }
+                }
+            }
+
+            if root.password-error != "": Text {
+                text: root.password-error;
+                font-family: "Inter";
+                font-size: 12px;
+                font-weight: 600;
+                color: #e06c75;
+            }
+
+            // Divider
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
+            // Action Buttons
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+
+                // Cancel Button
+                Rectangle {
+                    height: 36px;
+                    border-radius: 18px;
+                    background: cancel-pwd-ta.has-hover ? Theme.hover-bg : Theme.surface-subtle;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    animate background { duration: 80ms; }
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        alignment: center;
+
+                        Text {
+                            text: "Cancel";
+                            font-family: "Inter";
+                            font-size: 13px;
+                            font-weight: 600;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    cancel-pwd-ta := TouchArea {
+                        clicked => { root.cancel-password(); }
+                        mouse-cursor: pointer;
+                    }
+                }
+
+                // Unlock Button
+                Rectangle {
+                    height: 36px;
+                    border-radius: 18px;
+                    background: unlock-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    border-width: 1px;
+                    border-color: Theme.accent-border;
+                    animate background { duration: 80ms; }
+
+                    HorizontalLayout {
+                        padding-left: 20px;
+                        padding-right: 20px;
+                        alignment: center;
+
+                        Text {
+                            text: "Unlock";
+                            font-family: "Inter";
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: Theme.on-accent;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    unlock-ta := TouchArea {
+                        clicked => { root.submit-password(root.password-input); }
+                        mouse-cursor: pointer;
+                    }
+                }
+            }
+        }
+    }
+
+    // Print Modal Backdrop TouchArea
+    if root.show-print-modal: TouchArea {
+        width: 100%;
+        height: 100%;
+        z: 205;
+        clicked => { root.cancel-print(); }
+    }
+
+    // Print Modal Dim Backdrop
+    if root.show-print-modal: Rectangle {
+        width: 100%;
+        height: 100%;
+        z: 210;
+        background: Theme.dark ? #000000a6 : #00000045;
+        animate background { duration: 140ms; }
+    }
+
+    // Print Modal Card
+    if root.show-print-modal: Rectangle {
+        width: root.width > 540px ? 480px : root.width - 32px;
+        height: print-modal-vl.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        z: 215;
+        background: Theme.card-bg;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 32px;
+        drop-shadow-color: Theme.dark ? #000000bb : #00000028;
+
+        print-modal-vl := VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            alignment: start;
+
+            // Header with Printer Icon Badge
+            HorizontalLayout {
+                spacing: 14px;
+                alignment: start;
+
+                Rectangle {
+                    width: 44px;
+                    height: 44px;
+                    border-radius: 22px;
+                    background: Theme.accent-subtle;
+                    border-width: 1px;
+                    border-color: Theme.accent-border;
+                    y: (parent.height - self.height) / 2;
+
+                    Image {
+                        source: @image-url("../assets/icons/printer.svg");
+                        width: 20px;
+                        height: 20px;
+                        colorize: Theme.accent;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 3px;
+                    alignment: center;
+
+                    Text {
+                        text: "Print Document";
+                        font-family: "Inter";
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                    }
+
+                    Text {
+                        text: root.file-title != "" ? root.file-title : "Current Document";
+                        font-family: "Inter";
+                        font-size: 13px;
+                        color: Theme.text-secondary;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            // Section: Printer Selection
+            VerticalLayout {
+                spacing: 6px;
+
+                Text {
+                    text: "Printer Destination";
+                    font-family: "Inter";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                }
+
+                Rectangle {
+                    height: 38px;
+                    border-radius: 8px;
+                    background: Theme.surface-subtle;
+                    border-width: 1px;
+                    border-color: Theme.border;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        alignment: space-between;
+
+                        Text {
+                            text: root.selected-printer != "" ? root.selected-printer : "Default System Printer";
+                            font-family: "Inter";
+                            font-size: 13px;
+                            font-weight: 600;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+
+                        Image {
+                            source: @image-url("../assets/icons/chevron-down.svg");
+                            width: 16px;
+                            height: 16px;
+                            colorize: Theme.text-secondary;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.cycle-printer();
+                        }
+                        mouse-cursor: pointer;
+                    }
+                }
+            }
+
+            // Section: Pages to Print
+            VerticalLayout {
+                spacing: 8px;
+
+                Text {
+                    text: "Pages";
+                    font-family: "Inter";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    // All Pages Pill
+                    Rectangle {
+                        height: 34px;
+                        border-radius: 8px;
+                        background: root.print-page-mode == 0 ? Theme.accent-subtle : Theme.surface-subtle;
+                        border-width: 1px;
+                        border-color: root.print-page-mode == 0 ? Theme.accent : Theme.border;
+                        animate background { duration: 80ms; }
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            alignment: center;
+
+                            Text {
+                                text: "All (" + root.total-pages + ")";
+                                font-family: "Inter";
+                                font-size: 12px;
+                                font-weight: root.print-page-mode == 0 ? 700 : 500;
+                                color: root.print-page-mode == 0 ? Theme.accent : Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        TouchArea {
+                            clicked => { root.print-page-mode = 0; }
+                            mouse-cursor: pointer;
+                        }
+                    }
+
+                    // Current Page Pill
+                    Rectangle {
+                        height: 34px;
+                        border-radius: 8px;
+                        background: root.print-page-mode == 1 ? Theme.accent-subtle : Theme.surface-subtle;
+                        border-width: 1px;
+                        border-color: root.print-page-mode == 1 ? Theme.accent : Theme.border;
+                        animate background { duration: 80ms; }
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            alignment: center;
+
+                            Text {
+                                text: "Current (" + (root.current-page + 1) + ")";
+                                font-family: "Inter";
+                                font-size: 12px;
+                                font-weight: root.print-page-mode == 1 ? 700 : 500;
+                                color: root.print-page-mode == 1 ? Theme.accent : Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        TouchArea {
+                            clicked => { root.print-page-mode = 1; }
+                            mouse-cursor: pointer;
+                        }
+                    }
+
+                    // Custom Range Pill
+                    Rectangle {
+                        height: 34px;
+                        border-radius: 8px;
+                        background: root.print-page-mode == 2 ? Theme.accent-subtle : Theme.surface-subtle;
+                        border-width: 1px;
+                        border-color: root.print-page-mode == 2 ? Theme.accent : Theme.border;
+                        animate background { duration: 80ms; }
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            alignment: center;
+
+                            Text {
+                                text: "Range";
+                                font-family: "Inter";
+                                font-size: 12px;
+                                font-weight: root.print-page-mode == 2 ? 700 : 500;
+                                color: root.print-page-mode == 2 ? Theme.accent : Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        TouchArea {
+                            clicked => { root.print-page-mode = 2; }
+                            mouse-cursor: pointer;
+                        }
+                    }
+                }
+
+                // Custom Range Input Field
+                if root.print-page-mode == 2: Rectangle {
+                    height: 38px;
+                    border-radius: 8px;
+                    background: Theme.surface-subtle;
+                    border-width: 1px;
+                    border-color: range-input.has-focus ? Theme.accent : Theme.border;
+
+                    range-input := TextInput {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: parent.height;
+                        text <=> root.print-page-range;
+                        font-family: "Inter";
+                        font-size: 13px;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Section: Copies Stepper
+            HorizontalLayout {
+                alignment: space-between;
+
+                Text {
+                    text: "Copies";
+                    font-family: "Inter";
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    height: 34px;
+                    border-radius: 17px;
+                    background: Theme.surface-subtle;
+                    border-width: 1px;
+                    border-color: Theme.border;
+
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 8px;
+                        alignment: center;
+
+                        IconButton {
+                            icon: @image-url("../assets/icons/chevron-left.svg");
+                            size: 26px;
+                            icon-size: 14px;
+                            border-radius: 13px;
+                            enabled: root.print-copies > 1;
+                            clicked => { root.print-copies = Math.max(1, root.print-copies - 1); }
+                        }
+
+                        Text {
+                            text: root.print-copies;
+                            font-family: "Inter";
+                            font-size: 14px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                            min-width: 24px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        IconButton {
+                            icon: @image-url("../assets/icons/chevron-right.svg");
+                            size: 26px;
+                            icon-size: 14px;
+                            border-radius: 13px;
+                            clicked => { root.print-copies = root.print-copies + 1; }
+                        }
+                    }
+                }
+            }
+
+            if root.print-error != "": Text {
+                text: root.print-error;
+                font-family: "Inter";
+                font-size: 12px;
+                font-weight: 600;
+                color: #e06c75;
+                wrap: word-wrap;
+            }
+
+            // Divider
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
+            // Action Buttons
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+
+                Rectangle {
+                    height: 36px;
+                    border-radius: 18px;
+                    background: cancel-print-ta.has-hover ? Theme.hover-bg : Theme.surface-subtle;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    animate background { duration: 80ms; }
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        alignment: center;
+
+                        Text {
+                            text: "Cancel";
+                            font-family: "Inter";
+                            font-size: 13px;
+                            font-weight: 600;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    cancel-print-ta := TouchArea {
+                        clicked => { root.cancel-print(); }
+                        mouse-cursor: pointer;
+                    }
+                }
+
+                Rectangle {
+                    height: 36px;
+                    border-radius: 18px;
+                    background: print-submit-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    border-width: 1px;
+                    border-color: Theme.accent-border;
+                    animate background { duration: 80ms; }
+
+                    HorizontalLayout {
+                        padding-left: 20px;
+                        padding-right: 20px;
+                        alignment: center;
+
+                        Text {
+                            text: "Print";
+                            font-family: "Inter";
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: Theme.on-accent;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    print-submit-ta := TouchArea {
+                        clicked => {
+                            root.request-print(root.selected-printer, root.print-page-mode, root.print-page-range, root.print-copies);
                         }
                         mouse-cursor: pointer;
                     }

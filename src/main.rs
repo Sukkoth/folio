@@ -1,8 +1,10 @@
 mod export;
 mod history;
 mod pdf;
+mod print;
 
 use pdf::{CachedRender, PageCache, PdfWorker, RenderRequest, RenderedPage};
+use print::{execute_print_job, list_available_printers, PrintJobOptions};
 use slint::Model;
 use std::collections::VecDeque;
 use std::env;
@@ -219,6 +221,7 @@ impl NavHistory {
 
 pub(crate) struct AppState {
     file_path: String,
+    pub password: Option<String>,
     current_page: i32, // 0-indexed
     total_pages: i32,
     zoom_level: f32, // 2.0 = 200% default
@@ -271,6 +274,7 @@ pub(crate) struct DocumentTab {
     pub(crate) state: AppState,
     pub(crate) saved_scroll_y: f32,
     pub(crate) is_dirty: bool,
+    pub(crate) password: Option<String>,
 }
 
 pub(crate) struct TabManager {
@@ -368,7 +372,7 @@ impl AppState {
 
     pub fn get_or_load_page_links(&mut self, page: i32) -> &[pdf::PageLink] {
         if !self.page_links_cache.contains_key(&page) {
-            let links = pdf::extract_page_links(&self.file_path, page);
+            let links = pdf::extract_page_links(&self.file_path, page, self.password.as_deref());
             self.page_links_cache.insert(page, links);
         }
         self.page_links_cache.get(&page).map(|v| v.as_slice()).unwrap_or(&[])
@@ -513,7 +517,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize multi-tab manager and register all document callbacks once
     let tab_manager = Arc::new(Mutex::new(TabManager::new()));
-    setup_callbacks(&app, &tab_manager);
+    let pending_encrypted_doc: Arc<Mutex<Option<(PathBuf, String)>>> = Arc::new(Mutex::new(None));
+    setup_callbacks(&app, &tab_manager, &pending_encrypted_doc);
 
     // Register global UI callbacks (Theme toggle & Open document)
     {
@@ -539,9 +544,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let app_weak = app.as_weak();
         let tab_mgr = Arc::clone(&tab_manager);
+        let pending_pwd = Arc::clone(&pending_encrypted_doc);
         app.on_open_document(move || {
             let app_weak = app_weak.clone();
             let tab_mgr = Arc::clone(&tab_mgr);
+            let pending_pwd = Arc::clone(&pending_pwd);
             std::thread::spawn(move || {
                 let res = rfd::FileDialog::new()
                     .add_filter("PDF document (*.pdf)", &["pdf"])
@@ -554,7 +561,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .and_then(|n| n.to_str())
                             .unwrap_or("document.pdf")
                             .to_string();
-                        let _ = open_or_activate_document(&ui, &tab_mgr, &path, display_name);
+                        let _ = open_or_activate_document(&ui, &tab_mgr, &path, display_name, None, &pending_pwd);
                         update_recent_books_model(&ui);
                     });
                 }
@@ -565,6 +572,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let app_weak = app.as_weak();
         let tab_mgr = Arc::clone(&tab_manager);
+        let pending_pwd = Arc::clone(&pending_encrypted_doc);
         app.on_open_recent_book(move |path_str| {
             if let Some(ui) = app_weak.upgrade() {
                 ui.set_show_recent_books(false);
@@ -575,7 +583,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .and_then(|n| n.to_str())
                         .unwrap_or("document.pdf")
                         .to_string();
-                    let _ = open_or_activate_document(&ui, &tab_mgr, &path, display_name);
+                    let _ = open_or_activate_document(&ui, &tab_mgr, &path, display_name, None, &pending_pwd);
                     update_recent_books_model(&ui);
                 } else {
                     trigger_toast(&ui, "File not found");
@@ -641,7 +649,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("document.pdf")
                 .to_string();
-            let _ = open_or_activate_document(&app, &tab_manager, p, display_name);
+            let _ = open_or_activate_document(&app, &tab_manager, p, display_name, None, &pending_encrypted_doc);
         }
 
         let target_idx = if let Some(idx) = cli_target_idx {
@@ -959,6 +967,8 @@ fn open_or_activate_document(
     tab_manager: &Arc<Mutex<TabManager>>,
     path: &Path,
     display_name: String,
+    password: Option<String>,
+    pending_encrypted_doc: &Arc<Mutex<Option<(PathBuf, String)>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path_str = path.to_string_lossy().to_string();
 
@@ -972,9 +982,23 @@ fn open_or_activate_document(
         }
     }
 
-    let meta = match pdf::read_pdf_info(&path_str) {
+    let meta = match pdf::read_pdf_info(&path_str, password.as_deref()) {
         Ok(m) => m,
         Err(err) => {
+            if err == pdf::ERR_PASSWORD_REQUIRED {
+                *pending_encrypted_doc.lock().unwrap() = Some((path.to_path_buf(), display_name.clone()));
+                app.set_password_file_name(display_name.into());
+                app.set_password_input("".into());
+                app.set_password_error("".into());
+                app.set_show_password_modal(true);
+                return Ok(());
+            } else if err == pdf::ERR_PASSWORD_INVALID {
+                *pending_encrypted_doc.lock().unwrap() = Some((path.to_path_buf(), display_name.clone()));
+                app.set_password_error("Incorrect password. Please try again.".into());
+                app.set_show_password_modal(true);
+                return Ok(());
+            }
+
             let mgr = tab_manager.lock().unwrap();
             if mgr.tabs.is_empty() {
                 app.set_file_title(display_name.into());
@@ -988,7 +1012,12 @@ fn open_or_activate_document(
         }
     };
 
-    let doc_props = pdf::extract_document_properties(&path_str).unwrap_or_else(|_| pdf::DocumentProperties {
+    app.set_show_password_modal(false);
+    app.set_password_input("".into());
+    app.set_password_error("".into());
+    *pending_encrypted_doc.lock().unwrap() = None;
+
+    let doc_props = pdf::extract_document_properties(&path_str, password.as_deref()).unwrap_or_else(|_| pdf::DocumentProperties {
         file_name: display_name.clone(),
         file_path: path_str.clone(),
         ..Default::default()
@@ -1007,7 +1036,7 @@ fn open_or_activate_document(
     let config = history::load_app_config();
     let initial_paper_theme = resolve_initial_paper_theme(app.get_paper_theme(), config.paper_theme);
 
-    let existing_annots = pdf::extract_document_annotations(&path_str);
+    let existing_annots = pdf::extract_document_annotations(&path_str, password.as_deref());
     let mut initial_annotations = Vec::with_capacity(existing_annots.len());
     let mut next_annot_id = 1;
 
@@ -1057,7 +1086,7 @@ fn open_or_activate_document(
 
     let tab_manager_for_worker = Arc::clone(tab_manager);
     let ui_weak = app.as_weak();
-    let worker = PdfWorker::spawn(path_str.clone(), move |rendered: RenderedPage| {
+    let worker = PdfWorker::spawn(path_str.clone(), password.clone(), move |rendered: RenderedPage| {
         let ui_weak = ui_weak.clone();
         let tab_mgr_lock = Arc::clone(&tab_manager_for_worker);
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
@@ -1075,6 +1104,7 @@ fn open_or_activate_document(
 
     let app_state = AppState {
         file_path: path_str.clone(),
+        password: password.clone(),
         current_page: initial_page,
         total_pages: meta.page_count,
         zoom_level: initial_zoom,
@@ -1124,6 +1154,7 @@ fn open_or_activate_document(
         state: app_state,
         saved_scroll_y: initial_scroll_y,
         is_dirty: false,
+        password: password.clone(),
     };
 
     {
@@ -1239,7 +1270,7 @@ fn handle_rendered_page(
 
 fn ensure_cached_text(state: &mut AppState, page: i32) {
     if !state.page_text_cache.contains_key(&page) {
-        let extracted = pdf::extract_page_text_data(&state.file_path, page);
+        let extracted = pdf::extract_page_text_data(&state.file_path, page, state.password.as_deref());
         state.page_text_cache.insert(page, extracted);
     }
     if state.cached_text_page != page {
@@ -1254,8 +1285,9 @@ fn get_cached_or_load_text<'a>(
     page_text_cache: &'a mut std::collections::HashMap<i32, pdf::PageTextData>,
     file_path: &str,
     page: i32,
+    password: Option<&str>,
 ) -> &'a pdf::PageTextData {
-    page_text_cache.entry(page).or_insert_with(|| pdf::extract_page_text_data(file_path, page))
+    page_text_cache.entry(page).or_insert_with(|| pdf::extract_page_text_data(file_path, page, password))
 }
 
 fn resolve_scroll_drag_position(state: &AppState, origin_page: i32, local_x: f32, local_y: f32) -> (i32, f32, f32) {
@@ -1325,7 +1357,7 @@ fn compute_multipage_selection(
     let mut results = Vec::new();
 
     if start_page == end_page {
-        let text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, start_page);
+        let text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, start_page, state.password.as_deref());
         let (snippet, rects) = pdf::compute_text_selection(text, start_pt.0, start_pt.1, end_pt.0, end_pt.1);
         if !rects.is_empty() && !snippet.trim().is_empty() {
             results.push(PageSelection {
@@ -1336,7 +1368,7 @@ fn compute_multipage_selection(
         }
     } else if start_page < end_page {
         // Page start_page: from start_pt to EndOfPage
-        let p_start_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, start_page);
+        let p_start_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, start_page, state.password.as_deref());
         let (s_snip, s_rects) = pdf::compute_page_selection(
             p_start_text,
             pdf::PageBoundary::Point(start_pt.0, start_pt.1),
@@ -1352,7 +1384,7 @@ fn compute_multipage_selection(
 
         // Intermediate full pages
         for p in (start_page + 1)..end_page {
-            let p_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, p);
+            let p_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, p, state.password.as_deref());
             let (mid_snip, mid_rects) = pdf::compute_page_selection(
                 p_text,
                 pdf::PageBoundary::StartOfPage,
@@ -1368,7 +1400,7 @@ fn compute_multipage_selection(
         }
 
         // Page end_page: from StartOfPage to end_pt
-        let p_end_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, end_page);
+        let p_end_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, end_page, state.password.as_deref());
         let (e_snip, e_rects) = pdf::compute_page_selection(
             p_end_text,
             pdf::PageBoundary::StartOfPage,
@@ -1383,7 +1415,7 @@ fn compute_multipage_selection(
         }
     } else {
         // Dragging upwards: end_page < start_page
-        let p_end_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, end_page);
+        let p_end_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, end_page, state.password.as_deref());
         let (e_snip, e_rects) = pdf::compute_page_selection(
             p_end_text,
             pdf::PageBoundary::Point(end_pt.0, end_pt.1),
@@ -1398,7 +1430,7 @@ fn compute_multipage_selection(
         }
 
         for p in (end_page + 1)..start_page {
-            let p_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, p);
+            let p_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, p, state.password.as_deref());
             let (mid_snip, mid_rects) = pdf::compute_page_selection(
                 p_text,
                 pdf::PageBoundary::StartOfPage,
@@ -1413,7 +1445,7 @@ fn compute_multipage_selection(
             }
         }
 
-        let p_start_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, start_page);
+        let p_start_text = get_cached_or_load_text(&mut state.page_text_cache, &state.file_path, start_page, state.password.as_deref());
         let (s_snip, s_rects) = pdf::compute_page_selection(
             p_start_text,
             pdf::PageBoundary::StartOfPage,
@@ -2122,7 +2154,7 @@ fn trigger_search(
         return;
     }
 
-    let (file_path, total_pages, match_case, match_whole_word) = if let Ok(mut lock) = state_lock.lock() {
+    let (file_path, total_pages, match_case, match_whole_word, password) = if let Ok(mut lock) = state_lock.lock() {
         if let Some(s) = lock.as_mut() {
             s.search_query = query_trimmed.clone();
             s.is_searching = true;
@@ -2134,6 +2166,7 @@ fn trigger_search(
                 s.total_pages,
                 s.search_match_case,
                 s.search_match_whole_word,
+                s.password.clone(),
             )
         } else {
             return;
@@ -2154,6 +2187,7 @@ fn trigger_search(
                 match_whole_word,
                 Some(Arc::clone(&search_gen_clone)),
                 current_gen,
+                password.as_deref(),
             );
 
             if search_gen_clone.load(Ordering::SeqCst) != current_gen {
@@ -2705,7 +2739,11 @@ fn build_annotations_markdown_from_state(s: &AppState) -> String {
     export::generate_annotations_markdown(doc_title, &export_annots, &s.toc)
 }
 
-fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
+fn setup_callbacks(
+    app: &AppWindow,
+    state_lock: &Arc<Mutex<TabManager>>,
+    pending_encrypted_doc: &Arc<Mutex<Option<(PathBuf, String)>>>,
+) {
     let search_generation = Arc::new(AtomicU64::new(0));
     let search_debounce: std::rc::Rc<std::cell::RefCell<Option<slint::Timer>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -2784,9 +2822,11 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
     {
         let app_weak = app.as_weak();
         let tab_mgr = Arc::clone(state_lock);
+        let pending_pwd = Arc::clone(pending_encrypted_doc);
         app.on_new_tab(move || {
             let app_weak = app_weak.clone();
             let tab_mgr = Arc::clone(&tab_mgr);
+            let pending_pwd = Arc::clone(&pending_pwd);
             std::thread::spawn(move || {
                 let res = rfd::FileDialog::new()
                     .add_filter("PDF document (*.pdf)", &["pdf"])
@@ -2799,7 +2839,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
                             .and_then(|n| n.to_str())
                             .unwrap_or("document.pdf")
                             .to_string();
-                        let _ = open_or_activate_document(&ui, &tab_mgr, &path, display_name);
+                        let _ = open_or_activate_document(&ui, &tab_mgr, &path, display_name, None, &pending_pwd);
                         update_recent_books_model(&ui);
                     });
                 }
@@ -4067,11 +4107,11 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
         app.on_save_document(move || {
-            let (file_path, to_save) = {
+            let (file_path, to_save, password) = {
                 if let Ok(mut lock) = state_lock.lock() {
                     if let Some(s) = lock.as_mut() {
                         let to_save = collect_annotations_to_save(s);
-                        (s.file_path.clone(), to_save)
+                        (s.file_path.clone(), to_save, s.password.clone())
                     } else {
                         return;
                     }
@@ -4084,7 +4124,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
                 ui.set_is_saving(true);
             }
 
-            let save_result = pdf::save_document_annotations(&file_path, &to_save);
+            let save_result = pdf::save_document_annotations(&file_path, &to_save, password.as_deref());
 
             if let Some(ui) = app_weak.upgrade() {
                 ui.set_is_saving(false);
@@ -4117,11 +4157,11 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
         app.on_save_document_as(move || {
-            let (file_path, to_save) = {
+            let (file_path, to_save, password) = {
                 if let Ok(mut lock) = state_lock.lock() {
                     if let Some(s) = lock.as_mut() {
                         let to_save = collect_annotations_to_save(s);
-                        (s.file_path.clone(), to_save)
+                        (s.file_path.clone(), to_save, s.password.clone())
                     } else {
                         return;
                     }
@@ -4144,6 +4184,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
                     let new_path_str = new_path_str.clone();
                     let file_path = file_path.clone();
                     let to_save = to_save.clone();
+                    let password = password.clone();
                     let state_lock = Arc::clone(&state_lock);
                     let app_weak = app_weak.clone();
                     move |ui| {
@@ -4158,7 +4199,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
                             }
                         }
 
-                        let save_result = pdf::save_document_annotations(&new_path_str, &to_save);
+                        let save_result = pdf::save_document_annotations(&new_path_str, &to_save, password.as_deref());
                         ui.set_is_saving(false);
                         match save_result {
                             Ok(()) => {
@@ -4187,7 +4228,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
                                     if let Some(s) = lock.as_mut() {
                                         s.file_path = new_path_str.clone();
                                         s.cached_text_page = -1;
-                                        s.worker.switch_document(new_path_str);
+                                        s.worker.switch_document(new_path_str, s.password.clone());
                                     }
                                 }
                                 save_current_session(&state_lock, &ui);
@@ -4878,6 +4919,123 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
             }
         });
     }
+
+    // Password Callbacks
+    {
+        let app_weak = app.as_weak();
+        let tab_mgr = Arc::clone(state_lock);
+        let pending_doc = Arc::clone(pending_encrypted_doc);
+        app.on_submit_password(move |password_input| {
+            let pending = pending_doc.lock().unwrap().clone();
+            if let Some((path, name)) = pending {
+                if let Some(ui) = app_weak.upgrade() {
+                    let pwd = password_input.to_string();
+                    let _ = open_or_activate_document(&ui, &tab_mgr, &path, name, Some(pwd), &pending_doc);
+                }
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let pending_doc = Arc::clone(pending_encrypted_doc);
+        app.on_cancel_password(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_show_password_modal(false);
+                ui.set_password_input("".into());
+                ui.set_password_error("".into());
+                *pending_doc.lock().unwrap() = None;
+            }
+        });
+    }
+
+    // Print Callbacks
+    {
+        let app_weak = app.as_weak();
+        app.on_open_print_dialog(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let printers = list_available_printers();
+                let slint_printers: Vec<slint::SharedString> = if printers.is_empty() {
+                    vec!["Default System Printer".into()]
+                } else {
+                    printers.into_iter().map(Into::into).collect()
+                };
+                let first = slint_printers[0].clone();
+                let model = std::rc::Rc::new(slint::VecModel::from(slint_printers));
+                ui.set_available_printers(model.into());
+                ui.set_selected_printer(first);
+                ui.set_print_page_mode(0);
+                ui.set_print_page_range("".into());
+                ui.set_print_copies(1);
+                ui.set_print_error("".into());
+                ui.set_show_print_modal(true);
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        app.on_cycle_printer(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let model = ui.get_available_printers();
+                let count = model.row_count();
+                if count > 1 {
+                    let current = ui.get_selected_printer();
+                    let mut curr_idx = 0;
+                    for i in 0..count {
+                        if let Some(p) = model.row_data(i) {
+                            if p == current {
+                                curr_idx = i;
+                                break;
+                            }
+                        }
+                    }
+                    let next_idx = (curr_idx + 1) % count;
+                    if let Some(next_p) = model.row_data(next_idx) {
+                        ui.set_selected_printer(next_p);
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        let state_lock = Arc::clone(state_lock);
+        app.on_request_print(move |printer, mode, range, copies| {
+            if let Some(ui) = app_weak.upgrade() {
+                let mgr = state_lock.lock().unwrap();
+                if let Some(tab) = mgr.active_tab() {
+                    let opts = PrintJobOptions {
+                        printer: if printer.is_empty() { None } else { Some(printer.to_string()) },
+                        page_mode: mode,
+                        current_page: tab.state.current_page,
+                        page_range: range.to_string(),
+                        copies,
+                    };
+                    match execute_print_job(&tab.file_path, tab.password.as_deref(), &opts) {
+                        Ok(msg) => {
+                            ui.set_show_print_modal(false);
+                            trigger_toast(&ui, &format!("✓ {}", msg));
+                        }
+                        Err(err) => {
+                            ui.set_print_error(err.into());
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        app.on_cancel_print(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_show_print_modal(false);
+                ui.set_print_error("".into());
+            }
+        });
+    }
 }
 
 pub fn compute_fit_width_zoom(avail_w: f32, page_w_pt: f32, is_dual_page: bool) -> f32 {
@@ -4988,10 +5146,11 @@ mod tests {
             doc.save(path_str).unwrap();
         }
 
-        let worker = PdfWorker::spawn(path_str.to_string(), |_| {}).unwrap();
+        let worker = PdfWorker::spawn(path_str.to_string(), None, |_| {}).unwrap();
 
         let state = AppState {
             file_path: path_str.to_string(),
+            password: None,
             current_page: 0,
             total_pages: 1,
             zoom_level: 1.0,
@@ -5766,13 +5925,14 @@ mod tests {
 
         let create_tab = |id: usize, path: &std::path::Path, name: &str| {
             let path_str = path.to_string_lossy().to_string();
-            let worker = super::PdfWorker::spawn(path_str.clone(), |_| {}).unwrap();
+            let worker = super::PdfWorker::spawn(path_str.clone(), None, |_| {}).unwrap();
             super::DocumentTab {
                 id,
                 file_path: path_str.clone(),
                 display_name: name.to_string(),
                 state: super::AppState {
                     file_path: path_str,
+                    password: None,
                     current_page: 0,
                     total_pages: 1,
                     zoom_level: 2.0,
@@ -5816,6 +5976,7 @@ mod tests {
                 },
                 saved_scroll_y: 0.0,
                 is_dirty: false,
+                password: None,
             }
         };
 
@@ -5886,13 +6047,14 @@ mod tests {
         let mut mgr = TabManager::new();
         let create_tab = |id: usize, path: &std::path::Path, name: &str| {
             let path_str = path.to_str().unwrap().to_string();
-            let worker = PdfWorker::spawn(path_str.clone(), |_| {}).unwrap();
+            let worker = PdfWorker::spawn(path_str.clone(), None, |_| {}).unwrap();
             DocumentTab {
                 id,
                 file_path: path_str.clone(),
                 display_name: name.to_string(),
                 state: AppState {
                     file_path: path_str,
+                    password: None,
                     current_page: 0,
                     total_pages: 1,
                     zoom_level: 1.0,
@@ -5936,6 +6098,7 @@ mod tests {
                 },
                 saved_scroll_y: 0.0,
                 is_dirty: false,
+                password: None,
             }
         };
 
