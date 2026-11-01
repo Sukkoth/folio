@@ -579,6 +579,10 @@ export component AppWindow inherits Window {
     in-out property <bool> is-ctrl-pressed: false;
     in property <bool> can-prev: false;
     in property <bool> can-next: false;
+    in property <bool> can-nav-back: false;
+    in property <bool> can-nav-forward: false;
+    callback nav-back();
+    callback nav-forward();
     in property <bool> can-undo: false;
     in property <bool> can-redo: false;
 
@@ -975,6 +979,12 @@ export component AppWindow inherits Window {
                     else if (event.text == "4") { root.selected-color-index = 3; return accept; }
                     else if (event.text == "5") { root.selected-color-index = 4; return accept; }
                     else if (event.text == "6") { root.selected-color-index = 5; return accept; }
+                } else if (event.modifiers.alt && event.text == Key.LeftArrow) {
+                    root.nav-back();
+                    return accept;
+                } else if (event.modifiers.alt && event.text == Key.RightArrow) {
+                    root.nav-forward();
+                    return accept;
                 } else if (event.text == Key.LeftArrow || event.text == Key.PageUp || event.text == Key.UpArrow) {
                     root.prev-page();
                     return accept;
@@ -1294,6 +1304,43 @@ VerticalLayout {
                                         root.set-dual-page(false);
                                         root.set-view-mode(true);
                                     }
+                                }
+                            }
+                        }
+
+                        // Navigation History Pill: Back / Forward
+                        Rectangle {
+                            height: 38px;
+                            border-radius: 19px;
+                            background: Theme.card-bg;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            y: (parent.height - self.height) / 2;
+
+                            HorizontalLayout {
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                spacing: 2px;
+                                alignment: center;
+
+                                IconButton {
+                                    icon: @image-url("../assets/icons/arrow-left.svg");
+                                    enabled: root.can-nav-back;
+                                    size: 30px;
+                                    icon-size: 16px;
+                                    border-radius: 15px;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.nav-back(); }
+                                }
+
+                                IconButton {
+                                    icon: @image-url("../assets/icons/arrow-right.svg");
+                                    enabled: root.can-nav-forward;
+                                    size: 30px;
+                                    icon-size: 16px;
+                                    border-radius: 15px;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => { root.nav-forward(); }
                                 }
                             }
                         }
@@ -5057,9 +5104,9 @@ VerticalLayout {
 
     // Top Hover Sensor to reveal Zen Controls in Zen Mode
     top-sensor := TouchArea {
-        x: (parent.width - 440px) / 2;
+        x: (parent.width - 480px) / 2;
         y: 0;
-        width: 440px;
+        width: 480px;
         height: root.is-zen-mode ? 60px : 0px;
         enabled: root.is-zen-mode;
     }
@@ -5082,6 +5129,27 @@ VerticalLayout {
             padding-right: 14px;
             spacing: 8px;
             alignment: center;
+
+            IconButton {
+                icon: @image-url("../assets/icons/arrow-left.svg");
+                enabled: root.can-nav-back;
+                y: (parent.height - self.height) / 2;
+                clicked => { root.nav-back(); }
+            }
+
+            IconButton {
+                icon: @image-url("../assets/icons/arrow-right.svg");
+                enabled: root.can-nav-forward;
+                y: (parent.height - self.height) / 2;
+                clicked => { root.nav-forward(); }
+            }
+
+            Rectangle {
+                width: 1px;
+                height: 18px;
+                y: (parent.height - self.height) / 2;
+                background: Theme.border;
+            }
 
             IconButton {
                 icon: @image-url("../assets/icons/chevron-left.svg");

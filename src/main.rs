@@ -155,6 +155,68 @@ pub struct PageSelection {
     pub line_rects_pt: Vec<(f32, f32, f32, f32)>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavLocation {
+    pub page: i32,
+    pub scroll_y: f32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NavHistory {
+    pub back_stack: Vec<NavLocation>,
+    pub forward_stack: Vec<NavLocation>,
+}
+
+impl NavHistory {
+    pub fn push(&mut self, current: NavLocation, target: &NavLocation) {
+        if current.page != target.page || (current.scroll_y - target.scroll_y).abs() > 20.0 {
+            if let Some(last) = self.back_stack.last() {
+                if last.page == current.page && (last.scroll_y - current.scroll_y).abs() < 20.0 {
+                    self.forward_stack.clear();
+                    return;
+                }
+            }
+            self.back_stack.push(current);
+            if self.back_stack.len() > 50 {
+                self.back_stack.remove(0);
+            }
+            self.forward_stack.clear();
+        }
+    }
+
+    pub fn can_go_back(&self) -> bool {
+        !self.back_stack.is_empty()
+    }
+
+    pub fn can_go_forward(&self) -> bool {
+        !self.forward_stack.is_empty()
+    }
+
+    pub fn go_back(&mut self, current: NavLocation) -> Option<NavLocation> {
+        if let Some(target) = self.back_stack.pop() {
+            self.forward_stack.push(current);
+            if self.forward_stack.len() > 50 {
+                self.forward_stack.remove(0);
+            }
+            Some(target)
+        } else {
+            None
+        }
+    }
+
+    pub fn go_forward(&mut self, current: NavLocation) -> Option<NavLocation> {
+        if let Some(target) = self.forward_stack.pop() {
+            self.back_stack.push(current);
+            if self.back_stack.len() > 50 {
+                self.back_stack.remove(0);
+            }
+            Some(target)
+        } else {
+            None
+        }
+    }
+}
+
 pub(crate) struct AppState {
     file_path: String,
     current_page: i32, // 0-indexed
@@ -170,6 +232,7 @@ pub(crate) struct AppState {
     next_annot_id: i32,
     undo_stack: VecDeque<UndoAction>,
     redo_stack: VecDeque<UndoAction>,
+    pub nav_history: NavHistory,
     // Cached character-level text geometry for sub-word selection
     cached_text_page: i32,
     cached_text: pdf::PageTextData,
@@ -728,6 +791,7 @@ fn switch_to_active_tab_ui(ui: &AppWindow, mgr: &mut TabManager) {
     sync_annotations_to_ui(state, ui);
     sync_links_to_ui(state, ui);
     sync_search_to_ui(state, ui);
+    sync_nav_history_to_ui(state, ui);
 
     if state.is_scroll_view {
         ui.set_scroll_content_y(tab.saved_scroll_y);
@@ -1050,6 +1114,7 @@ fn open_or_activate_document(
         paper_theme: initial_paper_theme,
         doc_properties: doc_props,
         annotation_sort_mode: config.annotation_sort_mode,
+        nav_history: NavHistory::default(),
     };
 
     let doc_tab = DocumentTab {
@@ -1886,6 +1951,11 @@ fn update_page_indicator(state: &AppState, ui: &AppWindow) {
     ui.set_can_next(state.current_page < state.total_pages - 1);
 }
 
+fn sync_nav_history_to_ui(state: &AppState, ui: &AppWindow) {
+    ui.set_can_nav_back(state.nav_history.can_go_back());
+    ui.set_can_nav_forward(state.nav_history.can_go_forward());
+}
+
 pub fn compute_transformed_links(
     links: &[pdf::PageLink],
     page: i32,
@@ -1962,6 +2032,17 @@ fn jump_to_search_match(
 
     let target_page = s.search_matches[clamped_idx as usize].page;
     let target_first_rect = s.search_matches[clamped_idx as usize].rects_pt.first().cloned();
+
+    let curr_loc = NavLocation {
+        page: s.current_page,
+        scroll_y: ui.get_scroll_content_y(),
+    };
+    let target_loc = NavLocation {
+        page: target_page,
+        scroll_y: 0.0,
+    };
+    s.nav_history.push(curr_loc, &target_loc);
+    sync_nav_history_to_ui(s, ui);
 
     if s.is_scroll_view {
         let mut target_scroll_y = 0.0f32;
@@ -3072,6 +3153,17 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
                 if let Ok(mut lock) = state_lock.lock() {
                     if let Some(s) = lock.as_mut() {
                         if target_page >= 0 && target_page < s.total_pages {
+                            if let Some(ui_inst) = app_weak.upgrade() {
+                                let curr_loc = NavLocation {
+                                    page: s.current_page,
+                                    scroll_y: ui_inst.get_scroll_content_y(),
+                                };
+                                let target_loc = NavLocation {
+                                    page: target_page,
+                                    scroll_y: 0.0,
+                                };
+                                s.nav_history.push(curr_loc, &target_loc);
+                            }
                             s.current_page = target_page;
                             is_scroll = s.is_scroll_view;
                             true
@@ -3092,6 +3184,7 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
                     if let Ok(lock) = state_lock.lock() {
                         if let Some(s) = lock.as_ref() {
                             update_page_indicator(s, &ui);
+                            sync_nav_history_to_ui(s, &ui);
                         }
                     }
 
@@ -3132,8 +3225,18 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
                 if let Some(target) = target_page {
                     if let Ok(mut lock) = state_lock.lock() {
                         if let Some(s) = lock.as_mut() {
+                            let curr_loc = NavLocation {
+                                page: s.current_page,
+                                scroll_y: ui.get_scroll_content_y(),
+                            };
+                            let target_loc = NavLocation {
+                                page: target,
+                                scroll_y: 0.0,
+                            };
+                            s.nav_history.push(curr_loc, &target_loc);
                             s.current_page = target;
                             update_page_indicator(s, &ui);
+                            sync_nav_history_to_ui(s, &ui);
                             if is_scroll {
                                 trigger_scroll_page_render(s, target, &ui);
                                 sync_links_to_ui(s, &ui);
@@ -3153,6 +3256,112 @@ fn setup_callbacks(app: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
                             update_page_indicator(s, &ui);
                         }
                     }
+                }
+            }
+        });
+    }
+
+    // Nav Back (Alt + LeftArrow)
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        let save_session = make_session_saver();
+        app.on_nav_back(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let target = {
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            let curr = NavLocation {
+                                page: s.current_page,
+                                scroll_y: ui.get_scroll_content_y(),
+                            };
+                            s.nav_history.go_back(curr)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(target_loc) = target {
+                    let mut is_scroll = false;
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            s.current_page = target_loc.page;
+                            is_scroll = s.is_scroll_view;
+                            update_page_indicator(s, &ui);
+                            sync_nav_history_to_ui(s, &ui);
+                            if is_scroll {
+                                trigger_scroll_page_render(s, target_loc.page, &ui);
+                                sync_links_to_ui(s, &ui);
+                            }
+                        }
+                    }
+                    ui.set_current_page(target_loc.page);
+                    if is_scroll {
+                        if target_loc.scroll_y != 0.0 {
+                            ui.set_scroll_content_y(target_loc.scroll_y);
+                        } else {
+                            ui.invoke_scroll_to_page(target_loc.page);
+                        }
+                    } else {
+                        update_view(&ui, &state_lock);
+                    }
+                    save_session();
+                }
+            }
+        });
+    }
+
+    // Nav Forward (Alt + RightArrow)
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        let save_session = make_session_saver();
+        app.on_nav_forward(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let target = {
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            let curr = NavLocation {
+                                page: s.current_page,
+                                scroll_y: ui.get_scroll_content_y(),
+                            };
+                            s.nav_history.go_forward(curr)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(target_loc) = target {
+                    let mut is_scroll = false;
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            s.current_page = target_loc.page;
+                            is_scroll = s.is_scroll_view;
+                            update_page_indicator(s, &ui);
+                            sync_nav_history_to_ui(s, &ui);
+                            if is_scroll {
+                                trigger_scroll_page_render(s, target_loc.page, &ui);
+                                sync_links_to_ui(s, &ui);
+                            }
+                        }
+                    }
+                    ui.set_current_page(target_loc.page);
+                    if is_scroll {
+                        if target_loc.scroll_y != 0.0 {
+                            ui.set_scroll_content_y(target_loc.scroll_y);
+                        } else {
+                            ui.invoke_scroll_to_page(target_loc.page);
+                        }
+                    } else {
+                        update_view(&ui, &state_lock);
+                    }
+                    save_session();
                 }
             }
         });
@@ -4824,6 +5033,7 @@ mod tests {
             paper_theme: pdf::PaperTheme::Light,
             doc_properties: pdf::DocumentProperties::default(),
             annotation_sort_mode: 0,
+            nav_history: NavHistory::default(),
         };
 
         (state, test_pdf_path)
@@ -5604,6 +5814,7 @@ mod tests {
                     paper_theme: super::pdf::PaperTheme::Light,
                     doc_properties: super::pdf::DocumentProperties::default(),
                     annotation_sort_mode: 0,
+                    nav_history: super::NavHistory::default(),
                 },
                 saved_scroll_y: 0.0,
                 is_dirty: false,
@@ -5723,6 +5934,7 @@ mod tests {
                     paper_theme: super::pdf::PaperTheme::Light,
                     doc_properties: super::pdf::DocumentProperties::default(),
                     annotation_sort_mode: 0,
+                    nav_history: super::NavHistory::default(),
                 },
                 saved_scroll_y: 0.0,
                 is_dirty: false,
@@ -5948,5 +6160,66 @@ mod tests {
             annot_note_only.comment.clone()
         };
         assert_eq!(copy_text_2, "Standalone user comment");
+    }
+
+    #[test]
+    fn test_nav_history_stack_and_deduplication() {
+        let mut hist = NavHistory::default();
+        assert!(!hist.can_go_back());
+        assert!(!hist.can_go_forward());
+
+        // 1. Jump from page 0 to page 10
+        let p0 = NavLocation { page: 0, scroll_y: 0.0 };
+        let p10 = NavLocation { page: 10, scroll_y: 0.0 };
+        hist.push(p0.clone(), &p10);
+        assert!(hist.can_go_back());
+        assert!(!hist.can_go_forward());
+        assert_eq!(hist.back_stack.len(), 1);
+
+        // 2. Go back from page 10 to page 0
+        let back_target = hist.go_back(p10.clone()).unwrap();
+        assert_eq!(back_target, p0);
+        assert!(!hist.can_go_back());
+        assert!(hist.can_go_forward());
+
+        // 3. Go forward from page 0 to page 10
+        let fwd_target = hist.go_forward(p0.clone()).unwrap();
+        assert_eq!(fwd_target, p10);
+        assert!(hist.can_go_back());
+        assert!(!hist.can_go_forward());
+
+        // 4. Multiple jumps: 10 -> 25 -> 50
+        let p25 = NavLocation { page: 25, scroll_y: -400.0 };
+        let p50 = NavLocation { page: 50, scroll_y: -1200.0 };
+        hist.push(p10.clone(), &p25);
+        hist.push(p25.clone(), &p50);
+        assert_eq!(hist.back_stack.len(), 3); // [0, 10, 25]
+
+        // 5. Back traversal
+        assert_eq!(hist.go_back(p50.clone()).unwrap(), p25);
+        assert_eq!(hist.go_back(p25.clone()).unwrap(), p10);
+        assert!(hist.can_go_forward());
+
+        // 6. Branching new jump clears forward stack
+        let p99 = NavLocation { page: 99, scroll_y: 0.0 };
+        hist.push(p10.clone(), &p99);
+        assert!(!hist.can_go_forward());
+
+        // 7. Deduplication: jumping to same location does not push
+        let len_before = hist.back_stack.len();
+        hist.push(p99.clone(), &p99);
+        assert_eq!(hist.back_stack.len(), len_before);
+
+        // 8. Bounded capacity test
+        let mut bounded_hist = NavHistory::default();
+        for i in 0..70 {
+            bounded_hist.push(
+                NavLocation { page: i, scroll_y: 0.0 },
+                &NavLocation { page: i + 1, scroll_y: 0.0 },
+            );
+        }
+        assert_eq!(bounded_hist.back_stack.len(), 50);
+        assert_eq!(bounded_hist.back_stack.first().unwrap().page, 20);
+        assert_eq!(bounded_hist.back_stack.last().unwrap().page, 69);
     }
 }
