@@ -45,9 +45,9 @@ global Theme {
     out property <color> active-bg: root.dark ? #32352B : #DFE2DA;
 
     // Navigation Rail states
-    out property <color> rail-active-bg: root.dark ? #DADBD6.transparentize(86%) : #10110C.transparentize(90%);
-    out property <color> rail-active-border: root.dark ? #DADBD6 : #10110C;
-    out property <color> rail-active-icon: root.dark ? #DADBD6 : #10110C;
+    out property <color> rail-active-bg: root.dark ? #282A22 : #ECEEE8;
+    out property <color> rail-active-border: root.dark ? #3A3C31 : #BFC2B8;
+    out property <color> rail-active-icon: root.dark ? #F4F5F0 : #10110C;
     out property <color> text-disabled: root.dark ? #4A4D43 : #B0B4A8;
     out property <color> accent-subtle: root.dark ? #DADBD6.transparentize(86%) : #10110C.transparentize(90%);
 
@@ -158,9 +158,9 @@ component NavRailButton inherits Rectangle {
     width: 42px;
     height: 42px;
     border-radius: 12px;
-    background: !root.enabled ? transparent : root.active ? Theme.rail-active-bg : ta.pressed ? Theme.active-bg : ta.has-hover ? Theme.hover-bg : transparent;
-    border-width: root.active ? 1.5px : (ta.has-hover && root.enabled) ? 1px : 0px;
-    border-color: root.active ? Theme.rail-active-border : Theme.border-strong;
+    background: !root.enabled ? transparent : (root.active || ta.has-hover) ? Theme.hover-bg : ta.pressed ? Theme.active-bg : transparent;
+    border-width: (!root.enabled) ? 0px : (root.active || ta.has-hover) ? 1px : 0px;
+    border-color: Theme.border-strong;
     animate background { duration: 120ms; easing: ease-out; }
     animate border-color { duration: 120ms; easing: ease-out; }
 
@@ -169,7 +169,7 @@ component NavRailButton inherits Rectangle {
         height: 20px;
         image-fit: contain;
         source: root.icon;
-        colorize: !root.enabled ? Theme.text-muted : root.active ? Theme.rail-active-icon : ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+        colorize: !root.enabled ? Theme.text-muted : (root.active || ta.has-hover) ? Theme.text-primary : Theme.text-secondary;
         horizontal-alignment: center;
         vertical-alignment: center;
         animate colorize { duration: 120ms; easing: ease-out; }
@@ -2429,15 +2429,8 @@ VerticalLayout {
                                 for item in root.toc-items: row := Rectangle {
                                     height: 42px;
                                     width: parent.width;
-                                    background: item.page == root.current-page ? Theme.active-bg : row-ta.has-hover ? Theme.hover-bg : transparent;
+                                    background: (item.page == root.current-page || row-ta.has-hover) ? Theme.hover-bg : transparent;
                                     animate background { duration: 100ms; }
-
-                                    if item.page == root.current-page: Rectangle {
-                                        x: 0;
-                                        width: 4px;
-                                        height: 100%;
-                                        background: Theme.accent;
-                                    }
 
                                     row-ta := TouchArea {
                                         clicked => { root.jump-to-page(item.page); }
@@ -3043,7 +3036,7 @@ VerticalLayout {
                                 for item in root.search-results: s-card := Rectangle {
                                     height: 72px;
                                     width: parent.width;
-                                    background: item.is-active ? Theme.active-bg : (s-ta.has-hover ? Theme.hover-bg : transparent);
+                                    background: (item.is-active || s-ta.has-hover) ? Theme.hover-bg : transparent;
                                     animate background { duration: 100ms; }
 
                                     Rectangle {
@@ -3051,14 +3044,6 @@ VerticalLayout {
                                         height: 1px;
                                         width: 100%;
                                         background: Theme.border-subtle;
-                                    }
-
-                                    // Active indicator bar
-                                    Rectangle {
-                                        x: 0;
-                                        width: item.is-active ? 4px : 0px;
-                                        height: 100%;
-                                        background: Theme.accent;
                                     }
 
                                     s-ta := TouchArea {
