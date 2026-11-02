@@ -754,6 +754,8 @@ export component AppWindow inherits Window {
     in-out property <length> scroll-content-y: 0px;
     in property <length> scroll-item-height: 842px + 24px;
     in property <length> total-scroll-height: 0px;
+    in-out property <length> scroll-viewport-height: doc-viewport.height;
+    in-out property <length> scroll-viewport-width: doc-viewport.width;
     in property <int> total-pages: 1;
     in-out property <int> current-page: 0;
     in property <[PageItemData]> scroll-pages;
@@ -871,6 +873,7 @@ export component AppWindow inherits Window {
     callback update-annotation-note(int, string); // (id, comment)
     callback undo();
     callback redo();
+    callback scroll-content-y-changed(length);
 
     public function scroll-to-page(index: int) {
         if (index >= 0 && index < root.scroll-pages.length) {
@@ -885,6 +888,12 @@ export component AppWindow inherits Window {
     changed visible-page => {
         if (root.is-scroll-view && !root.suppress-page-change) {
             root.visible-page-changed(root.visible-page);
+        }
+    }
+
+    changed scroll-content-y => {
+        if (root.is-scroll-view) {
+            root.scroll-content-y-changed(root.scroll-content-y);
         }
     }
 
@@ -3158,7 +3167,7 @@ VerticalLayout {
                 }
 
                 // Document Viewport / Error Area
-                Rectangle {
+                doc-viewport := Rectangle {
                     horizontal-stretch: 1;
                     background: Theme.dark
                         ? (root.paper-theme == 1 ? #22201B : #10110C)

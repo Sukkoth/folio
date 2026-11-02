@@ -1323,9 +1323,43 @@ fn get_cached_or_load_text<'a>(
     page_text_cache.entry(page).or_insert_with(|| pdf::extract_page_text_data(file_path, page, password))
 }
 
-fn resolve_scroll_drag_position(state: &AppState, origin_page: i32, local_x: f32, local_y: f32) -> (i32, f32, f32) {
-    if !state.is_scroll_view || state.total_pages <= 1 {
-        return (origin_page, local_x, local_y);
+fn get_scroll_page_card_top(state: &AppState, page: i32) -> f32 {
+    let mut cur_offset = 0.0f32;
+    for i in 0..page {
+        let ph = state.get_page_size(i).1 * state.zoom_level;
+        cur_offset += ph + 24.0;
+    }
+    cur_offset + 12.0
+}
+
+pub(crate) fn compute_scroll_auto_scroll_delta(
+    viewport_y: f32,
+    viewport_height: f32,
+    margin: f32,
+) -> f32 {
+    if viewport_height <= 0.0 {
+        return 0.0;
+    }
+    if viewport_y > viewport_height - margin {
+        let dist = (viewport_y - (viewport_height - margin)).max(0.0);
+        let speed = (10.0 + dist * 0.4).clamp(8.0, 40.0);
+        -speed
+    } else if viewport_y < margin {
+        let dist = (margin - viewport_y).max(0.0);
+        let speed = (10.0 + dist * 0.4).clamp(8.0, 40.0);
+        speed
+    } else {
+        0.0
+    }
+}
+
+pub(crate) fn resolve_scroll_drag_position_from_global(
+    state: &AppState,
+    local_x: f32,
+    global_y: f32,
+) -> (i32, f32, f32) {
+    if !state.is_scroll_view || state.total_pages <= 0 {
+        return (0, local_x, global_y);
     }
 
     let mut page_offsets: Vec<(f32, f32)> = Vec::with_capacity(state.total_pages as usize);
@@ -1338,18 +1372,17 @@ fn resolve_scroll_drag_position(state: &AppState, origin_page: i32, local_x: f32
         cur_offset += ph + 24.0;
     }
 
-    let origin_top = page_offsets.get(origin_page as usize).map(|o| o.0).unwrap_or(0.0) + 12.0;
-    let global_y = origin_top + local_y;
+    let first_card_top = 12.0f32;
+    if global_y < first_card_top {
+        let pw = page_offsets[0].1;
+        return (0, local_x.clamp(0.0, pw), 0.0);
+    }
 
     for i in 0..state.total_pages {
         let (cur_top, pw) = page_offsets[i as usize];
         let card_top = cur_top + 12.0;
         let ph = state.get_page_size(i).1 * state.zoom_level;
         let card_bottom = card_top + ph;
-
-        if i == 0 && global_y < card_top {
-            return (0, local_x.clamp(0.0, pw), 0.0);
-        }
 
         if global_y >= card_top && global_y <= card_bottom {
             return (i, local_x.clamp(0.0, pw), global_y - card_top);
@@ -1378,6 +1411,15 @@ fn resolve_scroll_drag_position(state: &AppState, origin_page: i32, local_x: f32
         state.get_page_size(last_idx).1 * state.zoom_level,
     );
     (last_idx, local_x.clamp(0.0, pw), ph)
+}
+
+fn resolve_scroll_drag_position(state: &AppState, origin_page: i32, local_x: f32, local_y: f32) -> (i32, f32, f32) {
+    if !state.is_scroll_view || state.total_pages <= 1 {
+        return (origin_page, local_x, local_y);
+    }
+    let origin_top = get_scroll_page_card_top(state, origin_page);
+    let global_y = origin_top + local_y;
+    resolve_scroll_drag_position_from_global(state, local_x, global_y)
 }
 
 fn compute_multipage_selection(
@@ -1494,6 +1536,56 @@ fn compute_multipage_selection(
     }
 
     results
+}
+
+fn apply_drag_selection(
+    state: &mut AppState,
+    ui: &AppWindow,
+    target_page: i32,
+    curr_x: f32,
+    curr_y: f32,
+) -> bool {
+    let zoom = state.zoom_level.max(0.1);
+    let (pt_x, pt_y) = state.to_unrotated_pt(target_page, curr_x / zoom, curr_y / zoom);
+
+    let selections = compute_multipage_selection(
+        state,
+        state.sel_start_page,
+        state.sel_start_pt,
+        target_page,
+        (pt_x, pt_y),
+    );
+
+    state.active_selections = selections;
+    state.active_selection_page = state.active_selections.first().map(|p| p.page).unwrap_or(target_page);
+    state.active_selection_snippet = state.active_selections.iter().map(|p| p.snippet.as_str()).collect::<Vec<_>>().join("\n");
+    state.active_selection_line_rects = state.active_selections.first().map(|p| p.line_rects_pt.clone()).unwrap_or_default();
+
+    let mut line_rects_ui = Vec::new();
+    let has_sel = !state.active_selections.is_empty();
+
+    if has_sel {
+        for sel in &state.active_selections {
+            let (unrot_w, unrot_h) = state.get_unrotated_page_size(sel.page);
+            for orig_r in adjust_line_rects_for_highlight(&sel.line_rects_pt) {
+                let tr = transform_rect_for_rotation(orig_r, unrot_w, unrot_h, state.rotation);
+                line_rects_ui.push(SelectionRect {
+                    page: sel.page,
+                    x: tr.0 * zoom,
+                    y: tr.1 * zoom,
+                    width: (tr.2 - tr.0) * zoom,
+                    height: (tr.3 - tr.1) * zoom,
+                });
+            }
+        }
+        ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::from(line_rects_ui)).into());
+        ui.set_has_selection(true);
+    } else {
+        ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
+        ui.set_has_selection(false);
+    }
+
+    has_sel
 }
 
 fn get_page_highlights(state: &AppState, page: i32) -> Vec<pdf::worker::HighlightOverlay> {
@@ -3514,11 +3606,38 @@ fn setup_callbacks(
         });
     }
 
+    struct AutoScrollDragState {
+        is_active: bool,
+        origin_page: i32,
+        last_local_x: f32,
+        last_local_y: f32,
+        last_viewport_y: f32,
+    }
+
+    let auto_scroll_timer = std::rc::Rc::new(std::cell::RefCell::new(slint::Timer::default()));
+    let auto_scroll_drag_state = std::rc::Rc::new(std::cell::RefCell::new(AutoScrollDragState {
+        is_active: false,
+        origin_page: 0,
+        last_local_x: 0.0,
+        last_local_y: 0.0,
+        last_viewport_y: 0.0,
+    }));
+    let is_auto_scrolling_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // Selection Started
     {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
+        let drag_state = std::rc::Rc::clone(&auto_scroll_drag_state);
+        let timer = std::rc::Rc::clone(&auto_scroll_timer);
         app.on_selection_started(move |page_no, local_x, local_y| {
+            timer.borrow().stop();
+            let mut drag = drag_state.borrow_mut();
+            drag.is_active = true;
+            drag.origin_page = page_no;
+            drag.last_local_x = local_x;
+            drag.last_local_y = local_y;
+
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
                     let zoom = s.zoom_level.max(0.1);
@@ -3529,6 +3648,13 @@ fn setup_callbacks(
                     s.active_selection_snippet.clear();
                     s.active_selection_line_rects.clear();
                     ensure_cached_text(s, page_no);
+
+                    if s.is_scroll_view {
+                        let global_y = get_scroll_page_card_top(s, page_no) + local_y;
+                        if let Some(ui) = app_weak.upgrade() {
+                            drag.last_viewport_y = global_y + ui.get_scroll_content_y();
+                        }
+                    }
                 }
             }
             if let Some(ui) = app_weak.upgrade() {
@@ -3548,55 +3674,120 @@ fn setup_callbacks(
     {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
+        let drag_state = std::rc::Rc::clone(&auto_scroll_drag_state);
+        let timer = std::rc::Rc::clone(&auto_scroll_timer);
+        let is_auto_scrolling = std::sync::Arc::clone(&is_auto_scrolling_flag);
         app.on_selection_dragged(move |page_no, local_x, local_y| {
-            let mut line_rects_ui = Vec::new();
-            let mut has_sel = false;
+            let (is_scroll_view, scroll_y, viewport_h, total_h) = {
+                if let Some(ui) = app_weak.upgrade() {
+                    (ui.get_is_scroll_view(), ui.get_scroll_content_y(), ui.get_scroll_viewport_height(), ui.get_total_scroll_height())
+                } else {
+                    (false, 0.0, 0.0, 0.0)
+                }
+            };
+
+            {
+                let mut drag = drag_state.borrow_mut();
+                drag.is_active = true;
+                drag.origin_page = page_no;
+                drag.last_local_x = local_x;
+                drag.last_local_y = local_y;
+
+                if is_scroll_view && viewport_h > 100.0 {
+                    let global_y = if let Ok(lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_ref() {
+                            get_scroll_page_card_top(s, page_no) + local_y
+                        } else {
+                            local_y
+                        }
+                    } else {
+                        local_y
+                    };
+                    let viewport_y = global_y + scroll_y;
+                    drag.last_viewport_y = viewport_y;
+
+                    let delta = compute_scroll_auto_scroll_delta(viewport_y, viewport_h, 50.0);
+                    let min_scroll = -(total_h - viewport_h).max(0.0);
+                    let can_scroll = (delta < 0.0 && scroll_y > min_scroll) || (delta > 0.0 && scroll_y < 0.0);
+
+                    if can_scroll {
+                        if !timer.borrow().running() {
+                            let state_lock_t = Arc::clone(&state_lock);
+                            let app_weak_t = app_weak.clone();
+                            let drag_state_t = std::rc::Rc::clone(&drag_state);
+                            let is_auto_scrolling_t = std::sync::Arc::clone(&is_auto_scrolling);
+
+                            timer.borrow_mut().start(
+                                slint::TimerMode::Repeated,
+                                std::time::Duration::from_millis(16),
+                                move || {
+                                    let (drag_active, last_x, last_vy) = {
+                                        let drag = drag_state_t.borrow();
+                                        (drag.is_active, drag.last_local_x, drag.last_viewport_y)
+                                    };
+                                    if !drag_active {
+                                        return;
+                                    }
+                                    let Some(ui) = app_weak_t.upgrade() else { return; };
+                                    if !ui.get_is_scroll_view() {
+                                        return;
+                                    }
+                                    let vh = ui.get_scroll_viewport_height();
+                                    if vh <= 100.0 {
+                                        return;
+                                    }
+
+                                    let curr_s = ui.get_scroll_content_y();
+                                    let tot_h = ui.get_total_scroll_height();
+                                    let min_s = -(tot_h - vh).max(0.0);
+                                    let max_s = 0.0f32;
+
+                                    let delta_step = compute_scroll_auto_scroll_delta(last_vy, vh, 50.0);
+                                    if delta_step == 0.0 {
+                                        return;
+                                    }
+
+                                    let next_s = (curr_s + delta_step).clamp(min_s, max_s);
+                                    if (next_s - curr_s).abs() < 0.1 {
+                                        return;
+                                    }
+
+                                    is_auto_scrolling_t.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    ui.set_scroll_content_y(next_s);
+                                    is_auto_scrolling_t.store(false, std::sync::atomic::Ordering::Relaxed);
+
+                                    let clamped_vy = last_vy.clamp(0.0, vh);
+                                    let new_global_y = clamped_vy - next_s;
+
+                                    if let Ok(mut lock) = state_lock_t.lock() {
+                                        if let Some(s) = lock.as_mut() {
+                                            let (target_p, cur_x, cur_y) = resolve_scroll_drag_position_from_global(s, last_x, new_global_y);
+                                            apply_drag_selection(s, &ui, target_p, cur_x, cur_y);
+
+                                            if target_p != s.current_page && target_p >= 0 && target_p < s.total_pages {
+                                                s.current_page = target_p;
+                                                trigger_scroll_page_render_direct(s, target_p, &ui);
+                                                update_page_indicator(s, &ui);
+                                            }
+                                        }
+                                    }
+                                },
+                            );
+                        }
+                    } else {
+                        timer.borrow().stop();
+                    }
+                } else {
+                    timer.borrow().stop();
+                }
+            }
 
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
                     let (target_page, curr_x, curr_y) = resolve_scroll_drag_position(s, page_no, local_x, local_y);
-                    let zoom = s.zoom_level.max(0.1);
-                    let (pt_x, pt_y) = s.to_unrotated_pt(target_page, curr_x / zoom, curr_y / zoom);
-
-                    let selections = compute_multipage_selection(
-                        s,
-                        s.sel_start_page,
-                        s.sel_start_pt,
-                        target_page,
-                        (pt_x, pt_y),
-                    );
-
-                    s.active_selections = selections;
-                    s.active_selection_page = s.active_selections.first().map(|p| p.page).unwrap_or(page_no);
-                    s.active_selection_snippet = s.active_selections.iter().map(|p| p.snippet.as_str()).collect::<Vec<_>>().join("\n");
-                    s.active_selection_line_rects = s.active_selections.first().map(|p| p.line_rects_pt.clone()).unwrap_or_default();
-
-                    if !s.active_selections.is_empty() {
-                        has_sel = true;
-                        for sel in &s.active_selections {
-                            let (unrot_w, unrot_h) = s.get_unrotated_page_size(sel.page);
-                            for orig_r in adjust_line_rects_for_highlight(&sel.line_rects_pt) {
-                                let tr = transform_rect_for_rotation(orig_r, unrot_w, unrot_h, s.rotation);
-                                line_rects_ui.push(SelectionRect {
-                                    page: sel.page,
-                                    x: tr.0 * zoom,
-                                    y: tr.1 * zoom,
-                                    width: (tr.2 - tr.0) * zoom,
-                                    height: (tr.3 - tr.1) * zoom,
-                                });
-                            }
-                        }
+                    if let Some(ui) = app_weak.upgrade() {
+                        apply_drag_selection(s, &ui, target_page, curr_x, curr_y);
                     }
-                }
-            }
-
-            if let Some(ui) = app_weak.upgrade() {
-                if has_sel {
-                    ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::from(line_rects_ui)).into());
-                    ui.set_has_selection(true);
-                } else {
-                    ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
-                    ui.set_has_selection(false);
                 }
             }
         });
@@ -3606,7 +3797,12 @@ fn setup_callbacks(
     {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
+        let drag_state = std::rc::Rc::clone(&auto_scroll_drag_state);
+        let timer = std::rc::Rc::clone(&auto_scroll_timer);
         app.on_selection_completed(move |page_no, local_x, local_y| {
+            timer.borrow().stop();
+            drag_state.borrow_mut().is_active = false;
+
             let mut line_rects_ui = Vec::new();
             let mut has_sel = false;
             let mut popup_page = page_no;
@@ -3647,12 +3843,21 @@ fn setup_callbacks(
                                 });
                             }
                         }
-                        if let Some(first) = line_rects_ui.first() {
-                            let (pw_pt, _) = s.get_page_size(first.page);
+                        let end_rect_opt = if target_page >= s.sel_start_page {
+                            line_rects_ui.last()
+                        } else {
+                            line_rects_ui.first()
+                        };
+                        if let Some(rect) = end_rect_opt {
+                            let (pw_pt, _) = s.get_page_size(rect.page);
                             let page_w = pw_pt * zoom;
-                            popup_page = first.page;
-                            popup_x = ((first.x + (first.width - 296.0) / 2.0).clamp(10.0, (page_w - 306.0).max(10.0))).round();
-                            popup_y = ((first.y - 58.0).max(8.0)).round();
+                            popup_page = rect.page;
+                            popup_x = ((rect.x + (rect.width - 296.0) / 2.0).clamp(10.0, (page_w - 306.0).max(10.0))).round();
+                            if target_page >= s.sel_start_page {
+                                popup_y = (rect.y + rect.height + 12.0).round();
+                            } else {
+                                popup_y = ((rect.y - 58.0).max(8.0)).round();
+                            }
                         }
                     } else {
                         s.active_selections.clear();
@@ -3667,7 +3872,7 @@ fn setup_callbacks(
                     ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::from(line_rects_ui)).into());
                     ui.set_has_selection(true);
                     ui.set_selected_annotation_id(-1);
-                ui.set_selected_annotation_kind("".into());
+                    ui.set_selected_annotation_kind("".into());
                     ui.set_popup_page(popup_page);
                     ui.set_popup_x(popup_x);
                     ui.set_popup_y(popup_y);
@@ -3680,6 +3885,48 @@ fn setup_callbacks(
                     ui.set_current_note_text("".into());
                     ui.set_selected_annotation_id(-1);
                     ui.set_selected_annotation_kind("".into());
+                }
+            }
+        });
+    }
+
+    // Scroll Content Y Changed (for wheel scrolling while drag-selecting)
+    {
+        let state_lock = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        let drag_state = std::rc::Rc::clone(&auto_scroll_drag_state);
+        let is_auto_scrolling = std::sync::Arc::clone(&is_auto_scrolling_flag);
+        app.on_scroll_content_y_changed(move |new_scroll_y| {
+            if is_auto_scrolling.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            let (drag_active, last_x, last_vy) = {
+                let drag = drag_state.borrow();
+                (drag.is_active, drag.last_local_x, drag.last_viewport_y)
+            };
+            if !drag_active {
+                return;
+            }
+            let Some(ui) = app_weak.upgrade() else { return; };
+            if !ui.get_is_scroll_view() {
+                return;
+            }
+            let vh = ui.get_scroll_viewport_height();
+            if vh <= 100.0 {
+                return;
+            }
+            let clamped_vy = last_vy.clamp(0.0, vh);
+            let new_global_y = clamped_vy - new_scroll_y;
+
+            if let Ok(mut lock) = state_lock.lock() {
+                if let Some(s) = lock.as_mut() {
+                    let (target_p, cur_x, cur_y) = resolve_scroll_drag_position_from_global(s, last_x, new_global_y);
+                    apply_drag_selection(s, &ui, target_p, cur_x, cur_y);
+                    if target_p != s.current_page && target_p >= 0 && target_p < s.total_pages {
+                        s.current_page = target_p;
+                        trigger_scroll_page_render_direct(s, target_p, &ui);
+                        update_page_indicator(s, &ui);
+                    }
                 }
             }
         });
@@ -4515,7 +4762,11 @@ fn setup_callbacks(
     {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
+        let drag_state = std::rc::Rc::clone(&auto_scroll_drag_state);
+        let timer = std::rc::Rc::clone(&auto_scroll_timer);
         app.on_clear_selection(move || {
+            timer.borrow().stop();
+            drag_state.borrow_mut().is_active = false;
             if let Ok(mut lock) = state_lock.lock() {
                 if let Some(s) = lock.as_mut() {
                     s.active_selections.clear();
@@ -5760,6 +6011,126 @@ mod tests {
         let (p, _x, y) = super::resolve_scroll_drag_position(&state, 0, 100.0, 1600.0);
         assert_eq!(p, 2);
         assert!((y - 152.0).abs() < 0.01);
+
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn test_compute_scroll_auto_scroll_delta() {
+        let vh = 800.0;
+        let margin = 50.0;
+
+        // Middle of screen: no scroll
+        assert_eq!(super::compute_scroll_auto_scroll_delta(400.0, vh, margin), 0.0);
+        assert_eq!(super::compute_scroll_auto_scroll_delta(60.0, vh, margin), 0.0);
+        assert_eq!(super::compute_scroll_auto_scroll_delta(740.0, vh, margin), 0.0);
+
+        // Near bottom: scroll down (negative delta)
+        let d_bottom = super::compute_scroll_auto_scroll_delta(770.0, vh, margin);
+        assert!(d_bottom < 0.0);
+        assert_eq!(d_bottom, -(10.0 + 20.0 * 0.4)); // -18.0
+
+        // Dragged past bottom of viewport: clamped to max speed
+        let d_far_bottom = super::compute_scroll_auto_scroll_delta(950.0, vh, margin);
+        assert_eq!(d_far_bottom, -40.0);
+
+        // Near top: scroll up (positive delta)
+        let d_top = super::compute_scroll_auto_scroll_delta(30.0, vh, margin);
+        assert!(d_top > 0.0);
+        assert_eq!(d_top, 10.0 + 20.0 * 0.4); // 18.0
+
+        // Dragged past top: clamped to max speed
+        let d_far_top = super::compute_scroll_auto_scroll_delta(-100.0, vh, margin);
+        assert_eq!(d_far_top, 40.0);
+    }
+
+    #[test]
+    fn test_resolve_scroll_drag_position_across_many_pages() {
+        let (mut state, pdf_path) = setup_test_state();
+        state.is_scroll_view = true;
+        state.total_pages = 6;
+        state.page_sizes = vec![(500.0, 700.0); 6];
+        state.zoom_level = 1.0;
+
+        // Dragging starting from Page 0 into Page 4: local_y on Page 0 is 3000.0
+        // global_y = 12 + 3000 = 3012.0
+        // Page 4 card_top = 2908.0, local_y on Page 4 = 3012 - 2908 = 104.0
+        let (p, _x, y) = super::resolve_scroll_drag_position(&state, 0, 100.0, 3000.0);
+        assert_eq!(p, 4);
+        assert!((y - 104.0).abs() < 0.01);
+
+        // Dragging starting from Page 0 into Page 5: local_y on Page 0 is 3800.0
+        // global_y = 12 + 3800 = 3812.0
+        // Page 5 card_top = 3632.0, local_y on Page 5 = 3812 - 3632 = 180.0
+        let (p, _x, y) = super::resolve_scroll_drag_position(&state, 0, 100.0, 3800.0);
+        assert_eq!(p, 5);
+        assert!((y - 180.0).abs() < 0.01);
+
+        // Direct global resolution:
+        let (p, _x, y) = super::resolve_scroll_drag_position_from_global(&state, 100.0, 2500.0);
+        assert_eq!(p, 3);
+        assert!((y - (2500.0 - 2184.0)).abs() < 0.01);
+
+        // Clamping past end of document:
+        let (p, _x, y) = super::resolve_scroll_drag_position_from_global(&state, 100.0, 5000.0);
+        assert_eq!(p, 5);
+        assert_eq!(y, 700.0);
+
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn test_multipage_selection_spanning_five_pages() {
+        let (mut state, pdf_path) = setup_test_state();
+        state.total_pages = 5;
+        state.page_sizes = vec![(500.0, 700.0); 5];
+
+        // Populate page_text_cache for all 5 pages
+        for p in 0..5 {
+            let line = crate::pdf::PageLine {
+                x0: 50.0,
+                y0: 100.0,
+                x1: 250.0,
+                y1: 120.0,
+                baseline_y: 115.0,
+                chars: format!("Page {p} content line")
+                    .chars()
+                    .enumerate()
+                    .map(|(i, ch)| crate::pdf::PageChar {
+                        ch,
+                        x0: 50.0 + i as f32 * 10.0,
+                        y0: 100.0,
+                        x1: 60.0 + i as f32 * 10.0,
+                        y1: 120.0,
+                        baseline_y: 115.0,
+                    })
+                    .collect(),
+            };
+            state.page_text_cache.insert(p, crate::pdf::PageTextData { lines: vec![line] });
+        }
+
+        // Selection from page 0 to page 4 (spanning 5 pages!)
+        let selections = super::compute_multipage_selection(
+            &mut state,
+            0,
+            (50.0, 100.0),
+            4,
+            (250.0, 120.0),
+        );
+
+        assert_eq!(selections.len(), 5);
+        assert_eq!(selections[0].page, 0);
+        assert_eq!(selections[1].page, 1);
+        assert_eq!(selections[2].page, 2);
+        assert_eq!(selections[3].page, 3);
+        assert_eq!(selections[4].page, 4);
+
+        let full_text = selections.iter().map(|s| s.snippet.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(full_text.contains("Page 0"));
+        assert!(full_text.contains("Page 1"));
+        assert!(full_text.contains("Page 2"));
+        assert!(full_text.contains("Page 3"));
+        assert!(full_text.contains("Page 4"));
 
         let _ = std::fs::remove_file(pdf_path);
     }
