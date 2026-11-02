@@ -479,18 +479,14 @@ fn init_display_environment() {
             env::set_var("WINIT_UNIX_BACKEND", "wayland");
         }
     }
+}
 
-    // 2. Auto-detect display scaling (e.g. 1.25 on fractional Wayland displays)
-    // and set SLINT_SCALE_FACTOR before the window backend initializes.
-    if env::var("SLINT_SCALE_FACTOR").is_err() {
-        if let Some(scale) = detect_system_scale_factor() {
-            if (scale - 1.0).abs() > 0.01 {
-                // Safe: called synchronously at program startup before any worker threads are created.
-                unsafe {
-                    env::set_var("SLINT_SCALE_FACTOR", scale.to_string());
-                }
-            }
-        }
+pub fn get_effective_scale_factor(window: &slint::Window) -> f32 {
+    let sf = window.scale_factor();
+    if sf > 1.01 {
+        sf
+    } else {
+        detect_system_scale_factor().unwrap_or(1.0)
     }
 }
 
@@ -676,6 +672,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.invoke_grab_focus();
         }
     });
+
+    // Observe Wayland/X11 window scale factor changes (e.g. initial mapping, moving across monitors, or DPI changes)
+    let last_scale_factor = Arc::new(std::sync::atomic::AtomicU32::new(
+        (get_effective_scale_factor(app.window()) * 1000.0) as u32,
+    ));
+    let scale_timer = slint::Timer::default();
+    let app_weak_scale = app.as_weak();
+    let tab_manager_scale = tab_manager.clone();
+    let last_scale_clone = last_scale_factor.clone();
+    scale_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(200),
+        move || {
+            if let Some(app) = app_weak_scale.upgrade() {
+                let current_sf = app.window().scale_factor();
+                if current_sf > 0.1 {
+                    let current_key = (current_sf * 1000.0) as u32;
+                    let last_key = last_scale_clone.load(std::sync::atomic::Ordering::Relaxed);
+                    if current_key != last_key && (current_key as i32 - last_key as i32).abs() > 10 {
+                        last_scale_clone.store(current_key, std::sync::atomic::Ordering::Relaxed);
+                        if let Ok(mut mgr) = tab_manager_scale.lock() {
+                            if let Some(tab) = mgr.active_tab_mut() {
+                                tab.state.cache.clear();
+                                update_view_with_state(&mut tab.state, &app);
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    );
 
     app.run()?;
 
@@ -2251,7 +2278,7 @@ fn update_view(ui: &AppWindow, state_lock: &Arc<Mutex<TabManager>>) {
 
 fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
 
-    let scale_factor = ui.window().scale_factor().max(1.0);
+    let scale_factor = get_effective_scale_factor(ui.window());
     let actual_render_zoom = compute_actual_render_zoom(state.zoom_level, scale_factor);
 
     // Update toolbar page indicator: e.g. "1 / 120" or "1-2 / 120"
@@ -2445,7 +2472,7 @@ fn prefetch_neighbors(state: &mut AppState, generation: u64, zoom: f32) {
 }
 
 fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindow) {
-    let scale_factor = ui.window().scale_factor().max(1.0);
+    let scale_factor = get_effective_scale_factor(ui.window());
     let actual_render_zoom = compute_actual_render_zoom(state.zoom_level, scale_factor);
 
     let next_gen = state.worker.current_generation() + 1;
@@ -2498,7 +2525,7 @@ fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindo
 }
 
 fn trigger_scroll_page_render_direct(state: &mut AppState, page_idx: i32, ui: &AppWindow) {
-    let scale_factor = ui.window().scale_factor().max(1.0);
+    let scale_factor = get_effective_scale_factor(ui.window());
     let actual_render_zoom = compute_actual_render_zoom(state.zoom_level, scale_factor);
 
     let next_gen = state.worker.current_generation() + 1;
@@ -4932,7 +4959,7 @@ fn setup_callbacks(
             if let Some(ui) = app_weak.upgrade() {
                 ui.set_suppress_page_change(true);
                 let phys_size = ui.window().size();
-                let scale_factor = ui.window().scale_factor().max(1.0);
+                let scale_factor = get_effective_scale_factor(ui.window());
                 let sidebar_w = if ui.get_show_sidebar() { ui.get_sidebar_width() } else { 0.0 };
                 let avail_w = ((phys_size.width as f32 / scale_factor) - 88.0 - sidebar_w).max(100.0);
                 let avail_h = ((phys_size.height as f32 / scale_factor) - 120.0).max(100.0);
@@ -4970,7 +4997,7 @@ fn setup_callbacks(
             if let Some(ui) = app_weak.upgrade() {
                 ui.set_suppress_page_change(true);
                 let phys_size = ui.window().size();
-                let scale_factor = ui.window().scale_factor().max(1.0);
+                let scale_factor = get_effective_scale_factor(ui.window());
                 let sidebar_w = if ui.get_show_sidebar() { ui.get_sidebar_width() } else { 0.0 };
                 let avail_w = ((phys_size.width as f32 / scale_factor) - 88.0 - sidebar_w).max(100.0);
 

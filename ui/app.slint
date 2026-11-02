@@ -86,8 +86,8 @@ component IconButton inherits Rectangle {
     height: root.size;
     border-radius: 8px;
     background: !root.enabled ? transparent : (root.accent-active && root.active) ? Theme.accent : root.active ? Theme.active-bg : ta.pressed ? Theme.active-bg : ta.has-hover ? Theme.hover-bg : transparent;
-    border-width: 1px;
-    border-color: (root.accent-active && root.active) ? Theme.accent-border : root.active ? Theme.border-strong : ta.has-hover && root.enabled ? Theme.border : transparent;
+    border-width: ((root.accent-active && root.active) || root.active || (ta.has-hover && root.enabled)) ? 1px : 0px;
+    border-color: (root.accent-active && root.active) ? Theme.accent-border : root.active ? Theme.border-strong : Theme.border;
     animate background { duration: 120ms; easing: ease-out; }
     animate border-color { duration: 120ms; easing: ease-out; }
 
@@ -95,6 +95,7 @@ component IconButton inherits Rectangle {
         source: root.icon;
         width: root.icon-size;
         height: root.icon-size;
+        image-fit: contain;
         colorize: !root.enabled ? Theme.text-disabled : (root.accent-active && root.active) ? Theme.on-accent : root.active ? Theme.text-primary : ta.has-hover ? Theme.text-primary : Theme.text-secondary;
         animate colorize { duration: 120ms; }
     }
@@ -158,14 +159,15 @@ component NavRailButton inherits Rectangle {
     height: 42px;
     border-radius: 12px;
     background: !root.enabled ? transparent : root.active ? Theme.rail-active-bg : ta.pressed ? Theme.active-bg : ta.has-hover ? Theme.hover-bg : transparent;
-    border-width: root.active ? 1.5px : 1px;
-    border-color: root.active ? Theme.rail-active-border : ta.has-hover && root.enabled ? Theme.border-strong : transparent;
+    border-width: root.active ? 1.5px : (ta.has-hover && root.enabled) ? 1px : 0px;
+    border-color: root.active ? Theme.rail-active-border : Theme.border-strong;
     animate background { duration: 120ms; easing: ease-out; }
     animate border-color { duration: 120ms; easing: ease-out; }
 
     Image {
-        width: 18px;
-        height: 18px;
+        width: 20px;
+        height: 20px;
+        image-fit: contain;
         source: root.icon;
         colorize: !root.enabled ? Theme.text-muted : root.active ? Theme.rail-active-icon : ta.has-hover ? Theme.text-primary : Theme.text-secondary;
         horizontal-alignment: center;
@@ -229,6 +231,7 @@ component SignaturePillButton inherits Rectangle {
             source: root.icon;
             width: 18px;
             height: 18px;
+            image-fit: contain;
             colorize: Theme.on-accent;
             y: (parent.height - self.height) / 2;
         }
@@ -298,6 +301,7 @@ component ViewModeSegment inherits Rectangle {
             source: root.icon;
             width: 17px;
             height: 17px;
+            image-fit: contain;
             colorize: root.active ? Theme.text-primary : Theme.text-secondary;
             y: (parent.height - self.height) / 2;
         }
@@ -393,6 +397,7 @@ component TabItem inherits Rectangle {
                 source: @image-url("../assets/icons/file-text.svg");
                 width: 14px;
                 height: 14px;
+                image-fit: contain;
                 colorize: root.is-active ? Theme.accent : Theme.text-secondary;
                 y: (parent.height - self.height) / 2;
             }
