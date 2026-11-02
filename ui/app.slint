@@ -77,6 +77,9 @@ component IconButton inherits Rectangle {
     in property <bool> accent-active: false;
     in property <length> size: 32px;
     in property <length> icon-size: 16px;
+    in property <string> tooltip: "";
+    in property <string> tooltip-position: "bottom"; // "bottom", "top", "left", "right"
+    in property <string> tooltip-align: "center"; // "center", "left", "right"
     callback clicked();
 
     width: root.size;
@@ -111,12 +114,44 @@ component IconButton inherits Rectangle {
         clicked => { root.clicked(); }
         mouse-cursor: root.enabled ? pointer : default;
     }
+
+    if root.tooltip != "" && ta.has-hover && root.enabled: Rectangle {
+        x: root.tooltip-position == "left" ? (-self.width - 6px) :
+           root.tooltip-position == "right" ? (root.width + 6px) :
+           root.tooltip-align == "left" ? 0px :
+           root.tooltip-align == "right" ? (root.width - self.width) :
+           (root.width - self.width) / 2;
+        y: root.tooltip-position == "top" ? (-self.height - 6px) :
+           root.tooltip-position == "left" || root.tooltip-position == "right" ? (root.height - self.height) / 2 :
+           (root.height + 6px);
+        width: tip-text.preferred-width + 16px;
+        height: 24px;
+        background: Theme.dark ? #181914 : #FFFFFF;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+        drop-shadow-blur: 10px;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+        z: 1000;
+
+        tip-text := Text {
+            text: root.tooltip;
+            font-family: "Inter";
+            font-size: 11px;
+            font-weight: 500;
+            color: Theme.dark ? #F4F5F0 : #10110C;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
 }
 
 component NavRailButton inherits Rectangle {
     in property <image> icon;
     in property <bool> active: false;
     in property <bool> enabled: true;
+    in property <string> tooltip: "";
     callback clicked();
 
     width: 42px;
@@ -143,12 +178,38 @@ component NavRailButton inherits Rectangle {
         clicked => { root.clicked(); }
         mouse-cursor: root.enabled ? pointer : default;
     }
+
+    if root.tooltip != "" && ta.has-hover && root.enabled: Rectangle {
+        x: root.width + 8px;
+        y: (root.height - self.height) / 2;
+        width: rail-tip-text.preferred-width + 16px;
+        height: 24px;
+        background: Theme.dark ? #181914 : #FFFFFF;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+        drop-shadow-blur: 10px;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+        z: 1000;
+
+        rail-tip-text := Text {
+            text: root.tooltip;
+            font-family: "Inter";
+            font-size: 11px;
+            font-weight: 500;
+            color: Theme.dark ? #F4F5F0 : #10110C;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
 }
 
 component SignaturePillButton inherits Rectangle {
     in property <image> icon;
     in property <bool> has-icon: true;
     in property <string> text: "Open PDF";
+    in property <string> tooltip: "";
     callback clicked();
 
     height: 38px;
@@ -186,12 +247,38 @@ component SignaturePillButton inherits Rectangle {
         clicked => { root.clicked(); }
         mouse-cursor: pointer;
     }
+
+    if root.tooltip != "" && ta.has-hover: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height + 6px;
+        width: sig-tip-text.preferred-width + 16px;
+        height: 24px;
+        background: Theme.dark ? #181914 : #FFFFFF;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+        drop-shadow-blur: 10px;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+        z: 1000;
+
+        sig-tip-text := Text {
+            text: root.tooltip;
+            font-family: "Inter";
+            font-size: 11px;
+            font-weight: 500;
+            color: Theme.dark ? #F4F5F0 : #10110C;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
 }
 
 component ViewModeSegment inherits Rectangle {
     in property <image> icon;
     in property <string> text;
     in property <bool> active: false;
+    in property <string> tooltip: "";
     callback clicked();
 
     height: 32px;
@@ -229,6 +316,31 @@ component ViewModeSegment inherits Rectangle {
         clicked => { root.clicked(); }
         mouse-cursor: pointer;
     }
+
+    if root.tooltip != "" && ta.has-hover: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height + 6px;
+        width: vm-tip-text.preferred-width + 16px;
+        height: 24px;
+        background: Theme.dark ? #181914 : #FFFFFF;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+        drop-shadow-blur: 10px;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+        z: 1000;
+
+        vm-tip-text := Text {
+            text: root.tooltip;
+            font-family: "Inter";
+            font-size: 11px;
+            font-weight: 500;
+            color: Theme.dark ? #F4F5F0 : #10110C;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
 }
 
 component TabItem inherits Rectangle {
@@ -247,7 +359,7 @@ component TabItem inherits Rectangle {
     background: root.is-active ? Theme.card-bg : tab-ta.has-hover ? Theme.hover-bg : transparent;
     border-width: 1px;
     border-color: root.is-active ? Theme.border : transparent;
-    clip: true;
+    clip: false;
 
     // Top active indicator line
     if root.is-active: Rectangle {
@@ -327,6 +439,31 @@ component TabItem inherits Rectangle {
                 close-ta := TouchArea {
                     clicked => { root.close-clicked(); }
                     mouse-cursor: pointer;
+                }
+
+                if close-ta.has-hover: Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height + 6px;
+                    width: tabclose-tip.preferred-width + 16px;
+                    height: 24px;
+                    background: Theme.dark ? #181914 : #FFFFFF;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                    drop-shadow-blur: 10px;
+                    drop-shadow-offset-y: 3px;
+                    drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                    z: 1000;
+
+                    tabclose-tip := Text {
+                        text: "Close tab (Ctrl+W)";
+                        font-family: "Inter";
+                        font-size: 11px;
+                        font-weight: 500;
+                        color: Theme.dark ? #F4F5F0 : #10110C;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
                 }
             }
         }
@@ -1073,6 +1210,7 @@ VerticalLayout {
             if !root.is-zen-mode && root.open-tabs.length > 0: Rectangle {
                 height: 38px;
                 background: Theme.sidebar-bg;
+                z: 70;
 
                 Rectangle {
                     y: parent.height - 1px;
@@ -1126,6 +1264,31 @@ VerticalLayout {
                             clicked => { root.new-tab(); }
                             mouse-cursor: pointer;
                         }
+
+                        if new-tab-ta.has-hover: Rectangle {
+                            x: (parent.width - self.width) / 2;
+                            y: parent.height + 6px;
+                            width: newtab-tip.preferred-width + 16px;
+                            height: 24px;
+                            background: Theme.dark ? #181914 : #FFFFFF;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                            drop-shadow-blur: 10px;
+                            drop-shadow-offset-y: 3px;
+                            drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                            z: 1000;
+
+                            newtab-tip := Text {
+                                text: "New tab (Ctrl+T)";
+                                font-family: "Inter";
+                                font-size: 11px;
+                                font-weight: 500;
+                                color: Theme.dark ? #F4F5F0 : #10110C;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+                        }
                     }
                 }
             }
@@ -1135,6 +1298,7 @@ VerticalLayout {
                 height: 60px;
                 background: Theme.card-bg;
                 border-width: 0;
+                z: 60;
 
                 Rectangle {
                     y: parent.height - 1px;
@@ -1202,12 +1366,38 @@ VerticalLayout {
                                 clicked => { root.show-recent-books = !root.show-recent-books; }
                                 mouse-cursor: pointer;
                             }
+
+                            if chip-ta.has-hover: Rectangle {
+                                x: 0px;
+                                y: parent.height + 6px;
+                                width: chip-tip.preferred-width + 16px;
+                                height: 24px;
+                                background: Theme.dark ? #181914 : #FFFFFF;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                                drop-shadow-blur: 10px;
+                                drop-shadow-offset-y: 3px;
+                                drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                                z: 1000;
+
+                                chip-tip := Text {
+                                    text: "Recent documents";
+                                    font-family: "Inter";
+                                    font-size: 11px;
+                                    font-weight: 500;
+                                    color: Theme.dark ? #F4F5F0 : #10110C;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: center;
+                                }
+                            }
                         }
 
                         // Signature Accent Button: Open PDF (before undo/redo)
                         SignaturePillButton {
                             icon: @image-url("../assets/icons/folder-open.svg");
                             text: "Open PDF";
+                            tooltip: "Open PDF (Ctrl+O)";
                             y: (parent.height - self.height) / 2;
                             clicked => { root.open-document(); }
                         }
@@ -1249,6 +1439,31 @@ VerticalLayout {
                             save-ta := TouchArea {
                                 clicked => { root.save-document(); }
                                 mouse-cursor: pointer;
+                            }
+
+                            if save-ta.has-hover: Rectangle {
+                                x: (parent.width - self.width) / 2;
+                                y: parent.height + 6px;
+                                width: save-tip.preferred-width + 16px;
+                                height: 24px;
+                                background: Theme.dark ? #181914 : #FFFFFF;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                                drop-shadow-blur: 10px;
+                                drop-shadow-offset-y: 3px;
+                                drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                                z: 1000;
+
+                                save-tip := Text {
+                                    text: "Save annotations to PDF (Ctrl+S)";
+                                    font-family: "Inter";
+                                    font-size: 11px;
+                                    font-weight: 500;
+                                    color: Theme.dark ? #F4F5F0 : #10110C;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: center;
+                                }
                             }
                         }
 
@@ -1294,6 +1509,7 @@ VerticalLayout {
                             size: 38px;
                             border-radius: 19px;
                             y: (parent.height - self.height) / 2;
+                            tooltip: "Undo (Ctrl+Z)";
                             clicked => { root.undo(); }
                         }
 
@@ -1304,6 +1520,7 @@ VerticalLayout {
                             size: 38px;
                             border-radius: 19px;
                             y: (parent.height - self.height) / 2;
+                            tooltip: "Redo (Ctrl+Y)";
                             clicked => { root.redo(); }
                         }
                     }
@@ -1330,6 +1547,7 @@ VerticalLayout {
                                     icon: @image-url("../assets/icons/book-open.svg");
                                     text: "Page";
                                     active: !root.is-scroll-view && !root.is-dual-page;
+                                    tooltip: "Single page view (Ctrl+1)";
                                     clicked => {
                                         root.set-dual-page(false);
                                         root.set-view-mode(false);
@@ -1340,6 +1558,7 @@ VerticalLayout {
                                     icon: @image-url("../assets/icons/columns-2.svg");
                                     text: "Dual";
                                     active: !root.is-scroll-view && root.is-dual-page;
+                                    tooltip: "Dual page spread (Ctrl+Alt+D)";
                                     clicked => {
                                         root.set-dual-page(true);
                                     }
@@ -1349,6 +1568,7 @@ VerticalLayout {
                                     icon: @image-url("../assets/icons/scroll.svg");
                                     text: "Scroll";
                                     active: root.is-scroll-view;
+                                    tooltip: "Continuous scroll view (Ctrl+3)";
                                     clicked => {
                                         root.set-dual-page(false);
                                         root.set-view-mode(true);
@@ -1397,6 +1617,31 @@ VerticalLayout {
                                 }
                                 mouse-cursor: pointer;
                             }
+
+                            if cover-ta.has-hover: Rectangle {
+                                x: (parent.width - self.width) / 2;
+                                y: parent.height + 6px;
+                                width: cover-tip-text.preferred-width + 16px;
+                                height: 24px;
+                                background: Theme.dark ? #181914 : #FFFFFF;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                                drop-shadow-blur: 10px;
+                                drop-shadow-offset-y: 3px;
+                                drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                                z: 1000;
+
+                                cover-tip-text := Text {
+                                    text: "First page as cover (alone) (Ctrl+Alt+C)";
+                                    font-family: "Inter";
+                                    font-size: 11px;
+                                    font-weight: 500;
+                                    color: Theme.dark ? #F4F5F0 : #10110C;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: center;
+                                }
+                            }
                         }
 
                         // Page Stepper Pill: < Page 12 / 145 >
@@ -1421,6 +1666,7 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
+                                    tooltip: "Previous page (PageUp / ←)";
                                     clicked => { root.prev-page(); }
                                 }
 
@@ -1494,6 +1740,7 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
+                                    tooltip: "Next page (PageDown / →)";
                                     clicked => { root.next-page(); }
                                 }
                             }
@@ -1526,6 +1773,7 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
+                                    tooltip: "Zoom out (Ctrl+-)";
                                     clicked => { root.is-fit-width = false; root.zoom-out(); }
                                 }
 
@@ -1548,6 +1796,31 @@ VerticalLayout {
                                         clicked => { root.is-fit-width = false; root.zoom-reset(); }
                                         mouse-cursor: pointer;
                                     }
+
+                                    if zoom-ta.has-hover: Rectangle {
+                                        x: (parent.width - self.width) / 2;
+                                        y: parent.height + 6px;
+                                        width: zoom-tip.preferred-width + 16px;
+                                        height: 24px;
+                                        background: Theme.dark ? #181914 : #FFFFFF;
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                                        drop-shadow-blur: 10px;
+                                        drop-shadow-offset-y: 3px;
+                                        drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                                        z: 1000;
+
+                                        zoom-tip := Text {
+                                            text: "Reset zoom to 200%";
+                                            font-family: "Inter";
+                                            font-size: 11px;
+                                            font-weight: 500;
+                                            color: Theme.dark ? #F4F5F0 : #10110C;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
                                 }
 
                                 IconButton {
@@ -1556,6 +1829,7 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
+                                    tooltip: "Zoom in (Ctrl+=)";
                                     clicked => { root.is-fit-width = false; root.zoom-in(); }
                                 }
 
@@ -1565,6 +1839,7 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
+                                    tooltip: "Fit to page (Ctrl+0)";
                                     clicked => { root.is-fit-width = false; root.zoom-fit(); }
                                 }
 
@@ -1575,6 +1850,7 @@ VerticalLayout {
                                     border-radius: 15px;
                                     active: root.is-fit-width;
                                     y: (parent.height - self.height) / 2;
+                                    tooltip: "Fit to width (Ctrl+2 / W)";
                                     clicked => { root.is-fit-width = true; root.zoom-fit-width(); }
                                 }
 
@@ -1584,6 +1860,7 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
+                                    tooltip: root.is-zen-mode ? "Exit Zen mode (F11)" : "Zen mode (F11)";
                                     clicked => { root.toggle-zen-mode(); }
                                 }
 
@@ -1600,6 +1877,7 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
+                                    tooltip: "Rotate clockwise (R)";
                                     clicked => { root.rotate-clockwise(); }
                                 }
 
@@ -1616,6 +1894,7 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
+                                    tooltip: "Document properties (Ctrl+I)";
                                     clicked => { root.show-doc-info = true; }
                                 }
 
@@ -1632,6 +1911,8 @@ VerticalLayout {
                                     icon-size: 18px;
                                     border-radius: 15px;
                                     y: (parent.height - self.height) / 2;
+                                    tooltip: "Print document (Ctrl+P)";
+                                    tooltip-align: "right";
                                     clicked => { root.open-print-dialog(); }
                                 }
                             }
@@ -1649,6 +1930,7 @@ VerticalLayout {
                 if !root.is-zen-mode: Rectangle {
                     width: 58px;
                     background: Theme.card-bg;
+                    z: 50;
                     Rectangle {
                         x: parent.width - 1px;
                         width: 1px;
@@ -1699,6 +1981,7 @@ VerticalLayout {
                             NavRailButton {
                                 icon: @image-url("../assets/icons/list.svg");
                                 active: root.show-sidebar && root.sidebar-tab == 0;
+                                tooltip: "Table of contents";
                                 clicked => {
                                     if (root.show-sidebar && root.sidebar-tab == 0) {
                                         root.toggle-sidebar();
@@ -1712,6 +1995,7 @@ VerticalLayout {
                             NavRailButton {
                                 icon: @image-url("../assets/icons/highlighter.svg");
                                 active: root.show-sidebar && root.sidebar-tab == 1;
+                                tooltip: "Highlights";
                                 clicked => {
                                     if (root.show-sidebar && root.sidebar-tab == 1) {
                                         root.toggle-sidebar();
@@ -1725,6 +2009,7 @@ VerticalLayout {
                             NavRailButton {
                                 icon: @image-url("../assets/icons/message-square.svg");
                                 active: root.show-sidebar && root.sidebar-tab == 2;
+                                tooltip: "Notes";
                                 clicked => {
                                     if (root.show-sidebar && root.sidebar-tab == 2) {
                                         root.toggle-sidebar();
@@ -1738,6 +2023,7 @@ VerticalLayout {
                             NavRailButton {
                                 icon: @image-url("../assets/icons/search.svg");
                                 active: root.show-sidebar && root.sidebar-tab == 3;
+                                tooltip: "Search document (Ctrl+F)";
                                 clicked => {
                                     if (root.show-sidebar && root.sidebar-tab == 3) {
                                         root.close-search();
@@ -1758,6 +2044,7 @@ VerticalLayout {
                             // Paper Theme (Document Color Mode)
                             NavRailButton {
                                 icon: @image-url("../assets/icons/palette.svg");
+                                tooltip: "Document theme (Light / Sepia / Dark)";
                                 clicked => {
                                     root.cycle-paper-theme();
                                 }
@@ -1766,6 +2053,7 @@ VerticalLayout {
                             // App Chrome Theme (Dark / Light UI)
                             NavRailButton {
                                 icon: Theme.dark ? @image-url("../assets/icons/sun.svg") : @image-url("../assets/icons/moon.svg");
+                                tooltip: Theme.dark ? "Switch to light UI" : "Switch to dark UI";
                                 clicked => {
                                     root.toggle-theme();
                                 }
@@ -2048,6 +2336,7 @@ VerticalLayout {
                                         icon-size: 18px;
                                         border-radius: 8px;
                                         active: root.show-sort-menu || root.annotation-sort-mode > 0;
+                                        tooltip: "Sort annotations";
                                         clicked => {
                                             root.show-sort-menu = !root.show-sort-menu;
                                         }
@@ -2058,6 +2347,7 @@ VerticalLayout {
                                         size: 32px;
                                         icon-size: 18px;
                                         border-radius: 8px;
+                                        tooltip: "Copy annotations to clipboard";
                                         clicked => { root.copy-annotations-markdown(); }
                                     }
 
@@ -2066,6 +2356,7 @@ VerticalLayout {
                                         size: 32px;
                                         icon-size: 18px;
                                         border-radius: 8px;
+                                        tooltip: "Export annotations as Markdown";
                                         clicked => { root.export-annotations-markdown(); }
                                     }
 
@@ -2074,6 +2365,8 @@ VerticalLayout {
                                         size: 32px;
                                         icon-size: 18px;
                                         border-radius: 8px;
+                                        tooltip: "Close sidebar";
+                                        tooltip-align: "right";
                                         clicked => {
                                             if (root.sidebar-tab == 3) {
                                                 root.close-search();
@@ -2338,6 +2631,8 @@ VerticalLayout {
                                                 icon-size: 18px;
                                                 border-radius: 8px;
                                                 y: (parent.height - self.height) / 2;
+                                                tooltip: "Delete highlight";
+                                                tooltip-align: "right";
                                                 clicked => { root.delete-annotation(item.id); }
                                             }
                                         }
@@ -2496,6 +2791,8 @@ VerticalLayout {
                                                 icon-size: 18px;
                                                 border-radius: 8px;
                                                 y: (parent.height - self.height) / 2;
+                                                tooltip: "Delete note";
+                                                tooltip-align: "right";
                                                 clicked => {
                                                     if (item.kind == "note") {
                                                         root.delete-annotation(item.id);
@@ -2601,6 +2898,7 @@ VerticalLayout {
                                                 icon-size: 16px;
                                                 border-radius: 13px;
                                                 y: (parent.height - self.height) / 2;
+                                                tooltip: "Clear search";
                                                 clicked => {
                                                     root.search-query = "";
                                                     root.search-query-changed("");
@@ -2626,6 +2924,7 @@ VerticalLayout {
                                                 size: 34px;
                                                 icon-size: 19px;
                                                 border-radius: 8px;
+                                                tooltip: "Match case (Alt+C)";
                                                 clicked => { root.toggle-search-match-case(); }
                                             }
 
@@ -2636,6 +2935,7 @@ VerticalLayout {
                                                 size: 34px;
                                                 icon-size: 19px;
                                                 border-radius: 8px;
+                                                tooltip: "Match whole word (Alt+W)";
                                                 clicked => { root.toggle-search-match-whole-word(); }
                                             }
                                         }
@@ -2677,6 +2977,7 @@ VerticalLayout {
                                                 icon-size: 18px;
                                                 border-radius: 8px;
                                                 y: (parent.height - self.height) / 2;
+                                                tooltip: "Previous match (Shift+Enter)";
                                                 clicked => { root.search-prev(); }
                                             }
 
@@ -2687,6 +2988,7 @@ VerticalLayout {
                                                 icon-size: 18px;
                                                 border-radius: 8px;
                                                 y: (parent.height - self.height) / 2;
+                                                tooltip: "Next match (Enter)";
                                                 clicked => { root.search-next(); }
                                             }
                                         }
@@ -2922,6 +3224,7 @@ VerticalLayout {
                                 icon: @image-url("../assets/icons/folder-open.svg");
                                 text: "Select PDF Document";
                                 x: (parent.width - self.width) / 2;
+                                tooltip: "Open PDF file (Ctrl+O)";
                                 clicked => { root.open-document(); }
                             }
 
@@ -3463,96 +3766,59 @@ VerticalLayout {
                                                 spacing: 4px;
                                                 alignment: start;
 
-                                                // Copy Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/copy.svg");
+                                                    size: 28px;
+                                                    icon-size: 17px;
                                                     border-radius: 6px;
-                                                    background: cp-ta-edit.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/copy.svg");
-                                                        width: 17px;
-                                                        height: 17px;
-                                                        colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    cp-ta-edit := TouchArea {
-                                                        clicked => { root.copy-selection(); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Copy text (Ctrl+C)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.copy-selection(); }
                                                 }
 
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/message-square.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: root.show-note-input ? Theme.active-bg : note-ta-edit.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/message-square.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: root.show-note-input ? Theme.accent : Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    note-ta-edit := TouchArea {
-                                                        clicked => { root.show-note-input = !root.show-note-input; }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    active: root.show-note-input;
+                                                    accent-active: true;
+                                                    tooltip: "Edit note (N)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.show-note-input = !root.show-note-input; }
                                                 }
 
                                                 // Done Button (active when note input is open)
-                                                if root.show-note-input: Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                if root.show-note-input: IconButton {
+                                                    icon: @image-url("../assets/icons/check.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: note-save-ta-update.has-hover ? Theme.accent-hover : Theme.accent;
-                                                    border-width: 1px;
-                                                    border-color: Theme.accent-border;
-
-                                                    Image {
-                                                        source: @image-url("../assets/icons/check.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: Theme.on-accent;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-
-                                                    note-save-ta-update := TouchArea {
-                                                        clicked => {
-                                                            root.update-annotation-note(root.selected-annotation-id, root.current-note-text);
-                                                            root.show-popup = false;
-                                                            root.selected-annotation-id = -1;
-                                                            root.selected-annotation-kind = "";
-                                                        }
-                                                        mouse-cursor: pointer;
+                                                    active: true;
+                                                    accent-active: true;
+                                                    tooltip: "Save note";
+                                                    tooltip-position: "top";
+                                                    clicked => {
+                                                        root.update-annotation-note(root.selected-annotation-id, root.current-note-text);
+                                                        root.show-popup = false;
+                                                        root.selected-annotation-id = -1;
+                                                        root.selected-annotation-kind = "";
                                                     }
                                                 }
 
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/trash.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: del-ta.has-hover ? #ef444425 : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/trash.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: #ef4444;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    del-ta := TouchArea {
-                                                        clicked => {
-                                                            root.delete-annotation(root.selected-annotation-id);
-                                                            root.show-popup = false;
-                                                            root.selected-annotation-id = -1;
-                                                            root.selected-annotation-kind = "";
-                                                            root.hovered-annotation-id = -1;
-                                                        }
-                                                        mouse-cursor: pointer;
+                                                    tooltip: "Delete annotation";
+                                                    tooltip-position: "top";
+                                                    clicked => {
+                                                        root.delete-annotation(root.selected-annotation-id);
+                                                        root.show-popup = false;
+                                                        root.selected-annotation-id = -1;
+                                                        root.selected-annotation-kind = "";
+                                                        root.hovered-annotation-id = -1;
                                                     }
                                                 }
                                             }
@@ -3679,26 +3945,18 @@ VerticalLayout {
                                                 }
 
                                                 // Close Button
-                                                Rectangle {
-                                                    width: 26px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/x.svg");
+                                                    size: 26px;
+                                                    icon-size: 17px;
                                                     border-radius: 6px;
-                                                    background: cls-ta-edit.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/x.svg");
-                                                        width: 17px;
-                                                        height: 17px;
-                                                        colorize: Theme.text-secondary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    cls-ta-edit := TouchArea {
-                                                        clicked => {
-                                                            root.show-popup = false;
-                                                            root.selected-annotation-id = -1;
-                                                            root.selected-annotation-kind = "";
-                                                        }
-                                                        mouse-cursor: pointer;
+                                                    tooltip: "Close";
+                                                    tooltip-position: "top";
+                                                    tooltip-align: "right";
+                                                    clicked => {
+                                                        root.show-popup = false;
+                                                        root.selected-annotation-id = -1;
+                                                        root.selected-annotation-kind = "";
                                                     }
                                                 }
                                             }
@@ -3715,134 +3973,75 @@ VerticalLayout {
                                                 spacing: 3px;
                                                 alignment: start;
 
-                                                // Copy Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/copy.svg");
+                                                    size: 28px;
+                                                    icon-size: 17px;
                                                     border-radius: 6px;
-                                                    background: cp-ta.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/copy.svg");
-                                                        width: 17px;
-                                                        height: 17px;
-                                                        colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    cp-ta := TouchArea {
-                                                        clicked => { root.copy-selection(); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Copy text (Ctrl+C)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.copy-selection(); }
                                                 }
 
-                                                // Highlight Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/highlighter.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: hl-ta.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/highlighter.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    hl-ta := TouchArea {
-                                                        clicked => { root.create-annotation("highlight", root.selected-color-index); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Highlight (H)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.create-annotation("highlight", root.selected-color-index); }
                                                 }
 
-                                                // Underline Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/underline.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: ul-ta.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/underline.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    ul-ta := TouchArea {
-                                                        clicked => { root.create-annotation("underline", root.selected-color-index); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Underline (U)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.create-annotation("underline", root.selected-color-index); }
                                                 }
 
-                                                // Strikethrough Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/strikethrough.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: st-ta.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/strikethrough.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    st-ta := TouchArea {
-                                                        clicked => { root.create-annotation("strikethrough", root.selected-color-index); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Strikethrough (Ctrl+Alt+S)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.create-annotation("strikethrough", root.selected-color-index); }
                                                 }
 
-                                                // Note Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/message-square.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: root.show-note-input ? Theme.active-bg : note-ta.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/message-square.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: root.show-note-input ? Theme.accent : Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    note-ta := TouchArea {
-                                                        clicked => {
-                                                            if (!root.show-note-input) {
-                                                                root.current-note-text = "";
-                                                            }
-                                                            root.show-note-input = !root.show-note-input;
+                                                    active: root.show-note-input;
+                                                    accent-active: true;
+                                                    tooltip: "Add note (N)";
+                                                    tooltip-position: "top";
+                                                    clicked => {
+                                                        if (!root.show-note-input) {
+                                                            root.current-note-text = "";
                                                         }
-                                                        mouse-cursor: pointer;
+                                                        root.show-note-input = !root.show-note-input;
                                                     }
                                                 }
 
                                                 // Done Button between Note and X (active when note input is open)
-                                                if root.show-note-input: Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                if root.show-note-input: IconButton {
+                                                    icon: @image-url("../assets/icons/check.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: note-save-ta-create.has-hover ? Theme.accent-hover : Theme.accent;
-                                                    border-width: 1px;
-                                                    border-color: Theme.accent-border;
-
-                                                    Image {
-                                                        source: @image-url("../assets/icons/check.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: Theme.on-accent;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-
-                                                    note-save-ta-create := TouchArea {
-                                                        clicked => {
-                                                            root.create-note-annotation(root.current-note-text, root.selected-color-index);
-                                                        }
-                                                        mouse-cursor: pointer;
+                                                    active: true;
+                                                    accent-active: true;
+                                                    tooltip: "Save note";
+                                                    tooltip-position: "top";
+                                                    clicked => {
+                                                        root.create-note-annotation(root.current-note-text, root.selected-color-index);
                                                     }
                                                 }
                                             }
@@ -3951,23 +4150,15 @@ VerticalLayout {
                                                 }
 
                                                 // Close Icon
-                                                Rectangle {
-                                                    width: 26px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/x.svg");
+                                                    size: 26px;
+                                                    icon-size: 17px;
                                                     border-radius: 6px;
-                                                    background: cls-ta-new.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/x.svg");
-                                                        width: 17px;
-                                                        height: 17px;
-                                                        colorize: Theme.text-secondary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    cls-ta-new := TouchArea {
-                                                        clicked => { root.clear-selection(); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Dismiss";
+                                                    tooltip-position: "top";
+                                                    tooltip-align: "right";
+                                                    clicked => { root.clear-selection(); }
                                                 }
                                             }
                                         }
@@ -4561,96 +4752,59 @@ VerticalLayout {
                                                 spacing: 4px;
                                                 alignment: start;
 
-                                                // Copy Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/copy.svg");
+                                                    size: 28px;
+                                                    icon-size: 17px;
                                                     border-radius: 6px;
-                                                    background: cp-ta-edit2.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/copy.svg");
-                                                        width: 17px;
-                                                        height: 17px;
-                                                        colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    cp-ta-edit2 := TouchArea {
-                                                        clicked => { root.copy-selection(); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Copy text (Ctrl+C)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.copy-selection(); }
                                                 }
 
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/message-square.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: root.show-note-input ? Theme.active-bg : note-ta-edit2.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/message-square.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: root.show-note-input ? Theme.accent : Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    note-ta-edit2 := TouchArea {
-                                                        clicked => { root.show-note-input = !root.show-note-input; }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    active: root.show-note-input;
+                                                    accent-active: true;
+                                                    tooltip: "Edit note (N)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.show-note-input = !root.show-note-input; }
                                                 }
 
                                                 // Done Button (active when note input is open)
-                                                if root.show-note-input: Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                if root.show-note-input: IconButton {
+                                                    icon: @image-url("../assets/icons/check.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: note-save-ta-update2.has-hover ? Theme.accent-hover : Theme.accent;
-                                                    border-width: 1px;
-                                                    border-color: Theme.accent-border;
-
-                                                    Image {
-                                                        source: @image-url("../assets/icons/check.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: Theme.on-accent;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-
-                                                    note-save-ta-update2 := TouchArea {
-                                                        clicked => {
-                                                            root.update-annotation-note(root.selected-annotation-id, root.current-note-text);
-                                                            root.show-popup = false;
-                                                            root.selected-annotation-id = -1;
-                                                            root.selected-annotation-kind = "";
-                                                        }
-                                                        mouse-cursor: pointer;
+                                                    active: true;
+                                                    accent-active: true;
+                                                    tooltip: "Save note";
+                                                    tooltip-position: "top";
+                                                    clicked => {
+                                                        root.update-annotation-note(root.selected-annotation-id, root.current-note-text);
+                                                        root.show-popup = false;
+                                                        root.selected-annotation-id = -1;
+                                                        root.selected-annotation-kind = "";
                                                     }
                                                 }
 
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/trash.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: del-ta2.has-hover ? #ef444425 : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/trash.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: #ef4444;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    del-ta2 := TouchArea {
-                                                        clicked => {
-                                                            root.delete-annotation(root.selected-annotation-id);
-                                                            root.show-popup = false;
-                                                            root.selected-annotation-id = -1;
-                                                            root.selected-annotation-kind = "";
-                                                            root.hovered-annotation-id = -1;
-                                                        }
-                                                        mouse-cursor: pointer;
+                                                    tooltip: "Delete annotation";
+                                                    tooltip-position: "top";
+                                                    clicked => {
+                                                        root.delete-annotation(root.selected-annotation-id);
+                                                        root.show-popup = false;
+                                                        root.selected-annotation-id = -1;
+                                                        root.selected-annotation-kind = "";
+                                                        root.hovered-annotation-id = -1;
                                                     }
                                                 }
                                             }
@@ -4777,26 +4931,18 @@ VerticalLayout {
                                                 }
 
                                                 // Close Button
-                                                Rectangle {
-                                                    width: 26px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/x.svg");
+                                                    size: 26px;
+                                                    icon-size: 17px;
                                                     border-radius: 6px;
-                                                    background: cls-ta-edit2.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/x.svg");
-                                                        width: 17px;
-                                                        height: 17px;
-                                                        colorize: Theme.text-secondary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    cls-ta-edit2 := TouchArea {
-                                                        clicked => {
-                                                            root.show-popup = false;
-                                                            root.selected-annotation-id = -1;
-                                                            root.selected-annotation-kind = "";
-                                                        }
-                                                        mouse-cursor: pointer;
+                                                    tooltip: "Close";
+                                                    tooltip-position: "top";
+                                                    tooltip-align: "right";
+                                                    clicked => {
+                                                        root.show-popup = false;
+                                                        root.selected-annotation-id = -1;
+                                                        root.selected-annotation-kind = "";
                                                     }
                                                 }
                                             }
@@ -4813,134 +4959,75 @@ VerticalLayout {
                                                 spacing: 3px;
                                                 alignment: start;
 
-                                                // Copy Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/copy.svg");
+                                                    size: 28px;
+                                                    icon-size: 17px;
                                                     border-radius: 6px;
-                                                    background: cp-ta2.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/copy.svg");
-                                                        width: 17px;
-                                                        height: 17px;
-                                                        colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    cp-ta2 := TouchArea {
-                                                        clicked => { root.copy-selection(); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Copy text (Ctrl+C)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.copy-selection(); }
                                                 }
 
-                                                // Highlight Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/highlighter.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: hl-ta2.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/highlighter.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    hl-ta2 := TouchArea {
-                                                        clicked => { root.create-annotation("highlight", root.selected-color-index); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Highlight (H)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.create-annotation("highlight", root.selected-color-index); }
                                                 }
 
-                                                // Underline Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/underline.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: ul-ta2.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/underline.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    ul-ta2 := TouchArea {
-                                                        clicked => { root.create-annotation("underline", root.selected-color-index); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Underline (U)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.create-annotation("underline", root.selected-color-index); }
                                                 }
 
-                                                // Strikethrough Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/strikethrough.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: st-ta2.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/strikethrough.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    st-ta2 := TouchArea {
-                                                        clicked => { root.create-annotation("strikethrough", root.selected-color-index); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Strikethrough (Ctrl+Alt+S)";
+                                                    tooltip-position: "top";
+                                                    clicked => { root.create-annotation("strikethrough", root.selected-color-index); }
                                                 }
 
-                                                // Note Icon
-                                                Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/message-square.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: root.show-note-input ? Theme.active-bg : note-ta2.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/message-square.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: root.show-note-input ? Theme.accent : Theme.text-primary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    note-ta2 := TouchArea {
-                                                        clicked => {
-                                                            if (!root.show-note-input) {
-                                                                root.current-note-text = "";
-                                                            }
-                                                            root.show-note-input = !root.show-note-input;
+                                                    active: root.show-note-input;
+                                                    accent-active: true;
+                                                    tooltip: "Add note (N)";
+                                                    tooltip-position: "top";
+                                                    clicked => {
+                                                        if (!root.show-note-input) {
+                                                            root.current-note-text = "";
                                                         }
-                                                        mouse-cursor: pointer;
+                                                        root.show-note-input = !root.show-note-input;
                                                     }
                                                 }
 
                                                 // Done Button between Note and X (active when note input is open)
-                                                if root.show-note-input: Rectangle {
-                                                    width: 28px;
-                                                    height: 28px;
+                                                if root.show-note-input: IconButton {
+                                                    icon: @image-url("../assets/icons/check.svg");
+                                                    size: 28px;
+                                                    icon-size: 18px;
                                                     border-radius: 6px;
-                                                    background: note-save-ta-create2.has-hover ? Theme.accent-hover : Theme.accent;
-                                                    border-width: 1px;
-                                                    border-color: Theme.accent-border;
-
-                                                    Image {
-                                                        source: @image-url("../assets/icons/check.svg");
-                                                        width: 18px;
-                                                        height: 18px;
-                                                        colorize: Theme.on-accent;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-
-                                                    note-save-ta-create2 := TouchArea {
-                                                        clicked => {
-                                                            root.create-note-annotation(root.current-note-text, root.selected-color-index);
-                                                        }
-                                                        mouse-cursor: pointer;
+                                                    active: true;
+                                                    accent-active: true;
+                                                    tooltip: "Save note";
+                                                    tooltip-position: "top";
+                                                    clicked => {
+                                                        root.create-note-annotation(root.current-note-text, root.selected-color-index);
                                                     }
                                                 }
                                             }
@@ -5049,23 +5136,15 @@ VerticalLayout {
                                                 }
 
                                                 // Close Icon
-                                                Rectangle {
-                                                    width: 26px;
-                                                    height: 28px;
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/x.svg");
+                                                    size: 26px;
+                                                    icon-size: 17px;
                                                     border-radius: 6px;
-                                                    background: cls-ta-new2.has-hover ? Theme.hover-bg : transparent;
-                                                    Image {
-                                                        source: @image-url("../assets/icons/x.svg");
-                                                        width: 17px;
-                                                        height: 17px;
-                                                        colorize: Theme.text-secondary;
-                                                        x: (parent.width - self.width) / 2;
-                                                        y: (parent.height - self.height) / 2;
-                                                    }
-                                                    cls-ta-new2 := TouchArea {
-                                                        clicked => { root.clear-selection(); }
-                                                        mouse-cursor: pointer;
-                                                    }
+                                                    tooltip: "Dismiss";
+                                                    tooltip-position: "top";
+                                                    tooltip-align: "right";
+                                                    clicked => { root.clear-selection(); }
                                                 }
                                             }
                                         }
@@ -5186,6 +5265,7 @@ VerticalLayout {
         x: (parent.width - self.width) / 2;
         y: top-sensor.has-hover ? 16px : -54px;
         height: 44px;
+        z: 100;
         border-radius: 22px;
         background: Theme.card-bg;
         border-width: 1px;
@@ -5204,6 +5284,7 @@ VerticalLayout {
                 icon: @image-url("../assets/icons/chevron-left.svg");
                 enabled: root.can-prev;
                 y: (parent.height - self.height) / 2;
+                tooltip: "Previous page (PageUp / ←)";
                 clicked => { root.prev-page(); }
             }
 
@@ -5220,6 +5301,7 @@ VerticalLayout {
                 icon: @image-url("../assets/icons/chevron-right.svg");
                 enabled: root.can-next;
                 y: (parent.height - self.height) / 2;
+                tooltip: "Next page (PageDown / →)";
                 clicked => { root.next-page(); }
             }
 
@@ -5233,6 +5315,7 @@ VerticalLayout {
             IconButton {
                 icon: @image-url("../assets/icons/zoom-out.svg");
                 y: (parent.height - self.height) / 2;
+                tooltip: "Zoom out (Ctrl+-)";
                 clicked => { root.is-fit-width = false; root.zoom-out(); }
             }
 
@@ -5248,12 +5331,14 @@ VerticalLayout {
             IconButton {
                 icon: @image-url("../assets/icons/zoom-in.svg");
                 y: (parent.height - self.height) / 2;
+                tooltip: "Zoom in (Ctrl+=)";
                 clicked => { root.is-fit-width = false; root.zoom-in(); }
             }
 
             IconButton {
                 icon: @image-url("../assets/icons/fit-to-page.svg");
                 y: (parent.height - self.height) / 2;
+                tooltip: "Fit to page (Ctrl+0)";
                 clicked => { root.is-fit-width = false; root.zoom-fit(); }
             }
 
@@ -5261,12 +5346,14 @@ VerticalLayout {
                 icon: @image-url("../assets/icons/fit-to-width.svg");
                 active: root.is-fit-width;
                 y: (parent.height - self.height) / 2;
+                tooltip: "Fit to width (Ctrl+2 / W)";
                 clicked => { root.is-fit-width = true; root.zoom-fit-width(); }
             }
 
             IconButton {
                 icon: @image-url("../assets/icons/rotate-cw.svg");
                 y: (parent.height - self.height) / 2;
+                tooltip: "Rotate clockwise (R)";
                 clicked => { root.rotate-clockwise(); }
             }
 
@@ -5837,6 +5924,8 @@ VerticalLayout {
                     icon-size: 16px;
                     border-radius: 15px;
                     y: (parent.height - self.height) / 2;
+                    tooltip: "Close";
+                    tooltip-align: "right";
                     clicked => {
                         root.show-doc-info = false;
                     }
@@ -6651,6 +6740,7 @@ VerticalLayout {
                             icon-size: 14px;
                             border-radius: 13px;
                             enabled: root.print-copies > 1;
+                            tooltip: "Decrease copies";
                             clicked => { root.print-copies = Math.max(1, root.print-copies - 1); }
                         }
 
@@ -6670,6 +6760,7 @@ VerticalLayout {
                             size: 26px;
                             icon-size: 14px;
                             border-radius: 13px;
+                            tooltip: "Increase copies";
                             clicked => { root.print-copies = root.print-copies + 1; }
                         }
                     }
