@@ -4,52 +4,65 @@ import "../assets/fonts/Inter-Variable.ttf";
 global Theme {
     in-out property <bool> dark: true;
 
-    // Palette derived directly from Image 3:
-    // Root bg: #10110C (deep warm olive-charcoal)
-    // Card bg: #191A14 (warm elevated obsidian)
-    // Main Accent / White CTA: #DADBD6 (warm bone-white pill from "View Plan")
-    // On-accent text: #10110C (dark text on bone-white)
-    // Border: #2B2D24 / #34362C
+    // Palette derived directly from UI Design reference:
+    // Dark: Obsidian Slate (#111113 / #161619), elevated cards (#1D1E24 / #25262E),
+    //       crisp white CTA pill (#FFFFFF), periwinkle lavender accent (#ADB0FF),
+    //       warm amber gold (#FEC917).
+    // Light: Clean airy slate (#F4F5F8), pure white cards (#FFFFFF),
+    //        deep obsidian CTA pill (#111318), indigo accent (#5457E5),
+    //        warm amber (#D97706).
 
     // Base Surfaces
-    out property <color> app-bg: root.dark ? #10110C : #F5F6F3;
-    out property <color> canvas-bg: root.dark ? #10110C : #EAECE8;
-    out property <color> sidebar-bg: root.dark ? #151610 : #FFFFFF;
-    out property <color> card-bg: root.dark ? #191A14 : #FFFFFF;
-    out property <color> card-subtle: root.dark ? #1E2018 : #F8F9FA;
-    out property <color> surface-subtle: root.dark ? #22231C : #F0F2EE;
-    out property <color> pill-track: root.dark ? #22231C : #E4E6E1;
+    out property <color> app-bg: root.dark ? #111113 : #F4F5F8;
+    out property <color> canvas-bg: root.dark ? #161619 : #EBEDF2;
+    out property <color> sidebar-bg: root.dark ? #111113 : #FFFFFF;
+    out property <color> card-bg: root.dark ? #1D1E24 : #FFFFFF;
+    out property <color> card-elevated: root.dark ? #25262E : #FFFFFF;
+    out property <color> card-subtle: root.dark ? #191A20 : #F8F9FB;
+    out property <color> surface-subtle: root.dark ? #202128 : #F0F2F6;
+    out property <color> pill-track: root.dark ? #1F2027 : #E6E8ED;
 
     // Borders & Hairline Dividers
-    out property <color> border: root.dark ? #2B2D24 : #D8DAD4;
-    out property <color> border-subtle: root.dark ? #20211A : #E6E8E2;
-    out property <color> border-strong: root.dark ? #3A3C31 : #BFC2B8;
+    out property <color> border: root.dark ? #2C2D36 : #E2E4E9;
+    out property <color> border-subtle: root.dark ? #212229 : #ECEFF3;
+    out property <color> border-strong: root.dark ? #3A3C47 : #CBD0D8;
 
     // Typography
-    out property <color> text-primary: root.dark ? #F4F5F0 : #10110C;
-    out property <color> text-secondary: root.dark ? #94978C : #65675F;
-    out property <color> text-muted: root.dark ? #64665C : #96988E;
-    out property <color> text-accent: root.dark ? #DADBD6 : #10110C;
+    out property <color> text-primary: root.dark ? #F5F6F9 : #111318;
+    out property <color> text-secondary: root.dark ? #9CA3AF : #525B6C;
+    out property <color> text-muted: root.dark ? #6B7280 : #9AA2B1;
+    out property <color> text-accent: root.dark ? #ADB0FF : #5457E5;
+    out property <color> text-disabled: root.dark ? #474954 : #CBD0D8;
 
-    // Main Accent (Monochrome Bone-White / Dark)
-    out property <color> accent: root.dark ? #DADBD6 : #10110C;
-    out property <color> accent-hover: root.dark ? #ECEEE9 : #282A22;
-    out property <color> accent-border: root.dark ? #DADBD6 : #10110C;
-    out property <color> accent-gold: root.dark ? #DADBD6 : #10110C;
-    out property <color> accent-pale: root.dark ? #DADBD6 : #10110C;
-    out property <color> success: root.dark ? #DADBD6 : #10110C;
-    out property <color> on-accent: root.dark ? #10110C : #FFFFFF;
+    // Main Feature Accent (Periwinkle Lavender from reference)
+    out property <color> accent: root.dark ? #ADB0FF : #5457E5;
+    out property <color> accent-hover: root.dark ? #C3C5FF : #4345C8;
+    out property <color> accent-border: root.dark ? #ADB0FF : #5457E5;
+    out property <color> accent-subtle: root.dark ? #ADB0FF.transparentize(85%) : #5457E5.transparentize(90%);
+    out property <color> on-accent: root.dark ? #111115 : #FFFFFF;
+
+    // High-Contrast CTA Pill (White pill in Dark, Dark pill in Light)
+    out property <color> cta-bg: root.dark ? #FFFFFF : #111318;
+    out property <color> cta-hover: root.dark ? #E5E7EB : #282A30;
+    out property <color> on-cta: root.dark ? #111318 : #FFFFFF;
+
+    // Warm Gold/Amber Accent from Image (badges, tags, highlights)
+    out property <color> accent-gold: root.dark ? #FEC917 : #D97706;
+    out property <color> accent-pale: root.dark ? #FEC917.transparentize(86%) : #FEF3C7;
+    out property <color> success: root.dark ? #34D399 : #059669;
 
     // Interactive states
-    out property <color> hover-bg: root.dark ? #282A22 : #ECEEE8;
-    out property <color> active-bg: root.dark ? #32352B : #DFE2DA;
+    out property <color> hover-bg: root.dark ? #25262E : #ECEFF3;
+    out property <color> active-bg: root.dark ? #2E303A : #DFE3E9;
 
     // Navigation Rail states
-    out property <color> rail-active-bg: root.dark ? #282A22 : #ECEEE8;
-    out property <color> rail-active-border: root.dark ? #3A3C31 : #BFC2B8;
-    out property <color> rail-active-icon: root.dark ? #F4F5F0 : #10110C;
-    out property <color> text-disabled: root.dark ? #4A4D43 : #B0B4A8;
-    out property <color> accent-subtle: root.dark ? #DADBD6.transparentize(86%) : #10110C.transparentize(90%);
+    out property <color> rail-active-bg: root.dark ? #FFFFFF : #111318;
+    out property <color> rail-active-border: root.dark ? #FFFFFF : #111318;
+    out property <color> rail-active-icon: root.dark ? #111115 : #FFFFFF;
+
+    // Tooltip
+    out property <color> tooltip-bg: root.dark ? #1A1B22 : #FFFFFF;
+    out property <color> tooltip-border: root.dark ? #353744 : #D5D9E2;
 
     // Annotation Highlight Colors (Soft pastel blend matching PDF text highlighting)
     out property <color> hl-yellow: #fef08a;
@@ -84,10 +97,10 @@ component IconButton inherits Rectangle {
 
     width: root.size;
     height: root.size;
-    border-radius: 8px;
+    border-radius: 10px;
     background: !root.enabled ? transparent : (root.accent-active && root.active) ? Theme.accent : root.active ? Theme.active-bg : ta.pressed ? Theme.active-bg : ta.has-hover ? Theme.hover-bg : transparent;
-    border-width: ((root.accent-active && root.active) || root.active || (ta.has-hover && root.enabled)) ? 1px : 0px;
-    border-color: (root.accent-active && root.active) ? Theme.accent-border : root.active ? Theme.border-strong : Theme.border;
+    border-width: ((root.accent-active && root.active) || (ta.has-hover && root.enabled)) ? 1px : 0px;
+    border-color: (root.accent-active && root.active) ? Theme.accent-border : Theme.border;
     animate background { duration: 120ms; easing: ease-out; }
     animate border-color { duration: 120ms; easing: ease-out; }
 
@@ -127,13 +140,13 @@ component IconButton inherits Rectangle {
            (root.height + 6px);
         width: tip-text.preferred-width + 16px;
         height: 24px;
-        background: Theme.dark ? #181914 : #FFFFFF;
+        background: Theme.tooltip-bg;
         border-radius: 6px;
         border-width: 1px;
-        border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+        border-color: Theme.tooltip-border;
         drop-shadow-blur: 10px;
         drop-shadow-offset-y: 3px;
-        drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+        drop-shadow-color: Theme.dark ? #000000B0 : #00000025;
         z: 1000;
 
         tip-text := Text {
@@ -141,7 +154,7 @@ component IconButton inherits Rectangle {
             font-family: "Inter";
             font-size: 11px;
             font-weight: 500;
-            color: Theme.dark ? #F4F5F0 : #10110C;
+            color: Theme.text-primary;
             vertical-alignment: center;
             horizontal-alignment: center;
         }
@@ -155,21 +168,35 @@ component NavRailButton inherits Rectangle {
     in property <string> tooltip: "";
     callback clicked();
 
-    width: 42px;
-    height: 42px;
-    border-radius: 12px;
-    background: !root.enabled ? transparent : (root.active || ta.has-hover) ? Theme.hover-bg : ta.pressed ? Theme.active-bg : transparent;
-    border-width: (!root.enabled) ? 0px : (root.active || ta.has-hover) ? 1px : 0px;
-    border-color: Theme.border-strong;
-    animate background { duration: 120ms; easing: ease-out; }
-    animate border-color { duration: 120ms; easing: ease-out; }
+    width: 40px;
+    height: 40px;
+    background: transparent;
+
+    // Mathematically perfect vector circle background rendered via resvg with full 360-degree anti-aliasing
+    if root.active: Image {
+        width: 40px;
+        height: 40px;
+        source: @image-url("../assets/icons/circle-fill.svg");
+        colorize: Theme.rail-active-bg;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    if !root.active && (ta.has-hover || ta.pressed) && root.enabled: Image {
+        width: 40px;
+        height: 40px;
+        source: @image-url("../assets/icons/circle-fill.svg");
+        colorize: ta.pressed ? Theme.active-bg : Theme.hover-bg;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
 
     Image {
         width: 20px;
         height: 20px;
         image-fit: contain;
         source: root.icon;
-        colorize: !root.enabled ? Theme.text-muted : (root.active || ta.has-hover) ? Theme.text-primary : Theme.text-secondary;
+        colorize: !root.enabled ? Theme.text-muted : root.active ? Theme.rail-active-icon : ta.has-hover ? Theme.text-primary : Theme.text-secondary;
         horizontal-alignment: center;
         vertical-alignment: center;
         animate colorize { duration: 120ms; easing: ease-out; }
@@ -186,13 +213,13 @@ component NavRailButton inherits Rectangle {
         y: (root.height - self.height) / 2;
         width: rail-tip-text.preferred-width + 16px;
         height: 24px;
-        background: Theme.dark ? #181914 : #FFFFFF;
+        background: Theme.tooltip-bg;
         border-radius: 6px;
         border-width: 1px;
-        border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+        border-color: Theme.tooltip-border;
         drop-shadow-blur: 10px;
         drop-shadow-offset-y: 3px;
-        drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+        drop-shadow-color: Theme.dark ? #000000B0 : #00000025;
         z: 1000;
 
         rail-tip-text := Text {
@@ -200,7 +227,7 @@ component NavRailButton inherits Rectangle {
             font-family: "Inter";
             font-size: 11px;
             font-weight: 500;
-            color: Theme.dark ? #F4F5F0 : #10110C;
+            color: Theme.text-primary;
             vertical-alignment: center;
             horizontal-alignment: center;
         }
@@ -216,9 +243,9 @@ component SignaturePillButton inherits Rectangle {
 
     height: 38px;
     border-radius: 19px;
-    background: ta.pressed ? Theme.accent.darker(0.08) : ta.has-hover ? Theme.accent-hover : Theme.accent;
+    background: ta.pressed ? Theme.cta-bg.darker(0.06) : ta.has-hover ? Theme.cta-hover : Theme.cta-bg;
     border-width: 1px;
-    border-color: Theme.accent-border;
+    border-color: Theme.border-subtle;
     animate background { duration: 120ms; easing: ease-out; }
 
     HorizontalLayout {
@@ -229,19 +256,19 @@ component SignaturePillButton inherits Rectangle {
 
         if root.has-icon: Image {
             source: root.icon;
-            width: 18px;
-            height: 18px;
+            width: 17px;
+            height: 17px;
             image-fit: contain;
-            colorize: Theme.on-accent;
+            colorize: Theme.on-cta;
             y: (parent.height - self.height) / 2;
         }
 
         Text {
             text: root.text;
             font-family: "Inter";
-            font-size: 15px;
-            font-weight: 700;
-            color: Theme.on-accent;
+            font-size: 14px;
+            font-weight: 600;
+            color: Theme.on-cta;
             vertical-alignment: center;
         }
     }
@@ -256,13 +283,13 @@ component SignaturePillButton inherits Rectangle {
         y: root.height + 6px;
         width: sig-tip-text.preferred-width + 16px;
         height: 24px;
-        background: Theme.dark ? #181914 : #FFFFFF;
+        background: Theme.tooltip-bg;
         border-radius: 6px;
         border-width: 1px;
-        border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+        border-color: Theme.tooltip-border;
         drop-shadow-blur: 10px;
         drop-shadow-offset-y: 3px;
-        drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+        drop-shadow-color: Theme.dark ? #000000B0 : #00000025;
         z: 1000;
 
         sig-tip-text := Text {
@@ -270,7 +297,7 @@ component SignaturePillButton inherits Rectangle {
             font-family: "Inter";
             font-size: 11px;
             font-weight: 500;
-            color: Theme.dark ? #F4F5F0 : #10110C;
+            color: Theme.text-primary;
             vertical-alignment: center;
             horizontal-alignment: center;
         }
@@ -286,7 +313,7 @@ component ViewModeSegment inherits Rectangle {
 
     height: 32px;
     border-radius: 16px;
-    background: root.active ? Theme.card-bg : ta.has-hover ? Theme.hover-bg : transparent;
+    background: root.active ? Theme.card-elevated : ta.has-hover ? Theme.hover-bg : transparent;
     border-width: root.active ? 1px : 0px;
     border-color: Theme.border;
     animate background { duration: 120ms; easing: ease-out; }
@@ -299,8 +326,8 @@ component ViewModeSegment inherits Rectangle {
 
         Image {
             source: root.icon;
-            width: 17px;
-            height: 17px;
+            width: 16px;
+            height: 16px;
             image-fit: contain;
             colorize: root.active ? Theme.text-primary : Theme.text-secondary;
             y: (parent.height - self.height) / 2;
@@ -309,8 +336,8 @@ component ViewModeSegment inherits Rectangle {
         Text {
             text: root.text;
             font-family: "Inter";
-            font-size: 14px;
-            font-weight: root.active ? 700 : 500;
+            font-size: 13px;
+            font-weight: root.active ? 600 : 500;
             color: root.active ? Theme.text-primary : Theme.text-secondary;
             vertical-alignment: center;
         }
@@ -326,13 +353,13 @@ component ViewModeSegment inherits Rectangle {
         y: root.height + 6px;
         width: vm-tip-text.preferred-width + 16px;
         height: 24px;
-        background: Theme.dark ? #181914 : #FFFFFF;
+        background: Theme.tooltip-bg;
         border-radius: 6px;
         border-width: 1px;
-        border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+        border-color: Theme.tooltip-border;
         drop-shadow-blur: 10px;
         drop-shadow-offset-y: 3px;
-        drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+        drop-shadow-color: Theme.dark ? #000000B0 : #00000025;
         z: 1000;
 
         vm-tip-text := Text {
@@ -340,7 +367,7 @@ component ViewModeSegment inherits Rectangle {
             font-family: "Inter";
             font-size: 11px;
             font-weight: 500;
-            color: Theme.dark ? #F4F5F0 : #10110C;
+            color: Theme.text-primary;
             vertical-alignment: center;
             horizontal-alignment: center;
         }
@@ -355,21 +382,22 @@ component TabItem inherits Rectangle {
     callback close-clicked();
     callback context-menu(length, length);
 
-    min-width: 100px;
+    min-width: 110px;
     max-width: 220px;
-    height: 34px;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
-    background: root.is-active ? Theme.card-bg : tab-ta.has-hover ? Theme.hover-bg : transparent;
-    border-width: 1px;
-    border-color: root.is-active ? Theme.border : transparent;
+    height: 32px;
+    border-radius: 8px;
+    background: root.is-active ? Theme.card-elevated : tab-ta.has-hover ? Theme.hover-bg : transparent;
+    border-width: root.is-active ? 1px : 0px;
+    border-color: Theme.border;
     clip: false;
 
-    // Top active indicator line
+    // Small active indicator dot or bar
     if root.is-active: Rectangle {
-        y: 0;
-        height: 2px;
-        width: 100%;
+        x: 4px;
+        y: (parent.height - 14px) / 2;
+        width: 3px;
+        height: 14px;
+        border-radius: 1.5px;
         background: Theme.accent;
     }
 
@@ -384,7 +412,7 @@ component TabItem inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: 10px;
+        padding-left: root.is-active ? 12px : 10px;
         padding-right: 6px;
         spacing: 6px;
         alignment: space-between;
@@ -418,17 +446,17 @@ component TabItem inherits Rectangle {
             alignment: end;
 
             if root.is-dirty: Rectangle {
-                width: 6px;
-                height: 6px;
-                border-radius: 3px;
-                background: #f59e0b;
+                width: 7px;
+                height: 7px;
+                border-radius: 3.5px;
+                background: Theme.accent-gold;
                 y: (parent.height - self.height) / 2;
             }
 
             Rectangle {
                 width: 20px;
                 height: 20px;
-                border-radius: 4px;
+                border-radius: 6px;
                 background: close-ta.pressed ? Theme.active-bg : close-ta.has-hover ? Theme.hover-bg : transparent;
                 y: (parent.height - self.height) / 2;
 
@@ -451,13 +479,13 @@ component TabItem inherits Rectangle {
                     y: parent.height + 6px;
                     width: tabclose-tip.preferred-width + 16px;
                     height: 24px;
-                    background: Theme.dark ? #181914 : #FFFFFF;
+                    background: Theme.tooltip-bg;
                     border-radius: 6px;
                     border-width: 1px;
-                    border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                    border-color: Theme.tooltip-border;
                     drop-shadow-blur: 10px;
                     drop-shadow-offset-y: 3px;
-                    drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                    drop-shadow-color: Theme.dark ? #000000B0 : #00000025;
                     z: 1000;
 
                     tabclose-tip := Text {
@@ -465,7 +493,7 @@ component TabItem inherits Rectangle {
                         font-family: "Inter";
                         font-size: 11px;
                         font-weight: 500;
-                        color: Theme.dark ? #F4F5F0 : #10110C;
+                        color: Theme.text-primary;
                         vertical-alignment: center;
                         horizontal-alignment: center;
                     }
@@ -1284,13 +1312,13 @@ VerticalLayout {
                             y: parent.height + 6px;
                             width: newtab-tip.preferred-width + 16px;
                             height: 24px;
-                            background: Theme.dark ? #181914 : #FFFFFF;
+                            background: Theme.tooltip-bg;
                             border-radius: 6px;
                             border-width: 1px;
-                            border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                            border-color: Theme.tooltip-border;
                             drop-shadow-blur: 10px;
                             drop-shadow-offset-y: 3px;
-                            drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                            drop-shadow-color: Theme.dark ? #000000B0 : #00000025;
                             z: 1000;
 
                             newtab-tip := Text {
@@ -1298,7 +1326,7 @@ VerticalLayout {
                                 font-family: "Inter";
                                 font-size: 11px;
                                 font-weight: 500;
-                                color: Theme.dark ? #F4F5F0 : #10110C;
+                                color: Theme.text-primary;
                                 vertical-alignment: center;
                                 horizontal-alignment: center;
                             }
@@ -1386,13 +1414,13 @@ VerticalLayout {
                                 y: parent.height + 6px;
                                 width: chip-tip.preferred-width + 16px;
                                 height: 24px;
-                                background: Theme.dark ? #181914 : #FFFFFF;
+                                background: Theme.tooltip-bg;
                                 border-radius: 6px;
                                 border-width: 1px;
-                                border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                                border-color: Theme.tooltip-border;
                                 drop-shadow-blur: 10px;
                                 drop-shadow-offset-y: 3px;
-                                drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                                drop-shadow-color: Theme.dark ? #000000B0 : #00000025;
                                 z: 1000;
 
                                 chip-tip := Text {
@@ -1400,7 +1428,7 @@ VerticalLayout {
                                     font-family: "Inter";
                                     font-size: 11px;
                                     font-weight: 500;
-                                    color: Theme.dark ? #F4F5F0 : #10110C;
+                                    color: Theme.text-primary;
                                     vertical-alignment: center;
                                     horizontal-alignment: center;
                                 }
@@ -1420,9 +1448,9 @@ VerticalLayout {
                         if root.is-dirty: Rectangle {
                             height: 38px;
                             border-radius: 19px;
-                            background: save-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                            background: save-ta.has-hover ? Theme.cta-hover : Theme.cta-bg;
                             border-width: 1px;
-                            border-color: Theme.accent-border;
+                            border-color: Theme.border-subtle;
                             animate background { duration: 100ms; }
                             y: (parent.height - self.height) / 2;
 
@@ -1434,18 +1462,18 @@ VerticalLayout {
 
                                 Image {
                                     source: @image-url("../assets/icons/check.svg");
-                                    width: 18px;
-                                    height: 18px;
-                                    colorize: Theme.on-accent;
+                                    width: 17px;
+                                    height: 17px;
+                                    colorize: Theme.on-cta;
                                     y: (parent.height - self.height) / 2;
                                 }
 
                                 Text {
                                     text: root.is-saving ? "Saving..." : "Save";
                                     font-family: "Inter";
-                                    font-size: 15px;
-                                    font-weight: 700;
-                                    color: Theme.on-accent;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    color: Theme.on-cta;
                                     vertical-alignment: center;
                                 }
                             }
@@ -1460,13 +1488,13 @@ VerticalLayout {
                                 y: parent.height + 6px;
                                 width: save-tip.preferred-width + 16px;
                                 height: 24px;
-                                background: Theme.dark ? #181914 : #FFFFFF;
+                                background: Theme.tooltip-bg;
                                 border-radius: 6px;
                                 border-width: 1px;
-                                border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                                border-color: Theme.tooltip-border;
                                 drop-shadow-blur: 10px;
                                 drop-shadow-offset-y: 3px;
-                                drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                                drop-shadow-color: Theme.dark ? #000000B0 : #00000025;
                                 z: 1000;
 
                                 save-tip := Text {
@@ -1474,7 +1502,7 @@ VerticalLayout {
                                     font-family: "Inter";
                                     font-size: 11px;
                                     font-weight: 500;
-                                    color: Theme.dark ? #F4F5F0 : #10110C;
+                                    color: Theme.text-primary;
                                     vertical-alignment: center;
                                     horizontal-alignment: center;
                                 }
@@ -1637,13 +1665,13 @@ VerticalLayout {
                                 y: parent.height + 6px;
                                 width: cover-tip-text.preferred-width + 16px;
                                 height: 24px;
-                                background: Theme.dark ? #181914 : #FFFFFF;
+                                background: Theme.tooltip-bg;
                                 border-radius: 6px;
                                 border-width: 1px;
-                                border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                                border-color: Theme.tooltip-border;
                                 drop-shadow-blur: 10px;
                                 drop-shadow-offset-y: 3px;
-                                drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                                drop-shadow-color: Theme.dark ? #000000B0 : #00000025;
                                 z: 1000;
 
                                 cover-tip-text := Text {
@@ -1651,7 +1679,7 @@ VerticalLayout {
                                     font-family: "Inter";
                                     font-size: 11px;
                                     font-weight: 500;
-                                    color: Theme.dark ? #F4F5F0 : #10110C;
+                                    color: Theme.text-primary;
                                     vertical-alignment: center;
                                     horizontal-alignment: center;
                                 }
@@ -1816,13 +1844,13 @@ VerticalLayout {
                                         y: parent.height + 6px;
                                         width: zoom-tip.preferred-width + 16px;
                                         height: 24px;
-                                        background: Theme.dark ? #181914 : #FFFFFF;
+                                        background: Theme.tooltip-bg;
                                         border-radius: 6px;
                                         border-width: 1px;
-                                        border-color: Theme.dark ? #3A3C31 : #D4D6CE;
+                                        border-color: Theme.tooltip-border;
                                         drop-shadow-blur: 10px;
                                         drop-shadow-offset-y: 3px;
-                                        drop-shadow-color: Theme.dark ? #000000B0 : #00000030;
+                                        drop-shadow-color: Theme.dark ? #000000B0 : #00000025;
                                         z: 1000;
 
                                         zoom-tip := Text {
@@ -1830,7 +1858,7 @@ VerticalLayout {
                                             font-family: "Inter";
                                             font-size: 11px;
                                             font-weight: 500;
-                                            color: Theme.dark ? #F4F5F0 : #10110C;
+                                            color: Theme.text-primary;
                                             vertical-alignment: center;
                                             horizontal-alignment: center;
                                         }
@@ -1953,10 +1981,10 @@ VerticalLayout {
                     }
 
                     VerticalLayout {
-                        padding-top: 12px;
-                        padding-bottom: 12px;
-                        padding-left: 8px;
-                        padding-right: 8px;
+                        padding-top: 14px;
+                        padding-bottom: 14px;
+                        padding-left: 9px;
+                        padding-right: 9px;
                         spacing: 12px;
                         alignment: space-between;
 
@@ -1967,9 +1995,9 @@ VerticalLayout {
 
                             // Brand Monogram
                             Rectangle {
-                                width: 42px;
-                                height: 42px;
-                                border-radius: 13px;
+                                width: 40px;
+                                height: 40px;
+                                border-radius: 12px;
                                 background: Theme.accent;
                                 border-width: 1px;
                                 border-color: Theme.accent-border;
@@ -1986,7 +2014,7 @@ VerticalLayout {
                             }
 
                             Rectangle {
-                                width: 26px;
+                                width: 24px;
                                 height: 1px;
                                 background: Theme.border;
                                 x: (parent.width - self.width) / 2;
@@ -2561,86 +2589,117 @@ VerticalLayout {
                                     }
 
                                     h-card := Rectangle {
-                                        height: 68px;
+                                        height: 72px;
                                         width: parent.width;
-                                        background: h-ta.has-hover ? Theme.hover-bg : transparent;
-                                        border-width: 0;
+                                        background: transparent;
 
-                                        Rectangle {
-                                            y: parent.height - 1px;
-                                            height: 1px;
-                                            width: 100%;
-                                            background: Theme.border-subtle;
-                                        }
+                                        inner-h-card := Rectangle {
+                                            x: 8px;
+                                            y: 3px;
+                                            width: parent.width - 16px;
+                                            height: parent.height - 6px;
+                                            border-radius: 10px;
+                                            background: h-ta.has-hover ? Theme.hover-bg : Theme.surface-subtle;
+                                            border-width: 1px;
+                                            border-color: h-ta.has-hover ? Theme.border : Theme.border-subtle;
+                                            animate background { duration: 80ms; }
 
-                                        // Color swatch line
-                                        Rectangle {
-                                            x: 0;
-                                            width: 4px;
-                                            height: 100%;
-                                            background: item.color;
-                                        }
-
-                                        h-ta := TouchArea {
-                                            x: 0;
-                                            y: 0;
-                                            width: parent.width - 48px;
-                                            height: parent.height;
-                                            clicked => { root.jump-to-page(item.page); }
-                                            mouse-cursor: pointer;
-                                        }
-
-                                        HorizontalLayout {
-                                            padding-left: 16px;
-                                            padding-right: 10px;
-                                            spacing: 8px;
-                                            alignment: space-between;
-
-                                            VerticalLayout {
-                                                alignment: center;
-                                                spacing: 4px;
-                                                horizontal-stretch: 1;
-
-                                                HorizontalLayout {
-                                                    spacing: 6px;
-                                                    alignment: start;
-
-                                                    Text {
-                                                        text: item.kind == "highlight" ? "Highlight" : item.kind == "underline" ? "Underline" : "Strikethrough";
-                                                        font-family: "Inter";
-                                                        font-size: 12px;
-                                                        font-weight: 700;
-                                                        color: item.color;
-                                                    }
-
-                                                    Text {
-                                                        text: item.display-date != "" ? "• p. \{item.display-page} • \{item.display-date}" : "• p. \{item.display-page}";
-                                                        font-family: "Inter";
-                                                        font-size: 12px;
-                                                        color: Theme.text-muted;
-                                                    }
-                                                }
-
-                                                Text {
-                                                    text: "\{item.snippet}";
-                                                    font-family: "Inter";
-                                                    font-size: 15px;
-                                                    color: Theme.text-primary;
-                                                    overflow: elide;
-                                                    max-width: root.sidebar-width - 80px;
-                                                }
+                                            // Color indicator rounded pill on left
+                                            Rectangle {
+                                                x: 5px;
+                                                y: (parent.height - 36px) / 2;
+                                                width: 4px;
+                                                height: 36px;
+                                                border-radius: 2px;
+                                                background: item.color;
                                             }
 
-                                            // Delete icon button
-                                            IconButton {
-                                                icon: @image-url("../assets/icons/trash.svg");
-                                                size: 32px;
-                                                icon-size: 18px;
-                                                border-radius: 8px;
-                                                y: (parent.height - self.height) / 2;
-                                                tooltip: "Delete highlight";
-                                                tooltip-align: "right";
-                                                clicked => { root.delete-annotation(item.id); }
+                                            h-ta := TouchArea {
+                                                x: 0;
+                                                y: 0;
+                                                width: parent.width - 44px;
+                                                height: parent.height;
+                                                clicked => { root.jump-to-page(item.page); }
+                                                mouse-cursor: pointer;
+                                            }
+
+                                            HorizontalLayout {
+                                                padding-left: 18px;
+                                                padding-right: 8px;
+                                                spacing: 8px;
+                                                alignment: space-between;
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    spacing: 4px;
+                                                    horizontal-stretch: 1;
+
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        alignment: start;
+
+                                                        Text {
+                                                            text: item.kind == "highlight" ? "Highlight" : item.kind == "underline" ? "Underline" : "Strikethrough";
+                                                            font-family: "Inter";
+                                                            font-size: 11px;
+                                                            font-weight: 700;
+                                                            color: item.color;
+                                                            vertical-alignment: center;
+                                                        }
+
+                                                        Rectangle {
+                                                            height: 18px;
+                                                            border-radius: 9px;
+                                                            background: Theme.card-bg;
+                                                            y: (parent.height - self.height) / 2;
+
+                                                            HorizontalLayout {
+                                                                padding-left: 6px;
+                                                                padding-right: 6px;
+                                                                alignment: center;
+
+                                                                Text {
+                                                                    text: "p. \{item.display-page}";
+                                                                    font-family: "Inter";
+                                                                    font-size: 10px;
+                                                                    font-weight: 600;
+                                                                    color: Theme.text-secondary;
+                                                                    vertical-alignment: center;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        if item.display-date != "": Text {
+                                                            text: item.display-date;
+                                                            font-family: "Inter";
+                                                            font-size: 10px;
+                                                            color: Theme.text-muted;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+
+                                                    Text {
+                                                        text: item.snippet;
+                                                        font-family: "Inter";
+                                                        font-size: 13px;
+                                                        font-weight: 500;
+                                                        color: Theme.text-primary;
+                                                        overflow: elide;
+                                                        max-width: root.sidebar-width - 96px;
+                                                    }
+                                                }
+
+                                                // Delete icon button
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/trash.svg");
+                                                    size: 28px;
+                                                    icon-size: 16px;
+                                                    border-radius: 8px;
+                                                    y: (parent.height - self.height) / 2;
+                                                    tooltip: "Delete highlight";
+                                                    tooltip-align: "right";
+                                                    clicked => { root.delete-annotation(item.id); }
+                                                }
                                             }
                                         }
                                     }
@@ -2713,98 +2772,129 @@ VerticalLayout {
                                     }
 
                                     n-card := Rectangle {
-                                        height: 82px;
+                                        height: 86px;
                                         width: parent.width;
-                                        background: n-ta.has-hover ? Theme.hover-bg : transparent;
+                                        background: transparent;
 
-                                        Rectangle {
-                                            y: parent.height - 1px;
-                                            height: 1px;
-                                            width: 100%;
-                                            background: Theme.border-subtle;
-                                        }
+                                        inner-n-card := Rectangle {
+                                            x: 8px;
+                                            y: 3px;
+                                            width: parent.width - 16px;
+                                            height: parent.height - 6px;
+                                            border-radius: 10px;
+                                            background: n-ta.has-hover ? Theme.hover-bg : Theme.surface-subtle;
+                                            border-width: 1px;
+                                            border-color: n-ta.has-hover ? Theme.border : Theme.border-subtle;
+                                            animate background { duration: 80ms; }
 
-                                        // Color swatch line
-                                        Rectangle {
-                                            x: 0;
-                                            width: 4px;
-                                            height: 100%;
-                                            background: item.color;
-                                        }
-
-                                        n-ta := TouchArea {
-                                            x: 0;
-                                            y: 0;
-                                            width: parent.width - 48px;
-                                            height: parent.height;
-                                            clicked => { root.jump-to-page(item.page); }
-                                            mouse-cursor: pointer;
-                                        }
-
-                                        HorizontalLayout {
-                                            padding-left: 16px;
-                                            padding-right: 10px;
-                                            spacing: 8px;
-                                            alignment: space-between;
-
-                                            VerticalLayout {
-                                                alignment: center;
-                                                spacing: 4px;
-                                                horizontal-stretch: 1;
-
-                                                HorizontalLayout {
-                                                    spacing: 6px;
-                                                    alignment: start;
-
-                                                    Text {
-                                                        text: "Note";
-                                                        font-family: "Inter";
-                                                        font-size: 12px;
-                                                        font-weight: 700;
-                                                        color: item.color;
-                                                    }
-
-                                                    Text {
-                                                        text: item.display-date != "" ? "• p. \{item.display-page} • \{item.display-date}" : "• p. \{item.display-page}";
-                                                        font-family: "Inter";
-                                                        font-size: 12px;
-                                                        color: Theme.text-muted;
-                                                    }
-                                                }
-
-                                                Text {
-                                                    text: item.comment;
-                                                    font-family: "Inter";
-                                                    font-size: 15px;
-                                                    font-weight: 600;
-                                                    color: Theme.text-primary;
-                                                    overflow: elide;
-                                                    max-width: root.sidebar-width - 80px;
-                                                }
-
-                                                Text {
-                                                    text: "“\{item.snippet}”";
-                                                    font-family: "Inter";
-                                                    font-size: 13px;
-                                                    color: Theme.text-muted;
-                                                    overflow: elide;
-                                                    max-width: root.sidebar-width - 80px;
-                                                }
+                                            // Color indicator rounded pill on left
+                                            Rectangle {
+                                                x: 5px;
+                                                y: (parent.height - 40px) / 2;
+                                                width: 4px;
+                                                height: 40px;
+                                                border-radius: 2px;
+                                                background: item.color;
                                             }
 
-                                            IconButton {
-                                                icon: @image-url("../assets/icons/trash.svg");
-                                                size: 32px;
-                                                icon-size: 18px;
-                                                border-radius: 8px;
-                                                y: (parent.height - self.height) / 2;
-                                                tooltip: "Delete note";
-                                                tooltip-align: "right";
-                                                clicked => {
-                                                    if (item.kind == "note") {
-                                                        root.delete-annotation(item.id);
-                                                    } else {
-                                                        root.update-annotation-note(item.id, "");
+                                            n-ta := TouchArea {
+                                                x: 0;
+                                                y: 0;
+                                                width: parent.width - 44px;
+                                                height: parent.height;
+                                                clicked => { root.jump-to-page(item.page); }
+                                                mouse-cursor: pointer;
+                                            }
+
+                                            HorizontalLayout {
+                                                padding-left: 18px;
+                                                padding-right: 8px;
+                                                spacing: 8px;
+                                                alignment: space-between;
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    spacing: 3px;
+                                                    horizontal-stretch: 1;
+
+                                                    HorizontalLayout {
+                                                        spacing: 6px;
+                                                        alignment: start;
+
+                                                        Text {
+                                                            text: "Note";
+                                                            font-family: "Inter";
+                                                            font-size: 11px;
+                                                            font-weight: 700;
+                                                            color: item.color;
+                                                            vertical-alignment: center;
+                                                        }
+
+                                                        Rectangle {
+                                                            height: 18px;
+                                                            border-radius: 9px;
+                                                            background: Theme.card-bg;
+                                                            y: (parent.height - self.height) / 2;
+
+                                                            HorizontalLayout {
+                                                                padding-left: 6px;
+                                                                padding-right: 6px;
+                                                                alignment: center;
+
+                                                                Text {
+                                                                    text: "p. \{item.display-page}";
+                                                                    font-family: "Inter";
+                                                                    font-size: 10px;
+                                                                    font-weight: 600;
+                                                                    color: Theme.text-secondary;
+                                                                    vertical-alignment: center;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        if item.display-date != "": Text {
+                                                            text: item.display-date;
+                                                            font-family: "Inter";
+                                                            font-size: 10px;
+                                                            color: Theme.text-muted;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+
+                                                    Text {
+                                                        text: item.comment;
+                                                        font-family: "Inter";
+                                                        font-size: 13px;
+                                                        font-weight: 600;
+                                                        color: Theme.text-primary;
+                                                        overflow: elide;
+                                                        max-width: root.sidebar-width - 96px;
+                                                    }
+
+                                                    if item.snippet != "": Text {
+                                                        text: "“\{item.snippet}”";
+                                                        font-family: "Inter";
+                                                        font-size: 11px;
+                                                        color: Theme.text-muted;
+                                                        overflow: elide;
+                                                        max-width: root.sidebar-width - 96px;
+                                                    }
+                                                }
+
+                                                IconButton {
+                                                    icon: @image-url("../assets/icons/trash.svg");
+                                                    size: 28px;
+                                                    icon-size: 16px;
+                                                    border-radius: 8px;
+                                                    y: (parent.height - self.height) / 2;
+                                                    tooltip: "Delete note";
+                                                    tooltip-align: "right";
+                                                    clicked => {
+                                                        if (item.kind == "note") {
+                                                            root.delete-annotation(item.id);
+                                                        } else {
+                                                            root.update-annotation-note(item.id, "");
+                                                        }
                                                     }
                                                 }
                                             }
@@ -3034,81 +3124,82 @@ VerticalLayout {
                                 vertical-stretch: 1;
 
                                 for item in root.search-results: s-card := Rectangle {
-                                    height: 72px;
+                                    height: 74px;
                                     width: parent.width;
-                                    background: (item.is-active || s-ta.has-hover) ? Theme.hover-bg : transparent;
-                                    animate background { duration: 100ms; }
+                                    background: transparent;
 
-                                    Rectangle {
-                                        y: parent.height - 1px;
-                                        height: 1px;
-                                        width: 100%;
-                                        background: Theme.border-subtle;
-                                    }
+                                    inner-s-card := Rectangle {
+                                        x: 8px;
+                                        y: 3px;
+                                        width: parent.width - 16px;
+                                        height: parent.height - 6px;
+                                        border-radius: 10px;
+                                        background: item.is-active ? Theme.hover-bg : s-ta.has-hover ? Theme.hover-bg : Theme.surface-subtle;
+                                        border-width: 1px;
+                                        border-color: item.is-active ? Theme.accent : s-ta.has-hover ? Theme.border : Theme.border-subtle;
+                                        animate background { duration: 80ms; }
 
-                                    s-ta := TouchArea {
-                                        x: 0;
-                                        y: 0;
-                                        width: parent.width;
-                                        height: parent.height;
-                                        clicked => {
-                                            root.select-search-result(item.id);
+                                        s-ta := TouchArea {
+                                            clicked => {
+                                                root.select-search-result(item.id);
+                                            }
+                                            mouse-cursor: pointer;
                                         }
-                                        mouse-cursor: pointer;
-                                    }
 
-                                    VerticalLayout {
-                                        padding-left: 16px;
-                                        padding-right: 16px;
-                                        padding-top: 10px;
-                                        padding-bottom: 10px;
-                                        alignment: center;
-                                        spacing: 5px;
+                                        VerticalLayout {
+                                            padding-left: 12px;
+                                            padding-right: 12px;
+                                            padding-top: 8px;
+                                            padding-bottom: 8px;
+                                            alignment: center;
+                                            spacing: 4px;
 
-                                        HorizontalLayout {
-                                            spacing: 6px;
-                                            alignment: space-between;
+                                            HorizontalLayout {
+                                                spacing: 6px;
+                                                alignment: space-between;
 
-                                            Rectangle {
-                                                height: 22px;
-                                                border-radius: 5px;
-                                                background: item.is-active ? Theme.accent : Theme.surface-subtle;
-                                                border-width: 1px;
-                                                border-color: item.is-active ? Theme.accent-border : Theme.border-subtle;
+                                                Rectangle {
+                                                    height: 20px;
+                                                    border-radius: 10px;
+                                                    background: item.is-active ? Theme.accent : Theme.card-bg;
+                                                    border-width: 1px;
+                                                    border-color: item.is-active ? Theme.accent-border : Theme.border-subtle;
 
-                                                HorizontalLayout {
-                                                    padding-left: 8px;
-                                                    padding-right: 8px;
-                                                    alignment: center;
+                                                    HorizontalLayout {
+                                                        padding-left: 8px;
+                                                        padding-right: 8px;
+                                                        alignment: center;
 
-                                                    Text {
-                                                        text: "Page \{item.display-page}";
-                                                        font-family: "Inter";
-                                                        font-size: 12px;
-                                                        font-weight: 700;
-                                                        color: item.is-active ? Theme.on-accent : Theme.text-secondary;
-                                                        vertical-alignment: center;
+                                                        Text {
+                                                            text: "Page \{item.display-page}";
+                                                            font-family: "Inter";
+                                                            font-size: 11px;
+                                                            font-weight: 700;
+                                                            color: item.is-active ? Theme.on-accent : Theme.text-secondary;
+                                                            vertical-alignment: center;
+                                                        }
                                                     }
+                                                }
+
+                                                if item.is-active: Text {
+                                                    text: "● Current";
+                                                    font-family: "Inter";
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    color: Theme.accent;
+                                                    vertical-alignment: center;
                                                 }
                                             }
 
-                                            if item.is-active: Text {
-                                                text: "● Current";
+                                            Text {
+                                                text: item.snippet;
                                                 font-family: "Inter";
-                                                font-size: 12px;
-                                                font-weight: 700;
-                                                color: Theme.accent;
-                                                vertical-alignment: center;
+                                                font-size: 13px;
+                                                font-weight: 500;
+                                                color: Theme.text-primary;
+                                                overflow: elide;
+                                                max-width: root.sidebar-width - 48px;
                                             }
-                                        }
-
-                                        Text {
-                                            text: item.snippet;
-                                            font-family: "Inter";
-                                            font-size: 15px;
-                                            color: Theme.text-primary;
-                                            overflow: elide;
-                                            max-width: parent.width - 32px;
                                         }
                                     }
                                 }
@@ -3155,137 +3246,315 @@ VerticalLayout {
                 doc-viewport := Rectangle {
                     horizontal-stretch: 1;
                     background: Theme.dark
-                        ? (root.paper-theme == 1 ? #22201B : #10110C)
+                        ? (root.paper-theme == 1 ? #22201B : Theme.canvas-bg)
                         : (root.paper-theme == 1 ? #EFE9D9 : root.paper-theme == 2 ? #22231C : Theme.canvas-bg);
                     clip: true;
 
                     if root.has-error: Rectangle {
-                        width: root.recent-books.length > 0 ? 520px : 460px;
-                        height: root.recent-books.length > 0 ? min(parent.height - 48px, 520px) : 260px;
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
-                        background: Theme.card-bg;
-                        border-radius: 20px;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        drop-shadow-blur: 24px;
-                        drop-shadow-color: Theme.dark ? #000000a0 : #00000015;
-                        clip: true;
+                        width: 100%;
+                        height: 100%;
 
-                        VerticalLayout {
-                            padding: root.recent-books.length > 0 ? 24px : 32px;
-                            spacing: root.recent-books.length > 0 ? 14px : 16px;
-                            alignment: root.recent-books.length > 0 ? start : center;
-
-                            Rectangle {
-                                width: root.recent-books.length > 0 ? 44px : 52px;
-                                height: root.recent-books.length > 0 ? 44px : 52px;
-                                border-radius: 14px;
-                                background: Theme.accent-subtle;
-                                border-width: 1px;
-                                border-color: Theme.accent-border;
-                                x: (parent.width - self.width) / 2;
-
-                                Image {
-                                    source: @image-url("../assets/icons/folder-open.svg");
-                                    width: root.recent-books.length > 0 ? 20px : 24px;
-                                    height: root.recent-books.length > 0 ? 20px : 24px;
-                                    colorize: Theme.on-accent;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                            }
+                        ScrollView {
+                            width: 100%;
+                            height: 100%;
 
                             VerticalLayout {
-                                spacing: 4px;
                                 alignment: center;
+                                padding-top: 32px;
+                                padding-bottom: 32px;
+                                padding-left: 24px;
+                                padding-right: 24px;
 
-                                Text {
-                                    text: "Welcome to Folio";
-                                    font-family: "Inter";
-                                    font-size: 18px;
-                                    font-weight: 700;
-                                    color: Theme.text-primary;
-                                    horizontal-alignment: center;
-                                }
-
-                                Text {
-                                    text: root.error-message != "" ? root.error-message : "Open a PDF document to begin reading with rich annotations and dual-page view.";
-                                    font-family: "Inter";
-                                    font-size: 13px;
-                                    color: Theme.text-secondary;
-                                    horizontal-alignment: center;
-                                    wrap: word-wrap;
-                                }
-                            }
-
-                            SignaturePillButton {
-                                icon: @image-url("../assets/icons/folder-open.svg");
-                                text: "Select PDF Document";
-                                x: (parent.width - self.width) / 2;
-                                tooltip: "Open PDF file (Ctrl+O)";
-                                clicked => { root.open-document(); }
-                            }
-
-                            if root.recent-books.length > 0: Rectangle {
-                                height: 1px;
-                                background: Theme.border-subtle;
-                            }
-
-                            if root.recent-books.length > 0: HorizontalLayout {
-                                padding-left: 4px;
-                                padding-right: 4px;
-                                alignment: space-between;
-
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    alignment: start;
-
-                                    Image {
-                                        source: @image-url("../assets/icons/clock.svg");
-                                        width: 13px;
-                                        height: 13px;
-                                        colorize: Theme.text-secondary;
-                                        y: (parent.height - self.height) / 2;
-                                    }
-
-                                    Text {
-                                        text: "RECENT DOCUMENTS";
-                                        font-family: "Inter";
-                                        font-size: 11px;
-                                        font-weight: 700;
-                                        color: Theme.text-secondary;
-                                        vertical-alignment: center;
-                                    }
-                                }
-
-                                Text {
-                                    text: "\{root.recent-books.length} recent";
-                                    font-family: "Inter";
-                                    font-size: 11px;
-                                    color: Theme.text-muted;
-                                    vertical-alignment: center;
-                                }
-                            }
-
-                            if root.recent-books.length > 0: ScrollView {
-                                width: 100%;
-                                height: min(200px, root.recent-books.length * 44px);
+                                // Main Dashboard Card
+                                Rectangle {
+                                    width: min(840px, root.width - 120px);
+                                    x: (parent.width - self.width) / 2;
+                                    background: Theme.card-bg;
+                                    border-radius: 20px;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+                                    drop-shadow-blur: 24px;
+                                    drop-shadow-color: Theme.dark ? #00000090 : #00000015;
 
                                 VerticalLayout {
-                                    spacing: 2px;
-                                    padding-right: 6px;
+                                    padding: 28px;
+                                    spacing: 24px;
 
-                                    for item in root.recent-books : Rectangle {
-                                        height: 40px;
-                                        border-radius: 8px;
-                                        background: welcome-rec-ta.has-hover ? Theme.hover-bg : transparent;
-                                        animate background { duration: 80ms; }
+                                    // Top Hero Banner
+                                    HorizontalLayout {
+                                        alignment: space-between;
 
                                         HorizontalLayout {
-                                            padding-left: 8px;
-                                            padding-right: 8px;
-                                            spacing: 10px;
+                                            spacing: 16px;
+                                            alignment: start;
+
+                                            Rectangle {
+                                                width: 52px;
+                                                height: 52px;
+                                                border-radius: 16px;
+                                                background: Theme.accent;
+                                                border-width: 1px;
+                                                border-color: Theme.accent-border;
+                                                y: (parent.height - self.height) / 2;
+
+                                                Text {
+                                                    text: "F";
+                                                    font-family: "Inter";
+                                                    font-size: 24px;
+                                                    font-weight: 800;
+                                                    color: Theme.on-accent;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+
+                                            VerticalLayout {
+                                                spacing: 3px;
+                                                alignment: center;
+
+                                                Text {
+                                                    text: "Folio Workspace";
+                                                    font-family: "Inter";
+                                                    font-size: 22px;
+                                                    font-weight: 700;
+                                                    color: Theme.text-primary;
+                                                }
+
+                                                Text {
+                                                    text: root.error-message != "" ? root.error-message : "Modern high-performance document reader & annotation studio";
+                                                    font-family: "Inter";
+                                                    font-size: 13px;
+                                                    color: Theme.text-secondary;
+                                                }
+                                            }
+                                        }
+
+                                        SignaturePillButton {
+                                            icon: @image-url("../assets/icons/folder-open.svg");
+                                            text: "Open PDF";
+                                            tooltip: "Open PDF file (Ctrl+O)";
+                                            y: (parent.height - self.height) / 2;
+                                            clicked => { root.open-document(); }
+                                        }
+                                    }
+
+                                    // 3 Feature Showcase Cards (Directly matching Reference UI language)
+                                    HorizontalLayout {
+                                        spacing: 14px;
+
+                                        // Card 1: Soft Periwinkle Lavender (Matching Left Feature Card in Reference)
+                                        Rectangle {
+                                            horizontal-stretch: 1;
+                                            height: 124px;
+                                            background: Theme.dark ? #ADB0FF : #E0E3FF;
+                                            border-radius: 16px;
+                                            border-width: 1px;
+                                            border-color: Theme.dark ? #ADB0FF : #C8CDFD;
+
+                                            VerticalLayout {
+                                                padding: 16px;
+                                                spacing: 6px;
+                                                alignment: space-between;
+
+                                                HorizontalLayout {
+                                                    alignment: space-between;
+
+                                                    Text {
+                                                        text: "READING MODES";
+                                                        font-family: "Inter";
+                                                        font-size: 11px;
+                                                        font-weight: 800;
+                                                        color: Theme.dark ? #181926 : #3730A3;
+                                                        vertical-alignment: center;
+                                                        letter-spacing: 0.6px;
+                                                    }
+
+                                                    Rectangle {
+                                                        height: 22px;
+                                                        border-radius: 11px;
+                                                        background: Theme.dark ? #111116 : #3730A3;
+                                                        y: (parent.height - self.height) / 2;
+
+                                                        HorizontalLayout {
+                                                            padding-left: 9px;
+                                                            padding-right: 9px;
+                                                            alignment: center;
+
+                                                            Text {
+                                                                text: "3 Layouts";
+                                                                font-family: "Inter";
+                                                                font-size: 10px;
+                                                                font-weight: 700;
+                                                                color: #FFFFFF;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                Text {
+                                                    text: "Spread & Stream";
+                                                    font-family: "Inter";
+                                                    font-size: 18px;
+                                                    font-weight: 800;
+                                                    color: Theme.dark ? #0C0D12 : #1E1B4B;
+                                                }
+
+                                                Text {
+                                                    text: "Single page, dual-page book spread with cover offset, and continuous scroll.";
+                                                    font-family: "Inter";
+                                                    font-size: 11px;
+                                                    font-weight: 500;
+                                                    color: Theme.dark ? #2D3048 : #4338CA;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+
+                                        // Card 2: Warm Sunglow Amber Gold (Matching Center Gold Card in Reference)
+                                        Rectangle {
+                                            horizontal-stretch: 1;
+                                            height: 124px;
+                                            background: Theme.dark ? #FEC917 : #FEF3C7;
+                                            border-radius: 16px;
+                                            border-width: 1px;
+                                            border-color: Theme.dark ? #FEC917 : #FDE68A;
+
+                                            VerticalLayout {
+                                                padding: 16px;
+                                                spacing: 6px;
+                                                alignment: space-between;
+
+                                                HorizontalLayout {
+                                                    alignment: space-between;
+
+                                                    Text {
+                                                        text: "RICH ANNOTATIONS";
+                                                        font-family: "Inter";
+                                                        font-size: 11px;
+                                                        font-weight: 800;
+                                                        color: Theme.dark ? #322400 : #78350F;
+                                                        vertical-alignment: center;
+                                                        letter-spacing: 0.6px;
+                                                    }
+
+                                                    Rectangle {
+                                                        height: 22px;
+                                                        border-radius: 11px;
+                                                        background: Theme.dark ? #FFFFFF : #D97706;
+                                                        y: (parent.height - self.height) / 2;
+
+                                                        HorizontalLayout {
+                                                            padding-left: 9px;
+                                                            padding-right: 9px;
+                                                            alignment: center;
+
+                                                            Text {
+                                                                text: "6 Colors";
+                                                                font-family: "Inter";
+                                                                font-size: 10px;
+                                                                font-weight: 700;
+                                                                color: Theme.dark ? #1A1400 : #FFFFFF;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                Text {
+                                                    text: "Markup Studio";
+                                                    font-family: "Inter";
+                                                    font-size: 18px;
+                                                    font-weight: 800;
+                                                    color: Theme.dark ? #140F00 : #78350F;
+                                                }
+
+                                                Text {
+                                                    text: "Highlight, underline, strikeout, sticky notes, and Markdown export.";
+                                                    font-family: "Inter";
+                                                    font-size: 11px;
+                                                    font-weight: 500;
+                                                    color: Theme.dark ? #4F3A00 : #92400E;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+
+                                        // Card 3: Deep Elevated Obsidian Card (Matching Dark Activity Card in Reference)
+                                        Rectangle {
+                                            horizontal-stretch: 1;
+                                            height: 124px;
+                                            background: Theme.card-elevated;
+                                            border-radius: 16px;
+                                            border-width: 1px;
+                                            border-color: Theme.border;
+
+                                            VerticalLayout {
+                                                padding: 16px;
+                                                spacing: 6px;
+                                                alignment: space-between;
+
+                                                HorizontalLayout {
+                                                    alignment: space-between;
+
+                                                    Text {
+                                                        text: "CANVAS THEMES";
+                                                        font-family: "Inter";
+                                                        font-size: 11px;
+                                                        font-weight: 800;
+                                                        color: Theme.accent;
+                                                        vertical-alignment: center;
+                                                        letter-spacing: 0.6px;
+                                                    }
+
+                                                    Rectangle {
+                                                        height: 22px;
+                                                        border-radius: 11px;
+                                                        background: Theme.surface-subtle;
+                                                        y: (parent.height - self.height) / 2;
+
+                                                        HorizontalLayout {
+                                                            padding-left: 9px;
+                                                            padding-right: 9px;
+                                                            alignment: center;
+
+                                                            Text {
+                                                                text: "3 Modes";
+                                                                font-family: "Inter";
+                                                                font-size: 10px;
+                                                                font-weight: 700;
+                                                                color: Theme.text-secondary;
+                                                                vertical-alignment: center;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                Text {
+                                                    text: "Eye-Care Paper";
+                                                    font-family: "Inter";
+                                                    font-size: 18px;
+                                                    font-weight: 800;
+                                                    color: Theme.text-primary;
+                                                }
+
+                                                Text {
+                                                    text: "Light paper, sepia reading tone, and scientific dark inversion.";
+                                                    font-family: "Inter";
+                                                    font-size: 11px;
+                                                    font-weight: 500;
+                                                    color: Theme.text-secondary;
+                                                    wrap: word-wrap;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Recent Documents
+                                    if root.recent-books.length > 0: VerticalLayout {
+                                        spacing: 12px;
+
+                                        HorizontalLayout {
                                             alignment: space-between;
 
                                             HorizontalLayout {
@@ -3293,67 +3562,197 @@ VerticalLayout {
                                                 alignment: start;
 
                                                 Image {
-                                                    source: @image-url("../assets/icons/file-text.svg");
-                                                    width: 15px;
-                                                    height: 15px;
-                                                    colorize: welcome-rec-ta.has-hover ? Theme.accent : Theme.text-secondary;
+                                                    source: @image-url("../assets/icons/clock.svg");
+                                                    width: 14px;
+                                                    height: 14px;
+                                                    colorize: Theme.text-secondary;
                                                     y: (parent.height - self.height) / 2;
                                                 }
 
-                                                VerticalLayout {
-                                                    alignment: center;
-                                                    spacing: 1px;
-
-                                                    Text {
-                                                        text: item.filename;
-                                                        font-family: "Inter";
-                                                        font-size: 13px;
-                                                        font-weight: 500;
-                                                        color: Theme.text-primary;
-                                                        overflow: elide;
-                                                        max-width: 320px;
-                                                    }
-
-                                                    Text {
-                                                        text: item.path;
-                                                        font-family: "Inter";
-                                                        font-size: 11px;
-                                                        color: Theme.text-muted;
-                                                        overflow: elide;
-                                                        max-width: 320px;
-                                                    }
+                                                Text {
+                                                    text: "RECENT DOCUMENTS";
+                                                    font-family: "Inter";
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    color: Theme.text-secondary;
+                                                    vertical-alignment: center;
+                                                    letter-spacing: 0.5px;
                                                 }
                                             }
 
-                                            Rectangle {
-                                                width: 58px;
-                                                height: 22px;
-                                                border-radius: 4px;
-                                                background: Theme.accent-subtle;
-                                                y: (parent.height - self.height) / 2;
-
-                                                Text {
-                                                    text: "p. \{item.page}";
-                                                    font-family: "Inter";
-                                                    font-size: 11px;
-                                                    font-weight: 500;
-                                                    color: Theme.on-accent;
-                                                    horizontal-alignment: center;
-                                                    vertical-alignment: center;
-                                                }
+                                            Text {
+                                                text: "\{root.recent-books.length} files";
+                                                font-family: "Inter";
+                                                font-size: 12px;
+                                                color: Theme.text-muted;
+                                                vertical-alignment: center;
                                             }
                                         }
 
-                                        welcome-rec-ta := TouchArea {
-                                            clicked => {
-                                                root.open-recent-book(item.path);
+                                        Rectangle {
+                                            background: Theme.card-elevated;
+                                            border-radius: 16px;
+                                            border-width: 1px;
+                                            border-color: Theme.border;
+                                            clip: true;
+
+                                            VerticalLayout {
+                                                padding: 6px;
+                                                spacing: 2px;
+
+                                                // Clean Table Subheader
+                                                Rectangle {
+                                                    height: 28px;
+                                                    background: transparent;
+
+                                                    HorizontalLayout {
+                                                        padding-left: 14px;
+                                                        padding-right: 14px;
+                                                        alignment: space-between;
+
+                                                        Text {
+                                                            text: "DOCUMENT";
+                                                            font-family: "Inter";
+                                                            font-size: 10px;
+                                                            font-weight: 700;
+                                                            color: Theme.text-muted;
+                                                            vertical-alignment: center;
+                                                            letter-spacing: 0.6px;
+                                                        }
+
+                                                        Text {
+                                                            text: "STATUS / PROGRESS";
+                                                            font-family: "Inter";
+                                                            font-size: 10px;
+                                                            font-weight: 700;
+                                                            color: Theme.text-muted;
+                                                            vertical-alignment: center;
+                                                            letter-spacing: 0.6px;
+                                                        }
+                                                    }
+                                                }
+
+                                                for item in root.recent-books : Rectangle {
+                                                    height: 48px;
+                                                    border-radius: 10px;
+                                                    background: welcome-rec-ta.has-hover ? Theme.hover-bg : transparent;
+                                                    border-width: welcome-rec-ta.has-hover ? 1px : 0px;
+                                                    border-color: Theme.border-subtle;
+                                                    animate background { duration: 80ms; }
+
+                                                    HorizontalLayout {
+                                                        padding-left: 12px;
+                                                        padding-right: 12px;
+                                                        spacing: 12px;
+                                                        alignment: space-between;
+
+                                                        HorizontalLayout {
+                                                            spacing: 12px;
+                                                            alignment: start;
+
+                                                            Rectangle {
+                                                                width: 32px;
+                                                                height: 32px;
+                                                                border-radius: 10px;
+                                                                background: Theme.surface-subtle;
+                                                                y: (parent.height - self.height) / 2;
+
+                                                                Image {
+                                                                    source: @image-url("../assets/icons/file-text.svg");
+                                                                    width: 16px;
+                                                                    height: 16px;
+                                                                    colorize: welcome-rec-ta.has-hover ? Theme.accent : Theme.text-secondary;
+                                                                    x: (parent.width - self.width) / 2;
+                                                                    y: (parent.height - self.height) / 2;
+                                                                }
+                                                            }
+
+                                                            VerticalLayout {
+                                                                alignment: center;
+                                                                spacing: 2px;
+
+                                                                Text {
+                                                                    text: item.filename;
+                                                                    font-family: "Inter";
+                                                                    font-size: 13px;
+                                                                    font-weight: 600;
+                                                                    color: Theme.text-primary;
+                                                                    overflow: elide;
+                                                                    max-width: 440px;
+                                                                }
+
+                                                                Text {
+                                                                    text: item.path;
+                                                                    font-family: "Inter";
+                                                                    font-size: 11px;
+                                                                    color: Theme.text-muted;
+                                                                    overflow: elide;
+                                                                    max-width: 440px;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        HorizontalLayout {
+                                                            spacing: 10px;
+                                                            alignment: end;
+
+                                                            Rectangle {
+                                                                height: 24px;
+                                                                border-radius: 12px;
+                                                                background: Theme.surface-subtle;
+                                                                border-width: 1px;
+                                                                border-color: Theme.border-subtle;
+                                                                y: (parent.height - self.height) / 2;
+
+                                                                HorizontalLayout {
+                                                                    padding-left: 10px;
+                                                                    padding-right: 10px;
+                                                                    alignment: center;
+
+                                                                    Text {
+                                                                        text: "Page \{item.page}";
+                                                                        font-family: "Inter";
+                                                                        font-size: 11px;
+                                                                        font-weight: 600;
+                                                                        color: Theme.text-secondary;
+                                                                        vertical-alignment: center;
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            Rectangle {
+                                                                width: 28px;
+                                                                height: 28px;
+                                                                border-radius: 14px;
+                                                                background: welcome-rec-ta.has-hover ? Theme.accent : transparent;
+                                                                y: (parent.height - self.height) / 2;
+
+                                                                Image {
+                                                                    source: @image-url("../assets/icons/chevron-right.svg");
+                                                                    width: 14px;
+                                                                    height: 14px;
+                                                                    colorize: welcome-rec-ta.has-hover ? Theme.on-accent : Theme.text-muted;
+                                                                    x: (parent.width - self.width) / 2;
+                                                                    y: (parent.height - self.height) / 2;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    welcome-rec-ta := TouchArea {
+                                                        clicked => {
+                                                            root.open-recent-book(item.path);
+                                                        }
+                                                        mouse-cursor: pointer;
+                                                    }
+                                                }
                                             }
-                                            mouse-cursor: pointer;
                                         }
                                     }
                                 }
                             }
                         }
+                    }
                     }
 
                     // Single Page / Dual Page View
@@ -3401,9 +3800,9 @@ VerticalLayout {
                                 border-radius: 4px;
                                 border-width: 1px;
                                 border-color: root.paper-theme == 2 ? #2B2D24 : root.paper-theme == 1 ? #DCD4BC : Theme.border;
-                                drop-shadow-blur: root.paper-theme == 2 ? 24px : Theme.dark ? 16px : 0px;
-                                drop-shadow-offset-y: Theme.dark ? 4px : 0px;
-                                drop-shadow-color: root.paper-theme == 2 ? #00000080 : Theme.dark ? #00000050 : #00000000;
+                                drop-shadow-blur: root.paper-theme == 2 ? 24px : 20px;
+                                drop-shadow-offset-y: 6px;
+                                drop-shadow-color: root.paper-theme == 2 ? #00000090 : Theme.dark ? #00000060 : #0000001a;
 
                                 Image {
                                     width: 100%;
@@ -3704,13 +4103,13 @@ VerticalLayout {
                                     y: round(root.popup-y / 1px) * 1px;
                                     width: root.show-note-input ? max(root.note-input-width + 16px, 350px) : (root.selected-annotation-id > 0 ? 310px : 350px);
                                     height: root.show-note-input ? (root.note-input-height + 66px) : 54px;
-                                    border-radius: 12px;
-                                    background: Theme.card-bg;
+                                    border-radius: 14px;
+                                    background: Theme.card-elevated;
                                     border-width: 1px;
-                                    border-color: Theme.border;
-                                    drop-shadow-blur: 10px;
-                                    drop-shadow-offset-y: 3px;
-                                    drop-shadow-color: Theme.dark ? #00000088 : #00000022;
+                                    border-color: Theme.border-strong;
+                                    drop-shadow-blur: 16px;
+                                    drop-shadow-offset-y: 4px;
+                                    drop-shadow-color: Theme.dark ? #000000a0 : #00000028;
                                     animate height { duration: 120ms; }
                                     animate width { duration: 120ms; }
 
@@ -4251,9 +4650,9 @@ VerticalLayout {
                                 border-radius: 4px;
                                 border-width: 1px;
                                 border-color: root.paper-theme == 2 ? #2B2D24 : root.paper-theme == 1 ? #DCD4BC : Theme.border;
-                                drop-shadow-blur: root.paper-theme == 2 ? 24px : Theme.dark ? 16px : 0px;
-                                drop-shadow-offset-y: Theme.dark ? 4px : 0px;
-                                drop-shadow-color: root.paper-theme == 2 ? #00000080 : Theme.dark ? #00000050 : #00000000;
+                                drop-shadow-blur: root.paper-theme == 2 ? 24px : 20px;
+                                drop-shadow-offset-y: 6px;
+                                drop-shadow-color: root.paper-theme == 2 ? #00000090 : Theme.dark ? #00000060 : #0000001a;
 
                                 Image {
                                     width: 100%;
@@ -4401,9 +4800,9 @@ VerticalLayout {
                                 border-radius: 4px;
                                 border-width: 1px;
                                 border-color: root.paper-theme == 2 ? #2B2D24 : root.paper-theme == 1 ? #DCD4BC : Theme.border;
-                                drop-shadow-blur: root.paper-theme == 2 ? 24px : Theme.dark ? 16px : 0px;
-                                drop-shadow-offset-y: Theme.dark ? 4px : 0px;
-                                drop-shadow-color: root.paper-theme == 2 ? #00000080 : Theme.dark ? #00000050 : #00000000;
+                                drop-shadow-blur: root.paper-theme == 2 ? 24px : 20px;
+                                drop-shadow-offset-y: 6px;
+                                drop-shadow-color: root.paper-theme == 2 ? #00000090 : Theme.dark ? #00000060 : #0000001a;
 
                                 Image {
                                     width: 100%;
@@ -4690,13 +5089,13 @@ VerticalLayout {
                                     y: round(root.popup-y / 1px) * 1px;
                                     width: root.show-note-input ? max(root.note-input-width + 16px, 350px) : (root.selected-annotation-id > 0 ? 310px : 350px);
                                     height: root.show-note-input ? (root.note-input-height + 66px) : 54px;
-                                    border-radius: 12px;
-                                    background: Theme.card-bg;
+                                    border-radius: 14px;
+                                    background: Theme.card-elevated;
                                     border-width: 1px;
-                                    border-color: Theme.border;
-                                    drop-shadow-blur: 10px;
-                                    drop-shadow-offset-y: 3px;
-                                    drop-shadow-color: Theme.dark ? #00000088 : #00000022;
+                                    border-color: Theme.border-strong;
+                                    drop-shadow-blur: 16px;
+                                    drop-shadow-offset-y: 4px;
+                                    drop-shadow-color: Theme.dark ? #000000a0 : #00000028;
                                     animate height { duration: 120ms; }
                                     animate width { duration: 120ms; }
 
@@ -5852,10 +6251,10 @@ VerticalLayout {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         z: 200;
-        background: Theme.card-bg;
-        border-radius: 16px;
+        background: Theme.card-elevated;
+        border-radius: 18px;
         border-width: 1px;
-        border-color: Theme.border;
+        border-color: Theme.border-strong;
         drop-shadow-blur: 32px;
         drop-shadow-offset-y: 8px;
         drop-shadow-color: Theme.dark ? #000000cc : #00000035;
@@ -6219,9 +6618,9 @@ VerticalLayout {
                 Rectangle {
                     height: 32px;
                     border-radius: 16px;
-                    background: done-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    background: done-ta.has-hover ? Theme.cta-hover : Theme.cta-bg;
                     border-width: 1px;
-                    border-color: Theme.accent-border;
+                    border-color: Theme.border-subtle;
                     animate background { duration: 80ms; }
                     y: (parent.height - self.height) / 2;
 
@@ -6234,8 +6633,8 @@ VerticalLayout {
                             text: "Done";
                             font-family: "Inter";
                             font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.on-accent;
+                            font-weight: 600;
+                            color: Theme.on-cta;
                             vertical-alignment: center;
                         }
                     }
@@ -6275,10 +6674,10 @@ VerticalLayout {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         z: 215;
-        background: Theme.card-bg;
-        border-radius: 14px;
+        background: Theme.card-elevated;
+        border-radius: 18px;
         border-width: 1px;
-        border-color: Theme.border;
+        border-color: Theme.border-strong;
         drop-shadow-blur: 32px;
         drop-shadow-color: Theme.dark ? #000000bb : #00000028;
 
@@ -6418,9 +6817,9 @@ VerticalLayout {
                 Rectangle {
                     height: 36px;
                     border-radius: 18px;
-                    background: unlock-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    background: unlock-ta.has-hover ? Theme.cta-hover : Theme.cta-bg;
                     border-width: 1px;
-                    border-color: Theme.accent-border;
+                    border-color: Theme.border-subtle;
                     animate background { duration: 80ms; }
 
                     HorizontalLayout {
@@ -6432,8 +6831,8 @@ VerticalLayout {
                             text: "Unlock";
                             font-family: "Inter";
                             font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.on-accent;
+                            font-weight: 600;
+                            color: Theme.on-cta;
                             vertical-alignment: center;
                         }
                     }
@@ -6471,10 +6870,10 @@ VerticalLayout {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         z: 215;
-        background: Theme.card-bg;
-        border-radius: 14px;
+        background: Theme.card-elevated;
+        border-radius: 18px;
         border-width: 1px;
-        border-color: Theme.border;
+        border-color: Theme.border-strong;
         drop-shadow-blur: 32px;
         drop-shadow-color: Theme.dark ? #000000bb : #00000028;
 
@@ -6818,9 +7217,9 @@ VerticalLayout {
                 Rectangle {
                     height: 36px;
                     border-radius: 18px;
-                    background: print-submit-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    background: print-submit-ta.has-hover ? Theme.cta-hover : Theme.cta-bg;
                     border-width: 1px;
-                    border-color: Theme.accent-border;
+                    border-color: Theme.border-subtle;
                     animate background { duration: 80ms; }
 
                     HorizontalLayout {
@@ -6832,8 +7231,8 @@ VerticalLayout {
                             text: "Print";
                             font-family: "Inter";
                             font-size: 13px;
-                            font-weight: 700;
-                            color: Theme.on-accent;
+                            font-weight: 600;
+                            color: Theme.on-cta;
                             vertical-alignment: center;
                         }
                     }
