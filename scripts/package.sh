@@ -17,7 +17,11 @@ mkdir -p "$DIST_DIR"
 
 # 1. Compile Release Binary
 echo "-> Compiling release binary..."
-cargo build --release --offline --manifest-path "$SCRIPT_DIR/Cargo.toml"
+if [ "${CARGO_OFFLINE:-}" = "1" ]; then
+    cargo build --release --offline --manifest-path "$SCRIPT_DIR/Cargo.toml"
+else
+    cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
+fi
 
 BINARY="$SCRIPT_DIR/target/release/folio"
 
