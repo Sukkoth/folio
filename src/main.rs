@@ -493,6 +493,9 @@ fn init_display_environment() {
             env::set_var("WINIT_UNIX_BACKEND", "wayland");
         }
     }
+
+    // 2. Set XDG application ID so Wayland/X11 compositors (GNOME, KDE) match window to folio.desktop and its icon
+    let _ = slint::set_xdg_app_id("folio");
 }
 
 pub fn get_effective_scale_factor(window: &slint::Window) -> f32 {

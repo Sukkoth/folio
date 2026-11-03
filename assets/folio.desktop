@@ -1,0 +1,15 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Folio
+GenericName=PDF Reader
+Comment=Fast, modern PDF reader & annotation studio
+Exec=folio %U
+TryExec=folio
+Icon=folio
+Terminal=false
+Categories=Office;Viewer;
+MimeType=application/pdf;
+StartupWMClass=folio
+StartupNotify=true
+Keywords=pdf;reader;viewer;document;annotation;folio;
