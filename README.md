@@ -24,7 +24,29 @@ A fast, lightweight, polished desktop PDF reader written in pure Rust for Linux.
 
 ---
 
-## Prerequisites (Ubuntu / Debian)
+## Installation
+
+### Quick Install (Linux)
+Install Folio with a single command (no Rust or Cargo required):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sukkoth/folio/main/install.sh | bash
+```
+
+To install system-wide for all users:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sukkoth/folio/main/install.sh | sudo bash
+```
+
+### Debian / Ubuntu (.deb)
+Download the latest `.deb` package from [Releases](https://github.com/Sukkoth/folio/releases):
+```bash
+sudo dpkg -i folio_0.0.1_amd64.deb
+```
+
+---
+
+## Prerequisites (Ubuntu / Debian for Building from Source)
 
 Ensure standard build tools and Wayland/X11 development libraries are installed:
 
