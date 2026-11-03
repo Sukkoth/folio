@@ -177,7 +177,7 @@ fi
 echo "-> Installing desktop entry to $DESKTOP_DIR/folio.desktop..."
 mkdir -p "$DESKTOP_DIR"
 if [ -f "$DESKTOP_SRC" ]; then
-    install -m 644 "$DESKTOP_SRC" "$DESKTOP_DIR/$APP_NAME.desktop"
+    install -m 755 "$DESKTOP_SRC" "$DESKTOP_DIR/$APP_NAME.desktop"
     # Point directly to the 512x512 PNG file so compositors and docks never fail icon lookup
     PNG_TARGET="$ICON_BASE_DIR/512x512/apps/$APP_NAME.png"
     if [ -f "$PNG_TARGET" ]; then
