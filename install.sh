@@ -151,6 +151,26 @@ if [ -d "$ICON_SRC_DIR" ]; then
     elif [ -f "$ICON_SRC_DIR/folio-icon-dark.svg" ]; then
         install -m 644 "$ICON_SRC_DIR/folio-icon-dark.svg" "$PIXMAPS_DIR/$APP_NAME.svg"
     fi
+
+    # Also install into ~/.icons custom user theme directories if present
+    if [ -d "$HOME/.icons" ]; then
+        for THEME_DIR in "$HOME/.icons"/*; do
+            if [ -d "$THEME_DIR/apps" ]; then
+                if [ -d "$THEME_DIR/apps/scalable" ]; then
+                    install -m 644 "$ICON_SRC_DIR/folio-icon-dark.svg" "$THEME_DIR/apps/scalable/$APP_NAME.svg" 2>/dev/null || true
+                elif [ -d "$THEME_DIR/apps/64" ]; then
+                    install -m 644 "$ICON_SRC_DIR/folio-icon-dark.svg" "$THEME_DIR/apps/64/$APP_NAME.svg" 2>/dev/null || true
+                fi
+                if [ -d "$THEME_DIR/apps/16" ]; then
+                    install -m 644 "$ICON_SRC_DIR/folio-icon-dark.svg" "$THEME_DIR/apps/16/$APP_NAME.svg" 2>/dev/null || true
+                fi
+            fi
+        done
+        if [ -d "$HOME/.icons/apps" ]; then
+            [ -d "$HOME/.icons/apps/64" ] && install -m 644 "$ICON_SRC_DIR/folio-icon-dark.svg" "$HOME/.icons/apps/64/$APP_NAME.svg" 2>/dev/null || true
+            [ -d "$HOME/.icons/apps/16" ] && install -m 644 "$ICON_SRC_DIR/folio-icon-dark.svg" "$HOME/.icons/apps/16/$APP_NAME.svg" 2>/dev/null || true
+        fi
+    fi
 fi
 
 # 4. Install desktop entry
