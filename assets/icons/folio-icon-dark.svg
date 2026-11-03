@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512" role="img" aria-label="Folio">
+  <rect width="100" height="100" rx="24" fill="#111111"/>
+  <g transform="translate(14 14) scale(0.72)" fill="#F4CD45">
+    <path d="M10 47A34 34 0 0 1 78 47Z"/>
+    <path d="M22 53A34 34 0 0 0 90 53Z"/>
+  </g>
+</svg>

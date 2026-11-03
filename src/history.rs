@@ -64,13 +64,25 @@ pub struct HistoryStore {
     pub documents: HashMap<String, DocumentSession>,
 }
 
-fn config_file_path() -> Option<PathBuf> {
+pub fn app_config_dir() -> Option<PathBuf> {
+    if let Some(custom) = std::env::var_os("FOLIO_CONFIG_DIR") {
+        return Some(PathBuf::from(custom));
+    }
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"))
         })?;
-    Some(base.join("folio").join("config.json"))
+    let dir_name = if cfg!(debug_assertions) {
+        "folio-dev"
+    } else {
+        "folio"
+    };
+    Some(base.join(dir_name))
+}
+
+fn config_file_path() -> Option<PathBuf> {
+    app_config_dir().map(|d| d.join("config.json"))
 }
 
 pub fn load_app_config() -> AppConfig {
@@ -135,12 +147,7 @@ pub fn save_open_tabs_at(config_path: &Path, open_tabs: &[String], active_tab_in
 }
 
 fn history_file_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"))
-        })?;
-    Some(base.join("folio").join("history.json"))
+    app_config_dir().map(|d| d.join("history.json"))
 }
 
 pub fn canonical_key(path: &str) -> String {
@@ -436,5 +443,38 @@ mod tests {
         assert_eq!(tab_updated.active_tab_index, 0);
 
         let _ = fs::remove_file(&test_config_path);
+    }
+
+    #[test]
+    fn test_app_config_dir_environment_separation() {
+        // Without FOLIO_CONFIG_DIR in debug/test mode, should point to folio-dev
+        let orig = std::env::var_os("FOLIO_CONFIG_DIR");
+        unsafe {
+            std::env::remove_var("FOLIO_CONFIG_DIR");
+        }
+        let dir = app_config_dir().expect("config dir must be resolved");
+        let dir_str = dir.to_string_lossy();
+        if cfg!(debug_assertions) {
+            assert!(dir_str.ends_with("folio-dev"), "Expected folio-dev in debug mode, got: {}", dir_str);
+        } else {
+            assert!(dir_str.ends_with("folio"), "Expected folio in release mode, got: {}", dir_str);
+        }
+
+        // With FOLIO_CONFIG_DIR set, should respect custom directory
+        let temp_custom = std::env::temp_dir().join("custom_folio_config");
+        unsafe {
+            std::env::set_var("FOLIO_CONFIG_DIR", &temp_custom);
+        }
+        let custom_dir = app_config_dir().expect("custom config dir must be resolved");
+        assert_eq!(custom_dir, temp_custom);
+
+        // Restore environment
+        unsafe {
+            if let Some(val) = orig {
+                std::env::set_var("FOLIO_CONFIG_DIR", val);
+            } else {
+                std::env::remove_var("FOLIO_CONFIG_DIR");
+            }
+        }
     }
 }

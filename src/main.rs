@@ -323,6 +323,20 @@ impl TabManager {
     pub(crate) fn find_tab_by_id_mut(&mut self, id: usize) -> Option<&mut DocumentTab> {
         self.tabs.iter_mut().find(|t| t.id == id)
     }
+
+    pub(crate) fn dirty_tab_count(&self) -> usize {
+        self.tabs.iter().filter(|t| t.is_dirty).count()
+    }
+
+    pub(crate) fn first_dirty_tab_index(&self) -> Option<usize> {
+        self.tabs.iter().position(|t| t.is_dirty)
+    }
+
+    pub(crate) fn mark_active_dirty(&mut self) {
+        if let Some(tab) = self.active_tab_mut() {
+            tab.is_dirty = true;
+        }
+    }
 }
 
 pub fn transform_rect_for_rotation(
@@ -660,10 +674,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.set_file_title("Folio".into());
         app.set_file_path("No PDF file specified".into());
         app.set_has_error(true);
-        app.set_error_message(
-            "Open a PDF document to begin reading with rich annotations and dual-page view."
-                .into(),
-        );
+        app.set_error_message("".into());
+        app.set_current_page_input("".into());
+        app.set_page_suffix_display("".into());
+        app.set_zoom_display("".into());
+        app.set_can_prev(false);
+        app.set_can_next(false);
+        app.set_can_undo(false);
+        app.set_can_redo(false);
     }
 
     let app_weak = app.as_weak();
@@ -887,9 +905,7 @@ fn close_tab(ui: &AppWindow, tab_manager: &Arc<Mutex<TabManager>>, idx_to_close:
         ui.set_file_title("Folio".into());
         ui.set_file_path("No PDF file specified".into());
         ui.set_has_error(true);
-        ui.set_error_message(
-            "Open a PDF document to begin reading with rich annotations and dual-page view.".into(),
-        );
+        ui.set_error_message("".into());
         ui.set_page_image(slint::Image::default());
         ui.set_secondary_page_image(slint::Image::default());
         ui.set_scroll_pages(slint::ModelRc::new(slint::VecModel::default()));
@@ -907,7 +923,10 @@ fn close_tab(ui: &AppWindow, tab_manager: &Arc<Mutex<TabManager>>, idx_to_close:
         ui.set_show_search(false);
         ui.set_total_pages(1);
         ui.set_current_page(0);
-        ui.set_page_display("1 / 1".into());
+        ui.set_current_page_input("".into());
+        ui.set_page_suffix_display("".into());
+        ui.set_page_display("".into());
+        ui.set_zoom_display("".into());
         ui.set_doc_info(to_slint_doc_info(&pdf::DocumentProperties::default()));
         ui.set_selection_rects(slint::ModelRc::new(slint::VecModel::default()));
         ui.set_has_selection(false);
@@ -989,6 +1008,47 @@ fn close_tabs_to_the_right(ui: &AppWindow, tab_manager: &Arc<Mutex<TabManager>>,
     let tab_paths: Vec<String> = mgr.tabs.iter().map(|t| t.file_path.clone()).collect();
     let active_idx = mgr.active_tab_index;
     history::save_open_tabs(&tab_paths, active_idx);
+}
+
+fn save_tab_annotations(tab_manager: &Arc<Mutex<TabManager>>, tab_idx: usize) -> Result<(), String> {
+    let (file_path, to_save, password) = {
+        let mgr = tab_manager.lock().map_err(|e| e.to_string())?;
+        let tab = mgr.tabs.get(tab_idx).ok_or_else(|| "Tab index out of bounds".to_string())?;
+        let to_save = collect_annotations_to_save(&tab.state);
+        (tab.file_path.clone(), to_save, tab.password.clone())
+    };
+    pdf::save_document_annotations(&file_path, &to_save, password.as_deref())
+        .map_err(|e| format!("{e:?}"))
+}
+
+fn prompt_unsaved_modal(
+    ui: &AppWindow,
+    tab_manager: &Arc<Mutex<TabManager>>,
+    tab_idx: usize,
+    is_quitting: bool,
+) {
+    let mut mgr = match tab_manager.lock() {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    if tab_idx >= mgr.tabs.len() {
+        return;
+    }
+
+    if tab_idx != mgr.active_tab_index {
+        mgr.active_tab_index = tab_idx;
+        switch_to_active_tab_ui(ui, &mut mgr);
+    }
+
+    let tab = &mgr.tabs[tab_idx];
+    let file_name = tab.display_name.clone();
+    let dirty_count = mgr.dirty_tab_count();
+
+    ui.set_unsaved_file_name(file_name.into());
+    ui.set_unsaved_tab_index(tab_idx as i32);
+    ui.set_unsaved_is_quitting(is_quitting);
+    ui.set_unsaved_remaining_count(dirty_count as i32);
+    ui.set_show_unsaved_modal(true);
 }
 
 fn open_or_activate_document(
@@ -2945,7 +3005,19 @@ fn setup_callbacks(
         let tab_mgr = Arc::clone(state_lock);
         app.on_close_tab(move |idx| {
             if let Some(ui) = app_weak.upgrade() {
-                close_tab(&ui, &tab_mgr, idx as usize);
+                let idx = idx as usize;
+                let is_dirty = {
+                    if let Ok(mgr) = tab_mgr.lock() {
+                        mgr.tabs.get(idx).map(|t| t.is_dirty).unwrap_or(false)
+                    } else {
+                        false
+                    }
+                };
+                if is_dirty {
+                    prompt_unsaved_modal(&ui, &tab_mgr, idx, false);
+                } else {
+                    close_tab(&ui, &tab_mgr, idx);
+                }
             }
         });
     }
@@ -2955,7 +3027,19 @@ fn setup_callbacks(
         let tab_mgr = Arc::clone(state_lock);
         app.on_close_other_tabs(move |idx| {
             if let Some(ui) = app_weak.upgrade() {
-                close_other_tabs(&ui, &tab_mgr, idx as usize);
+                let target = idx as usize;
+                let first_dirty = {
+                    if let Ok(mgr) = tab_mgr.lock() {
+                        mgr.tabs.iter().enumerate().position(|(i, t)| i != target && t.is_dirty)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(dirty_idx) = first_dirty {
+                    prompt_unsaved_modal(&ui, &tab_mgr, dirty_idx, false);
+                } else {
+                    close_other_tabs(&ui, &tab_mgr, target);
+                }
             }
         });
     }
@@ -2965,7 +3049,129 @@ fn setup_callbacks(
         let tab_mgr = Arc::clone(state_lock);
         app.on_close_tabs_to_the_right(move |idx| {
             if let Some(ui) = app_weak.upgrade() {
-                close_tabs_to_the_right(&ui, &tab_mgr, idx as usize);
+                let target = idx as usize;
+                let first_dirty = {
+                    if let Ok(mgr) = tab_mgr.lock() {
+                        mgr.tabs.iter().enumerate().position(|(i, t)| i > target && t.is_dirty)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(dirty_idx) = first_dirty {
+                    prompt_unsaved_modal(&ui, &tab_mgr, dirty_idx, false);
+                } else {
+                    close_tabs_to_the_right(&ui, &tab_mgr, target);
+                }
+            }
+        });
+    }
+
+    // Window Close Requested (OS Close Button X or Alt+F4)
+    {
+        let tab_mgr = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.window().on_close_requested(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                let first_dirty = {
+                    if let Ok(mgr) = tab_mgr.lock() {
+                        mgr.first_dirty_tab_index()
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(dirty_idx) = first_dirty {
+                    prompt_unsaved_modal(&ui, &tab_mgr, dirty_idx, true);
+                    slint::CloseRequestResponse::KeepWindowShown
+                } else {
+                    slint::CloseRequestResponse::HideWindow
+                }
+            } else {
+                slint::CloseRequestResponse::HideWindow
+            }
+        });
+    }
+
+    // Unsaved Changes Confirmation Modal Callbacks
+    {
+        let tab_mgr = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_confirm_save_and_close(move |idx, is_quitting| {
+            if let Some(ui) = app_weak.upgrade() {
+                let tab_idx = idx as usize;
+                let save_res = save_tab_annotations(&tab_mgr, tab_idx);
+                if let Err(e) = save_res {
+                    eprintln!("Failed to save before closing: {e}");
+                } else if let Ok(mut mgr) = tab_mgr.lock() {
+                    if let Some(t) = mgr.tabs.get_mut(tab_idx) {
+                        t.is_dirty = false;
+                    }
+                }
+
+                close_tab(&ui, &tab_mgr, tab_idx);
+
+                if is_quitting {
+                    let next_dirty = {
+                        if let Ok(mgr) = tab_mgr.lock() {
+                            mgr.first_dirty_tab_index()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(next_idx) = next_dirty {
+                        prompt_unsaved_modal(&ui, &tab_mgr, next_idx, true);
+                    } else {
+                        ui.set_show_unsaved_modal(false);
+                        let _ = slint::quit_event_loop();
+                    }
+                } else {
+                    ui.set_show_unsaved_modal(false);
+                }
+            }
+        });
+    }
+
+    {
+        let tab_mgr = Arc::clone(state_lock);
+        let app_weak = app.as_weak();
+        app.on_confirm_discard_and_close(move |idx, is_quitting| {
+            if let Some(ui) = app_weak.upgrade() {
+                let tab_idx = idx as usize;
+                if let Ok(mut mgr) = tab_mgr.lock() {
+                    if let Some(t) = mgr.tabs.get_mut(tab_idx) {
+                        t.is_dirty = false;
+                    }
+                }
+
+                close_tab(&ui, &tab_mgr, tab_idx);
+
+                if is_quitting {
+                    let next_dirty = {
+                        if let Ok(mgr) = tab_mgr.lock() {
+                            mgr.first_dirty_tab_index()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(next_idx) = next_dirty {
+                        prompt_unsaved_modal(&ui, &tab_mgr, next_idx, true);
+                    } else {
+                        ui.set_show_unsaved_modal(false);
+                        let _ = slint::quit_event_loop();
+                    }
+                } else {
+                    ui.set_show_unsaved_modal(false);
+                }
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        app.on_cancel_unsaved_close(move || {
+            if let Some(ui) = app_weak.upgrade() {
+                ui.set_show_unsaved_modal(false);
+                ui.set_unsaved_is_quitting(false);
             }
         });
     }
@@ -4100,7 +4306,9 @@ fn setup_callbacks(
                         }
                     }
 
-                    if let Ok(lock) = state_lock.lock() {
+                    if let Ok(mut lock) = state_lock.lock() {
+                        lock.mark_active_dirty();
+                        sync_tabs_to_ui(&ui, &lock);
                         if let Some(s) = lock.as_ref() {
                             sync_annotations_to_ui(s, &ui);
                         }
@@ -4167,7 +4375,9 @@ fn setup_callbacks(
                     ui.set_selected_annotation_id(-1);
                 ui.set_selected_annotation_kind("".into());
                     ui.set_selection_rects(std::rc::Rc::new(slint::VecModel::default()).into());
-                    if let Ok(lock) = state_lock.lock() {
+                    if let Ok(mut lock) = state_lock.lock() {
+                        lock.mark_active_dirty();
+                        sync_tabs_to_ui(&ui, &lock);
                         if let Some(s) = lock.as_ref() {
                             sync_annotations_to_ui(s, &ui);
                         }
@@ -4212,6 +4422,8 @@ fn setup_callbacks(
                     ui.set_hovered_annotation_id(-1);
                     ui.set_show_popup(false);
                     if let Ok(mut lock) = state_lock.lock() {
+                        lock.mark_active_dirty();
+                        sync_tabs_to_ui(&ui, &lock);
                         if let Some(s) = lock.as_mut() {
                             sync_annotations_to_ui(s, &ui);
                             if is_highlight {
@@ -4279,6 +4491,8 @@ fn setup_callbacks(
                 if let Some(ui) = app_weak.upgrade() {
                     ui.set_is_dirty(true);
                     if let Ok(mut lock) = state_lock.lock() {
+                        lock.mark_active_dirty();
+                        sync_tabs_to_ui(&ui, &lock);
                         if let Some(s) = lock.as_mut() {
                             sync_annotations_to_ui(s, &ui);
                             if is_highlight {
@@ -4327,6 +4541,8 @@ fn setup_callbacks(
                 if let Some(ui) = app_weak.upgrade() {
                     ui.set_is_dirty(true);
                     if let Ok(mut lock) = state_lock.lock() {
+                        lock.mark_active_dirty();
+                        sync_tabs_to_ui(&ui, &lock);
                         if let Some(s) = lock.as_mut() {
                             sync_annotations_to_ui(s, &ui);
                         }
@@ -4356,6 +4572,8 @@ fn setup_callbacks(
                 ui.set_selected_annotation_kind("".into());
                     ui.set_hovered_annotation_id(-1);
                     if let Ok(mut lock) = state_lock.lock() {
+                        lock.mark_active_dirty();
+                        sync_tabs_to_ui(&ui, &lock);
                         if let Some(s) = lock.as_mut() {
                             sync_annotations_to_ui(s, &ui);
                             if let Some(p) = hl_page {
@@ -4392,6 +4610,8 @@ fn setup_callbacks(
                 ui.set_selected_annotation_kind("".into());
                     ui.set_hovered_annotation_id(-1);
                     if let Ok(mut lock) = state_lock.lock() {
+                        lock.mark_active_dirty();
+                        sync_tabs_to_ui(&ui, &lock);
                         if let Some(s) = lock.as_mut() {
                             sync_annotations_to_ui(s, &ui);
                             if let Some(p) = hl_page {
@@ -4436,6 +4656,12 @@ fn setup_callbacks(
                 ui.set_is_saving(false);
                 match save_result {
                     Ok(()) => {
+                        if let Ok(mut lock) = state_lock.lock() {
+                            if let Some(tab) = lock.active_tab_mut() {
+                                tab.is_dirty = false;
+                            }
+                            sync_tabs_to_ui(&ui, &lock);
+                        }
                         ui.set_is_dirty(false);
                         ui.set_show_saved_badge(true);
                         save_current_session(&state_lock, &ui);
@@ -4517,7 +4743,7 @@ fn setup_callbacks(
 
                                 ui.set_is_dirty(false);
                                 ui.set_file_path(new_path_str.clone().into());
-                                ui.set_file_title(new_file_name.into());
+                                ui.set_file_title(new_file_name.clone().into());
                                 ui.set_show_saved_badge(true);
 
                                 let ui_weak = app_weak.clone();
@@ -4531,11 +4757,16 @@ fn setup_callbacks(
                                 );
 
                                 if let Ok(mut lock) = state_lock.lock() {
-                                    if let Some(s) = lock.as_mut() {
+                                    if let Some(tab) = lock.active_tab_mut() {
+                                        tab.is_dirty = false;
+                                        tab.file_path = new_path_str.clone();
+                                        tab.display_name = new_file_name.clone();
+                                        let s = &mut tab.state;
                                         s.file_path = new_path_str.clone();
                                         s.cached_text_page = -1;
                                         s.worker.switch_document(new_path_str, s.password.clone());
                                     }
+                                    sync_tabs_to_ui(&ui, &lock);
                                 }
                                 save_current_session(&state_lock, &ui);
                             }
@@ -6697,6 +6928,122 @@ mod tests {
         assert_eq!(mgr.tabs[0].display_name, "doc3.pdf");
         assert_eq!(mgr.active_tab_index, 0);
         assert_eq!(mgr.active_tab().unwrap().display_name, "doc3.pdf");
+    }
+
+    #[test]
+    fn test_tab_dirty_state_and_unsaved_quitting_sequence() {
+        let temp_dir = std::env::temp_dir();
+        let pdf1_path = temp_dir.join("folio_dirty_test_1.pdf");
+        let pdf2_path = temp_dir.join("folio_dirty_test_2.pdf");
+        let pdf3_path = temp_dir.join("folio_dirty_test_3.pdf");
+
+        for p in [&pdf1_path, &pdf2_path, &pdf3_path] {
+            let mut doc = mupdf::pdf::PdfDocument::new();
+            doc.new_page((500.0, 700.0)).unwrap();
+            doc.save(p.to_str().unwrap()).unwrap();
+        }
+
+        let mut mgr = TabManager::new();
+        let create_tab = |id: usize, path: &std::path::Path, name: &str| {
+            let path_str = path.to_str().unwrap().to_string();
+            let worker = PdfWorker::spawn(path_str.clone(), None, |_| {}).unwrap();
+            DocumentTab {
+                id,
+                file_path: path_str.clone(),
+                display_name: name.to_string(),
+                state: AppState {
+                    file_path: path_str,
+                    password: None,
+                    current_page: 0,
+                    total_pages: 1,
+                    zoom_level: 1.0,
+                    is_scroll_view: false,
+                    page_width_pt: 500.0,
+                    page_height_pt: 700.0,
+                    page_sizes: vec![(500.0, 700.0)],
+                    cache: PageCache::new(4),
+                    worker,
+                    annotations: Vec::new(),
+                    next_annot_id: 1,
+                    undo_stack: VecDeque::new(),
+                    redo_stack: VecDeque::new(),
+                    cached_text_page: -1,
+                    cached_text: super::pdf::PageTextData::default(),
+                    page_text_cache: std::collections::HashMap::new(),
+                    sel_start_page: 0,
+                    sel_start_pt: (0.0, 0.0),
+                    active_selections: Vec::new(),
+                    active_selection_page: 0,
+                    active_selection_snippet: String::new(),
+                    active_selection_line_rects: Vec::new(),
+                    is_zooming: false,
+                    search_query: String::new(),
+                    search_matches: Vec::new(),
+                    active_search_index: -1,
+                    is_searching: false,
+                    search_match_case: false,
+                    search_match_whole_word: false,
+                    toc: Vec::new(),
+                    collapsed_toc_ids: std::collections::HashSet::new(),
+                    page_links_cache: std::collections::HashMap::new(),
+                    has_logical_pages: false,
+                    page_labels: vec!["1".to_string()],
+                    rotation: 0,
+                    is_dual_page: false,
+                    dual_page_cover_alone: true,
+                    paper_theme: super::pdf::PaperTheme::Light,
+                    doc_properties: super::pdf::DocumentProperties::default(),
+                    annotation_sort_mode: 0,
+                    nav_history: super::NavHistory::default(),
+                },
+                saved_scroll_y: 0.0,
+                is_dirty: false,
+                password: None,
+            }
+        };
+
+        mgr.tabs.push(create_tab(1, &pdf1_path, "doc1.pdf"));
+        mgr.tabs.push(create_tab(2, &pdf2_path, "doc2.pdf"));
+        mgr.tabs.push(create_tab(3, &pdf3_path, "doc3.pdf"));
+        mgr.active_tab_index = 0;
+
+        // Initially no tabs are dirty
+        assert_eq!(mgr.dirty_tab_count(), 0);
+        assert_eq!(mgr.first_dirty_tab_index(), None);
+
+        // Mark active tab (tab 0) dirty
+        mgr.mark_active_dirty();
+        assert!(mgr.tabs[0].is_dirty);
+        assert_eq!(mgr.dirty_tab_count(), 1);
+        assert_eq!(mgr.first_dirty_tab_index(), Some(0));
+
+        // Switch to tab 2 and mark dirty
+        mgr.active_tab_index = 2;
+        mgr.mark_active_dirty();
+        assert!(mgr.tabs[2].is_dirty);
+        assert_eq!(mgr.dirty_tab_count(), 2);
+
+        // Tab 1 is still clean
+        assert!(!mgr.tabs[1].is_dirty);
+
+        // When quitting, the app first prompts for tab 0 (first dirty tab)
+        let first_prompt = mgr.first_dirty_tab_index();
+        assert_eq!(first_prompt, Some(0));
+
+        // User saves or discards tab 0 -> tab 0 removed
+        mgr.tabs.remove(0);
+
+        // Next prompt during quitting should find tab 1 (which was doc3)
+        assert_eq!(mgr.dirty_tab_count(), 1);
+        assert_eq!(mgr.tabs[1].display_name, "doc3.pdf");
+        assert_eq!(mgr.first_dirty_tab_index(), Some(1));
+
+        // User saves or discards tab 1 -> tab 1 removed
+        mgr.tabs.remove(1);
+
+        // Now only doc2 (clean) remains
+        assert_eq!(mgr.dirty_tab_count(), 0);
+        assert_eq!(mgr.first_dirty_tab_index(), None);
     }
 
     #[test]
