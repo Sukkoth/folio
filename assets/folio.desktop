@@ -5,7 +5,6 @@ Name=Folio
 GenericName=PDF Reader
 Comment=Fast, modern PDF reader & annotation studio
 Exec=folio %U
-TryExec=folio
 Icon=folio
 Terminal=false
 Categories=Office;Viewer;

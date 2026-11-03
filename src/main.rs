@@ -493,9 +493,6 @@ fn init_display_environment() {
             env::set_var("WINIT_UNIX_BACKEND", "wayland");
         }
     }
-
-    // 2. Set XDG application ID so Wayland/X11 compositors (GNOME, KDE) match window to folio.desktop and its icon
-    let _ = slint::set_xdg_app_id("folio");
 }
 
 pub fn get_effective_scale_factor(window: &slint::Window) -> f32 {
@@ -517,6 +514,13 @@ pub fn compute_actual_render_zoom(zoom_level: f32, scale_factor: f32) -> f32 {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_display_environment();
     let app = AppWindow::new()?;
+
+    // Set XDG application ID so Wayland/X11 compositors (GNOME, KDE) match window to folio.desktop and its icon.
+    // In Slint, set_xdg_app_id must be called after the platform context exists (e.g. after AppWindow::new()),
+    // but before the event loop runs and shows the window.
+    if let Err(err) = slint::set_xdg_app_id("folio") {
+        eprintln!("Warning: failed to set XDG app ID: {err}");
+    }
 
     // Load persistent config and apply to UI
     let config = history::load_app_config();

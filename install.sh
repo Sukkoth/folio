@@ -61,6 +61,12 @@ elif [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/folio" ]; then
     BINARY_SOURCE="$SCRIPT_DIR/folio"
     ICON_SRC_DIR="$SCRIPT_DIR/assets/icons"
     DESKTOP_SRC="$SCRIPT_DIR/assets/folio.desktop"
+elif [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/Cargo.toml" ] && command -v cargo >/dev/null 2>&1; then
+    echo "-> Building release binary with Cargo..."
+    (cd "$SCRIPT_DIR" && cargo build --release)
+    BINARY_SOURCE="$SCRIPT_DIR/target/release/folio"
+    ICON_SRC_DIR="$SCRIPT_DIR/assets/icons"
+    DESKTOP_SRC="$SCRIPT_DIR/assets/folio.desktop"
 else
     # Remote / Curl piped mode: download latest release tarball from GitHub
     echo "-> Downloading latest release from GitHub ($REPO)..."
@@ -178,6 +184,9 @@ echo "-> Installing desktop entry to $DESKTOP_DIR/folio.desktop..."
 mkdir -p "$DESKTOP_DIR"
 if [ -f "$DESKTOP_SRC" ]; then
     install -m 755 "$DESKTOP_SRC" "$DESKTOP_DIR/$APP_NAME.desktop"
+    # Ensure Exec uses full path to the installed binary so desktop launchers (GNOME, Vicinae, systemd) never fail PATH lookup
+    sed -i "s|^Exec=.*|Exec=$BIN_DIR/$APP_NAME %U|" "$DESKTOP_DIR/$APP_NAME.desktop"
+    sed -i "s|^TryExec=.*|TryExec=$BIN_DIR/$APP_NAME|" "$DESKTOP_DIR/$APP_NAME.desktop"
     # Point directly to the 512x512 PNG file so compositors and docks never fail icon lookup
     PNG_TARGET="$ICON_BASE_DIR/512x512/apps/$APP_NAME.png"
     if [ -f "$PNG_TARGET" ]; then
