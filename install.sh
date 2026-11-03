@@ -102,9 +102,6 @@ echo ""
 echo "=========================================="
 echo " Folio has been installed successfully!"
 echo "=========================================="
-echo "Executable:    $BIN_DIR/$APP_NAME"
-echo "Desktop File:  $DESKTOP_DIR/$APP_NAME.desktop"
-echo "Icon Theme:    $ICON_BASE_DIR"
 echo ""
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
