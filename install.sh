@@ -93,7 +93,7 @@ else
 
     if [ -z "$LATEST_TAG" ]; then
         # Fallback to direct release URL or default tag
-        LATEST_TAG="v0.0.1"
+        LATEST_TAG="v0.0.2"
     fi
 
     VERSION_NUM="${LATEST_TAG#v}"

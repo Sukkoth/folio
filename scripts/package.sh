@@ -6,7 +6,8 @@ set -e
 # 2. dist/folio-0.0.1-linux-x86_64.tar.gz (Universal tarball with install.sh)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="0.0.1"
+VERSION=$(grep '^version' "$SCRIPT_DIR/Cargo.toml" | head -n1 | cut -d'"' -f2)
+VERSION="${VERSION:-0.0.2}"
 DIST_DIR="$SCRIPT_DIR/dist"
 
 echo "=========================================="
