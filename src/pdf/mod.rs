@@ -112,16 +112,59 @@ pub fn read_pdf_info(file_path: &str, password: Option<&str>) -> Result<PdfMetad
     let height_pt = (bounds.y1 - bounds.y0).abs().max(10.0);
 
     let mut page_sizes = Vec::with_capacity(page_count as usize);
-    for p in 0..page_count {
-        if let Ok(page) = doc.load_page(p) {
-            if let Ok(b) = page.bounds() {
-                let w = (b.x1 - b.x0).abs().max(10.0);
-                let h = (b.y1 - b.y0).abs().max(10.0);
-                page_sizes.push((w, h));
-                continue;
+    if page_count <= 64 {
+        for p in 0..page_count {
+            if let Ok(page) = doc.load_page(p) {
+                if let Ok(b) = page.bounds() {
+                    let w = (b.x1 - b.x0).abs().max(10.0);
+                    let h = (b.y1 - b.y0).abs().max(10.0);
+                    page_sizes.push((w, h));
+                    continue;
+                }
+            }
+            page_sizes.push((width_pt, height_pt));
+        }
+    } else {
+        // Fast-path for large documents: sample representative pages across the document.
+        // For books/commentaries with uniform page dimensions, this avoids loading thousands of pages synchronously.
+        let sample_indices = [
+            1, 2, 3, 4,
+            10.min(page_count - 1),
+            25.min(page_count - 1),
+            50.min(page_count - 1),
+            (page_count / 4).min(page_count - 1),
+            (page_count / 2).min(page_count - 1),
+            (3 * page_count / 4).min(page_count - 1),
+            page_count - 1,
+        ];
+        let mut uniform = true;
+        for &idx in &sample_indices {
+            if let Ok(page) = doc.load_page(idx) {
+                if let Ok(b) = page.bounds() {
+                    let w = (b.x1 - b.x0).abs().max(10.0);
+                    let h = (b.y1 - b.y0).abs().max(10.0);
+                    if (w - width_pt).abs() > 0.5 || (h - height_pt).abs() > 0.5 {
+                        uniform = false;
+                        break;
+                    }
+                }
             }
         }
-        page_sizes.push((width_pt, height_pt));
+        if uniform {
+            page_sizes = vec![(width_pt, height_pt); page_count as usize];
+        } else {
+            for p in 0..page_count {
+                if let Ok(page) = doc.load_page(p) {
+                    if let Ok(b) = page.bounds() {
+                        let w = (b.x1 - b.x0).abs().max(10.0);
+                        let h = (b.y1 - b.y0).abs().max(10.0);
+                        page_sizes.push((w, h));
+                        continue;
+                    }
+                }
+                page_sizes.push((width_pt, height_pt));
+            }
+        }
     }
 
     // Extract table of contents (outline) if available

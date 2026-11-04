@@ -924,11 +924,7 @@ export component AppWindow inherits Window {
     callback scroll-content-y-changed(length);
 
     public function scroll-to-page(index: int) {
-        if (index >= 0 && index < root.scroll-pages.length) {
-            root.scroll-content-y = -root.scroll-pages[index].offset-y;
-        } else {
-            root.scroll-content-y = -index * root.scroll-item-height;
-        }
+        root.scroll-content-y = -index * root.scroll-item-height;
     }
 
     property <int> visible-page: max(0, min(root.total-pages - 1, round(-root.scroll-content-y / max(1px, root.scroll-item-height))));

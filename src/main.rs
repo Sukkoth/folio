@@ -266,6 +266,8 @@ pub(crate) struct AppState {
     pub paper_theme: pdf::PaperTheme,
     pub doc_properties: pdf::DocumentProperties,
     pub annotation_sort_mode: u8,
+    pub page_offsets: Vec<f32>,
+    pub virtual_window: (i32, i32),
 }
 
 pub(crate) struct DocumentTab {
@@ -399,6 +401,64 @@ impl AppState {
             (h, w)
         } else {
             (w, h)
+        }
+    }
+
+    pub fn recalculate_page_offsets(&mut self) {
+        let mut offsets = Vec::with_capacity(self.total_pages as usize);
+        let mut cur = 0.0f32;
+        for i in 0..self.total_pages {
+            offsets.push(cur);
+            let ph = self.get_page_size(i).1 * self.zoom_level;
+            cur += ph + 24.0;
+        }
+        self.page_offsets = offsets;
+    }
+
+    pub fn get_page_offset_y(&self, page: i32) -> f32 {
+        if self.page_offsets.len() == self.total_pages as usize && page >= 0 && (page as usize) < self.page_offsets.len() {
+            self.page_offsets[page as usize]
+        } else {
+            let mut cur = 0.0f32;
+            for i in 0..page {
+                let ph = self.get_page_size(i).1 * self.zoom_level;
+                cur += ph + 24.0;
+            }
+            cur
+        }
+    }
+
+    pub fn get_total_scroll_height(&self) -> f32 {
+        if self.total_pages <= 0 {
+            return 0.0;
+        }
+        let last_idx = self.total_pages - 1;
+        let last_offset = self.get_page_offset_y(last_idx);
+        let last_h = self.get_page_size(last_idx).1 * self.zoom_level;
+        last_offset + last_h + 24.0 + 12.0
+    }
+
+    pub fn page_at_scroll_offset(&self, offset_y: f32) -> i32 {
+        if self.total_pages <= 1 {
+            return 0;
+        }
+        if self.page_offsets.len() == self.total_pages as usize {
+            match self.page_offsets.binary_search_by(|&probe| {
+                probe.partial_cmp(&offset_y).unwrap_or(std::cmp::Ordering::Equal)
+            }) {
+                Ok(idx) => idx as i32,
+                Err(idx) => (idx as i32 - 1).clamp(0, self.total_pages - 1),
+            }
+        } else {
+            let mut cur = 0.0f32;
+            for i in 0..self.total_pages {
+                let ph = self.get_page_size(i).1 * self.zoom_level;
+                if offset_y < cur + ph + 24.0 {
+                    return i;
+                }
+                cur += ph + 24.0;
+            }
+            self.total_pages - 1
         }
     }
 
@@ -789,6 +849,95 @@ fn sync_tabs_to_ui(app: &AppWindow, mgr: &TabManager) {
     app.set_active_tab_index(mgr.active_tab_index as i32);
 }
 
+fn update_virtual_scroll_pages(
+    state: &mut AppState,
+    ui: &AppWindow,
+    scroll_y: f32,
+    viewport_height: f32,
+) {
+    if !state.is_scroll_view || state.total_pages <= 0 {
+        return;
+    }
+
+    let top_y = scroll_y.max(0.0);
+    let vh = if viewport_height > 50.0 { viewport_height } else { 800.0 };
+    let bottom_y = top_y + vh;
+
+    let first_vis = state.page_at_scroll_offset(top_y);
+    let last_vis = state.page_at_scroll_offset(bottom_y);
+
+    let win_start = (first_vis - 2).max(0);
+    let win_end = (last_vis + 2).min(state.total_pages - 1);
+
+    if state.virtual_window == (win_start, win_end) {
+        return;
+    }
+    state.virtual_window = (win_start, win_end);
+
+    let scale_factor = get_effective_scale_factor(ui.window());
+    let actual_render_zoom = compute_actual_render_zoom(state.zoom_level, scale_factor);
+    let next_gen = state.worker.current_generation() + 1;
+    state.worker.set_current_generation(next_gen);
+
+    let mut items = Vec::with_capacity((win_end - win_start + 1) as usize);
+    for p in win_start..=win_end {
+        let (pw_pt, ph_pt) = state.get_page_size(p);
+        let pw = pw_pt * state.zoom_level;
+        let ph = ph_pt * state.zoom_level;
+        let offset_y = state.get_page_offset_y(p);
+
+        let img = state
+            .cache
+            .get(p, state.zoom_level, state.rotation, state.paper_theme)
+            .and_then(|c| rgba_to_image(&c.rgba, c.width, c.height))
+            .unwrap_or_default();
+
+        items.push(PageItemData {
+            page_index: p,
+            offset_y,
+            width: pw,
+            height: ph,
+            image: img,
+        });
+
+        let need_render = match state.cache.get(p, state.zoom_level, state.rotation, state.paper_theme) {
+            None => true,
+            Some(c) => c.is_preview,
+        };
+        if need_render {
+            let preview_zoom = (actual_render_zoom * 0.25).max(0.1);
+            let h_page = get_page_highlights(state, p);
+            state.worker.request_render(RenderRequest {
+                page: p,
+                zoom: preview_zoom,
+                generation: next_gen,
+                is_preview: true,
+                highlights: h_page.clone(),
+                rotation: state.rotation,
+                theme: state.paper_theme,
+            });
+            state.worker.request_render(RenderRequest {
+                page: p,
+                zoom: actual_render_zoom,
+                generation: next_gen,
+                is_preview: false,
+                highlights: h_page,
+                rotation: state.rotation,
+                theme: state.paper_theme,
+            });
+        }
+    }
+
+    ui.set_scroll_pages(slint::ModelRc::new(slint::VecModel::from(items)));
+}
+
+fn scroll_to_page_in_ui(state: &mut AppState, ui: &AppWindow, page: i32) {
+    let offset = state.get_page_offset_y(page);
+    ui.set_scroll_content_y(-offset);
+    let vh = ui.get_scroll_viewport_height();
+    update_virtual_scroll_pages(state, ui, offset, vh);
+}
+
 fn switch_to_active_tab_ui(ui: &AppWindow, mgr: &mut TabManager) {
     let tab = match mgr.active_tab_mut() {
         Some(t) => t,
@@ -826,27 +975,19 @@ fn switch_to_active_tab_ui(ui: &AppWindow, mgr: &mut TabManager) {
     ui.set_page_height(card_h);
     ui.set_scroll_item_height(scroll_item_h);
 
-    let mut items = Vec::with_capacity(state.total_pages as usize);
-    let mut cur_offset = 0.0f32;
-    for (i, &(w_pt, h_pt)) in state.page_sizes.iter().enumerate() {
-        let pw = w_pt * state.zoom_level;
-        let ph = h_pt * state.zoom_level;
-        let img = state
-            .cache
-            .get(i as i32, state.zoom_level, state.rotation, state.paper_theme)
-            .and_then(|c| rgba_to_image(&c.rgba, c.width, c.height))
-            .unwrap_or_default();
-        items.push(PageItemData {
-            page_index: i as i32,
-            offset_y: cur_offset,
-            width: pw,
-            height: ph,
-            image: img,
-        });
-        cur_offset += ph + 24.0;
+    state.recalculate_page_offsets();
+    ui.set_total_scroll_height(state.get_total_scroll_height());
+    state.virtual_window = (-1, -1);
+
+    if state.is_scroll_view {
+        ui.set_scroll_content_y(tab.saved_scroll_y);
+        let vh = ui.get_scroll_viewport_height();
+        update_virtual_scroll_pages(state, ui, -tab.saved_scroll_y, vh);
+        trigger_scroll_page_render(state, state.current_page, ui);
+    } else {
+        ui.set_scroll_pages(slint::ModelRc::new(slint::VecModel::default()));
+        update_view_with_state(state, ui);
     }
-    ui.set_total_scroll_height(cur_offset + 12.0);
-    ui.set_scroll_pages(slint::ModelRc::new(slint::VecModel::from(items)));
 
     update_page_indicator(state, ui);
     rebuild_toc_model(state, ui);
@@ -854,13 +995,6 @@ fn switch_to_active_tab_ui(ui: &AppWindow, mgr: &mut TabManager) {
     sync_links_to_ui(state, ui);
     sync_search_to_ui(state, ui);
     sync_nav_history_to_ui(state, ui);
-
-    if state.is_scroll_view {
-        ui.set_scroll_content_y(tab.saved_scroll_y);
-        trigger_scroll_page_render(state, state.current_page, ui);
-    } else {
-        update_view_with_state(state, ui);
-    }
 
     save_current_session_direct(state, ui);
     update_recent_books_model(ui);
@@ -1132,39 +1266,43 @@ fn open_or_activate_document(
     let config = history::load_app_config();
     let initial_paper_theme = resolve_initial_paper_theme(app.get_paper_theme(), config.paper_theme);
 
-    let existing_annots = pdf::extract_document_annotations(&path_str, password.as_deref());
-    let mut initial_annotations = Vec::with_capacity(existing_annots.len());
-    let mut next_annot_id = 1;
-
-    for ea in existing_annots {
-        let color_idx = match_closest_color_index(ea.color_rgb);
-        let color_hex = if ea.kind == "highlight" {
-            if STATIC_COLORS.iter().any(|(h, ..)| *h == ea.color_hex) {
-                let [br, bg, bb] = get_highlight_blend_rgb(color_idx);
-                format!("#{br:02x}{bg:02x}{bb:02x}")
+    let (initial_annotations, next_annot_id, needs_background_annots) = if meta.page_count <= 64 {
+        let existing_annots = pdf::extract_document_annotations(&path_str, password.as_deref());
+        let mut annots = Vec::with_capacity(existing_annots.len());
+        let mut nid = 1;
+        for ea in existing_annots {
+            let color_idx = match_closest_color_index(ea.color_rgb);
+            let color_hex = if ea.kind == "highlight" {
+                if STATIC_COLORS.iter().any(|(h, ..)| *h == ea.color_hex) {
+                    let [br, bg, bb] = get_highlight_blend_rgb(color_idx);
+                    format!("#{br:02x}{bg:02x}{bb:02x}")
+                } else {
+                    ea.color_hex
+                }
             } else {
                 ea.color_hex
-            }
-        } else {
-            ea.color_hex
-        };
+            };
 
-        initial_annotations.push(AnnotationRecord {
-            id: next_annot_id,
-            page: ea.page,
-            kind: ea.kind,
-            color_index: color_idx,
-            color_hex,
-            snippet: ea.snippet,
-            comment: ea.comment,
-            line_rects_pt: ea.line_rects_pt,
-            is_from_pdf: true,
-            creation_date: ea.creation_date,
-            mod_date: ea.mod_date,
-            author: ea.author,
-        });
-        next_annot_id += 1;
-    }
+            annots.push(AnnotationRecord {
+                id: nid,
+                page: ea.page,
+                kind: ea.kind,
+                color_index: color_idx,
+                color_hex,
+                snippet: ea.snippet,
+                comment: ea.comment,
+                line_rects_pt: ea.line_rects_pt,
+                is_from_pdf: true,
+                creation_date: ea.creation_date,
+                mod_date: ea.mod_date,
+                author: ea.author,
+            });
+            nid += 1;
+        }
+        (annots, nid, false)
+    } else {
+        (Vec::new(), 1, true)
+    };
 
     let has_toc = !meta.toc.is_empty();
     let has_annotations = !initial_annotations.is_empty();
@@ -1242,11 +1380,13 @@ fn open_or_activate_document(
         doc_properties: doc_props,
         annotation_sort_mode: config.annotation_sort_mode,
         nav_history: NavHistory::default(),
+        page_offsets: Vec::new(),
+        virtual_window: (-1, -1),
     };
 
     let doc_tab = DocumentTab {
         id: tab_id,
-        file_path: path_str,
+        file_path: path_str.clone(),
         display_name,
         state: app_state,
         saved_scroll_y: initial_scroll_y,
@@ -1270,6 +1410,62 @@ fn open_or_activate_document(
         let tab_paths: Vec<String> = mgr.tabs.iter().map(|t| t.file_path.clone()).collect();
         let active_idx = mgr.active_tab_index;
         history::save_open_tabs(&tab_paths, active_idx);
+    }
+
+    if needs_background_annots {
+        let bg_path = path_str;
+        let bg_password = password;
+        let bg_app_weak = app.as_weak();
+        let bg_tab_mgr = Arc::clone(tab_manager);
+        let bg_tab_id = tab_id;
+        std::thread::spawn(move || {
+            let existing_annots = pdf::extract_document_annotations(&bg_path, bg_password.as_deref());
+            if existing_annots.is_empty() {
+                return;
+            }
+            let _ = bg_app_weak.upgrade_in_event_loop(move |ui| {
+                let mut mgr = match bg_tab_mgr.lock() {
+                    Ok(m) => m,
+                    Err(_) => return,
+                };
+                let is_active = mgr.active_tab().map(|t| t.id == bg_tab_id).unwrap_or(false);
+                if let Some(tab) = mgr.tabs.iter_mut().find(|t| t.id == bg_tab_id) {
+                    for ea in existing_annots {
+                        let color_idx = match_closest_color_index(ea.color_rgb);
+                        let color_hex = if ea.kind == "highlight" {
+                            if STATIC_COLORS.iter().any(|(h, ..)| *h == ea.color_hex) {
+                                let [br, bg, bb] = get_highlight_blend_rgb(color_idx);
+                                format!("#{br:02x}{bg:02x}{bb:02x}")
+                            } else {
+                                ea.color_hex
+                            }
+                        } else {
+                            ea.color_hex
+                        };
+                        let id = tab.state.next_annot_id;
+                        tab.state.next_annot_id += 1;
+                        tab.state.annotations.push(AnnotationRecord {
+                            id,
+                            page: ea.page,
+                            kind: ea.kind,
+                            color_index: color_idx,
+                            color_hex,
+                            snippet: ea.snippet,
+                            comment: ea.comment,
+                            line_rects_pt: ea.line_rects_pt,
+                            is_from_pdf: true,
+                            creation_date: ea.creation_date,
+                            mod_date: ea.mod_date,
+                            author: ea.author,
+                        });
+                    }
+
+                    if is_active {
+                        sync_annotations_to_ui(&tab.state, &ui);
+                    }
+                }
+            });
+        });
     }
 
     Ok(())
@@ -1359,10 +1555,14 @@ fn handle_rendered_page(
             }
 
             let pages_model = ui.get_scroll_pages();
-            let idx = rendered.page as usize;
-            if let Some(mut item) = pages_model.row_data(idx) {
-                item.image = image;
-                pages_model.set_row_data(idx, item);
+            for i in 0..pages_model.row_count() {
+                if let Some(mut item) = pages_model.row_data(i) {
+                    if item.page_index == rendered.page {
+                        item.image = image;
+                        pages_model.set_row_data(i, item);
+                        break;
+                    }
+                }
             }
         }
     }
@@ -1391,12 +1591,7 @@ fn get_cached_or_load_text<'a>(
 }
 
 fn get_scroll_page_card_top(state: &AppState, page: i32) -> f32 {
-    let mut cur_offset = 0.0f32;
-    for i in 0..page {
-        let ph = state.get_page_size(i).1 * state.zoom_level;
-        cur_offset += ph + 24.0;
-    }
-    cur_offset + 12.0
+    state.get_page_offset_y(page) + 12.0
 }
 
 pub(crate) fn compute_scroll_auto_scroll_delta(
@@ -1429,24 +1624,15 @@ pub(crate) fn resolve_scroll_drag_position_from_global(
         return (0, local_x, global_y);
     }
 
-    let mut page_offsets: Vec<(f32, f32)> = Vec::with_capacity(state.total_pages as usize);
-    let mut cur_offset = 0.0f32;
-    for i in 0..state.total_pages {
-        let (pw_pt, ph_pt) = state.get_page_size(i);
-        let pw = pw_pt * state.zoom_level;
-        let ph = ph_pt * state.zoom_level;
-        page_offsets.push((cur_offset, pw));
-        cur_offset += ph + 24.0;
-    }
-
     let first_card_top = 12.0f32;
     if global_y < first_card_top {
-        let pw = page_offsets[0].1;
+        let pw = state.get_page_size(0).0 * state.zoom_level;
         return (0, local_x.clamp(0.0, pw), 0.0);
     }
 
     for i in 0..state.total_pages {
-        let (cur_top, pw) = page_offsets[i as usize];
+        let cur_top = state.get_page_offset_y(i);
+        let pw = state.get_page_size(i).0 * state.zoom_level;
         let card_top = cur_top + 12.0;
         let ph = state.get_page_size(i).1 * state.zoom_level;
         let card_bottom = card_top + ph;
@@ -1459,13 +1645,13 @@ pub(crate) fn resolve_scroll_drag_position_from_global(
             if i == state.total_pages - 1 {
                 return (i, local_x.clamp(0.0, pw), ph);
             }
-            let next_card_top = page_offsets[(i + 1) as usize].0 + 12.0;
+            let next_card_top = state.get_page_offset_y(i + 1) + 12.0;
             if global_y < next_card_top {
                 // In the 24px gap between page i and page i + 1
                 if global_y - card_bottom < (next_card_top - card_bottom) / 2.0 {
                     return (i, local_x.clamp(0.0, pw), ph);
                 } else {
-                    let next_pw = page_offsets[(i + 1) as usize].1;
+                    let next_pw = state.get_page_size(i + 1).0 * state.zoom_level;
                     return (i + 1, local_x.clamp(0.0, next_pw), 0.0);
                 }
             }
@@ -1807,9 +1993,26 @@ fn sync_annotations_to_ui(s: &AppState, ui: &AppWindow) {
         s.annotation_sort_mode,
     );
 
+    let (min_page, max_page) = if s.is_scroll_view {
+        let (w_start, w_end) = s.virtual_window;
+        if w_start >= 0 && w_end >= 0 {
+            (w_start, w_end)
+        } else {
+            ((s.current_page - 2).max(0), (s.current_page + 3).min(s.total_pages - 1))
+        }
+    } else if s.is_dual_page {
+        let (primary, sec) = compute_dual_page_pair(s.current_page, s.dual_page_cover_alone, s.total_pages);
+        (primary.min(sec.unwrap_or(primary)), primary.max(sec.unwrap_or(primary)))
+    } else {
+        (s.current_page, s.current_page)
+    };
+
     let mut visuals = Vec::new();
 
     for annot in &s.annotations {
+        if annot.page < min_page || annot.page > max_page {
+            continue;
+        }
         let swatch_col = get_color(annot.color_index).1;
         let col = parse_slint_color(&annot.color_hex).unwrap_or(swatch_col);
         let has_note = annot.kind == "note" || !annot.comment.trim().is_empty();
@@ -2223,9 +2426,14 @@ pub fn compute_transformed_links(
 
 fn sync_links_to_ui(state: &mut AppState, ui: &AppWindow) {
     let pages_to_sync: Vec<i32> = if state.is_scroll_view {
-        let min_p = (state.current_page - 2).max(0);
-        let max_p = (state.current_page + 3).min(state.total_pages - 1);
-        (min_p..=max_p).collect()
+        let (w_start, w_end) = state.virtual_window;
+        if w_start >= 0 && w_end >= 0 {
+            (w_start..=w_end).collect()
+        } else {
+            let min_p = (state.current_page - 2).max(0);
+            let max_p = (state.current_page + 3).min(state.total_pages - 1);
+            (min_p..=max_p).collect()
+        }
     } else if state.is_dual_page {
         let (primary, sec) = compute_dual_page_pair(state.current_page, state.dual_page_cover_alone, state.total_pages);
         if let Some(s) = sec {
@@ -2282,19 +2490,17 @@ fn jump_to_search_match(
     sync_nav_history_to_ui(s, ui);
 
     if s.is_scroll_view {
-        let mut target_scroll_y = 0.0f32;
-        if let Some(pages) = ui.get_scroll_pages().as_any().downcast_ref::<slint::VecModel<PageItemData>>() {
-            if let Some(p_item) = pages.row_data(target_page as usize) {
-                target_scroll_y = p_item.offset_y;
-                if let Some(rect) = target_first_rect {
-                    target_scroll_y += rect.1 * s.zoom_level - 120.0;
-                }
-            }
+        let mut target_scroll_y = s.get_page_offset_y(target_page);
+        if let Some(rect) = target_first_rect {
+            target_scroll_y += rect.1 * s.zoom_level - 120.0;
         }
         ui.set_scroll_content_y(-target_scroll_y.max(0.0));
         ui.set_current_page(target_page);
         s.current_page = target_page;
+        let vh = ui.get_scroll_viewport_height();
+        update_virtual_scroll_pages(s, ui, target_scroll_y.max(0.0), vh);
         trigger_scroll_page_render_direct(s, target_page, ui);
+        sync_links_to_ui(s, ui);
         sync_search_to_ui(s, ui);
     } else {
         if s.current_page != target_page {
@@ -2486,33 +2692,14 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
     let scroll_item_h = standard_h * state.zoom_level + 24.0;
     ui.set_scroll_item_height(scroll_item_h);
 
-    let pages_model = ui.get_scroll_pages();
-    let mut cur_offset = 0.0f32;
-    for i in 0..state.total_pages as usize {
-        let (pw_pt, ph_pt) = state.get_page_size(i as i32);
-        let pw = pw_pt * state.zoom_level;
-        let ph = ph_pt * state.zoom_level;
-        if let Some(mut item) = pages_model.row_data(i) {
-            let geom_changed = (item.offset_y - cur_offset).abs() > 0.5
-                || (item.width - pw).abs() > 0.5
-                || (item.height - ph).abs() > 0.5;
-            item.offset_y = cur_offset;
-            item.width = pw;
-            item.height = ph;
-            let mut image_changed = false;
-            if let Some(cached) = state.cache.get(i as i32, state.zoom_level, state.rotation, state.paper_theme) {
-                if let Some(img) = rgba_to_image(&cached.rgba, cached.width, cached.height) {
-                    item.image = img;
-                    image_changed = true;
-                }
-            }
-            if geom_changed || image_changed {
-                pages_model.set_row_data(i, item);
-            }
-        }
-        cur_offset += ph + 24.0;
+    state.recalculate_page_offsets();
+    ui.set_total_scroll_height(state.get_total_scroll_height());
+
+    if state.is_scroll_view {
+        state.virtual_window = (-1, -1);
+        let vh = ui.get_scroll_viewport_height();
+        update_virtual_scroll_pages(state, ui, -ui.get_scroll_content_y(), vh);
     }
-    ui.set_total_scroll_height(cur_offset + 12.0);
 
     // Refresh annotation visual coordinates scaled to current zoom
     sync_annotations_to_ui(state, ui);
@@ -2532,10 +2719,17 @@ fn update_view_with_state(state: &mut AppState, ui: &AppWindow) {
             ui.set_page_image(img.clone());
             ui.set_page_opacity(1.0);
 
-            let idx = state.current_page as usize;
-            if let Some(mut item) = pages_model.row_data(idx) {
-                item.image = img;
-                pages_model.set_row_data(idx, item);
+            if state.is_scroll_view {
+                let pages_model = ui.get_scroll_pages();
+                for i in 0..pages_model.row_count() {
+                    if let Some(mut item) = pages_model.row_data(i) {
+                        if item.page_index == state.current_page {
+                            item.image = img;
+                            pages_model.set_row_data(i, item);
+                            break;
+                        }
+                    }
+                }
             }
         }
         if !cached_render.is_preview {
@@ -2641,10 +2835,14 @@ fn trigger_scroll_page_render(state: &mut AppState, page_idx: i32, ui: &AppWindo
     if let Some(cached) = state.cache.get(page_idx, state.zoom_level, state.rotation, state.paper_theme).cloned() {
         if let Some(img) = rgba_to_image(&cached.rgba, cached.width, cached.height) {
             let pages_model = ui.get_scroll_pages();
-            let idx = page_idx as usize;
-            if let Some(mut item) = pages_model.row_data(idx) {
-                item.image = img.clone();
-                pages_model.set_row_data(idx, item);
+            for i in 0..pages_model.row_count() {
+                if let Some(mut item) = pages_model.row_data(i) {
+                    if item.page_index == page_idx {
+                        item.image = img.clone();
+                        pages_model.set_row_data(i, item);
+                        break;
+                    }
+                }
             }
             if page_idx == state.current_page {
                 ui.set_page_image(img);
@@ -3591,9 +3789,9 @@ fn setup_callbacks(
                     }
 
                     if is_scroll {
-                        ui.invoke_scroll_to_page(target_page);
                         if let Ok(mut lock) = state_lock.lock() {
                             if let Some(s) = lock.as_mut() {
+                                scroll_to_page_in_ui(s, &ui, target_page);
                                 trigger_scroll_page_render(s, target_page, &ui);
                                 sync_links_to_ui(s, &ui);
                             }
@@ -3640,14 +3838,13 @@ fn setup_callbacks(
                             update_page_indicator(s, &ui);
                             sync_nav_history_to_ui(s, &ui);
                             if is_scroll {
+                                scroll_to_page_in_ui(s, &ui, target);
                                 trigger_scroll_page_render(s, target, &ui);
                                 sync_links_to_ui(s, &ui);
                             }
                         }
                     }
-                    if is_scroll {
-                        ui.invoke_scroll_to_page(target);
-                    } else {
+                    if !is_scroll {
                         update_view(&ui, &state_lock);
                     }
                     save_session();
@@ -3704,8 +3901,18 @@ fn setup_callbacks(
                     if is_scroll {
                         if target_loc.scroll_y != 0.0 {
                             ui.set_scroll_content_y(target_loc.scroll_y);
+                            if let Ok(mut lock) = state_lock.lock() {
+                                if let Some(s) = lock.as_mut() {
+                                    let vh = ui.get_scroll_viewport_height();
+                                    update_virtual_scroll_pages(s, &ui, -target_loc.scroll_y, vh);
+                                }
+                            }
                         } else {
-                            ui.invoke_scroll_to_page(target_loc.page);
+                            if let Ok(mut lock) = state_lock.lock() {
+                                if let Some(s) = lock.as_mut() {
+                                    scroll_to_page_in_ui(s, &ui, target_loc.page);
+                                }
+                            }
                         }
                     } else {
                         update_view(&ui, &state_lock);
@@ -3757,8 +3964,18 @@ fn setup_callbacks(
                     if is_scroll {
                         if target_loc.scroll_y != 0.0 {
                             ui.set_scroll_content_y(target_loc.scroll_y);
+                            if let Ok(mut lock) = state_lock.lock() {
+                                if let Some(s) = lock.as_mut() {
+                                    let vh = ui.get_scroll_viewport_height();
+                                    update_virtual_scroll_pages(s, &ui, -target_loc.scroll_y, vh);
+                                }
+                            }
                         } else {
-                            ui.invoke_scroll_to_page(target_loc.page);
+                            if let Ok(mut lock) = state_lock.lock() {
+                                if let Some(s) = lock.as_mut() {
+                                    scroll_to_page_in_ui(s, &ui, target_loc.page);
+                                }
+                            }
                         }
                     } else {
                         update_view(&ui, &state_lock);
@@ -4103,29 +4320,54 @@ fn setup_callbacks(
         });
     }
 
-    // Scroll Content Y Changed (for wheel scrolling while drag-selecting)
+    // Scroll Content Y Changed (for wheel scrolling while drag-selecting and virtualization)
     {
         let state_lock = Arc::clone(state_lock);
         let app_weak = app.as_weak();
         let drag_state = std::rc::Rc::clone(&auto_scroll_drag_state);
         let is_auto_scrolling = std::sync::Arc::clone(&is_auto_scrolling_flag);
+        let save_session = make_session_saver();
         app.on_scroll_content_y_changed(move |new_scroll_y| {
             if is_auto_scrolling.load(std::sync::atomic::Ordering::Relaxed) {
-                return;
-            }
-            let (drag_active, last_x, last_vy) = {
-                let drag = drag_state.borrow();
-                (drag.is_active, drag.last_local_x, drag.last_viewport_y)
-            };
-            if !drag_active {
                 return;
             }
             let Some(ui) = app_weak.upgrade() else { return; };
             if !ui.get_is_scroll_view() {
                 return;
             }
+
             let vh = ui.get_scroll_viewport_height();
-            if vh <= 100.0 {
+            let scroll_y = -new_scroll_y;
+
+            let mut page_to_update = None;
+            if let Ok(mut lock) = state_lock.lock() {
+                if let Some(s) = lock.as_mut() {
+                    update_virtual_scroll_pages(s, &ui, scroll_y, vh);
+
+                    let active_p = s.page_at_scroll_offset(scroll_y + 100.0);
+                    if s.current_page != active_p && active_p >= 0 && active_p < s.total_pages {
+                        s.current_page = active_p;
+                        page_to_update = Some(active_p);
+                        sync_links_to_ui(s, &ui);
+                    }
+                }
+            }
+
+            if let Some(p) = page_to_update {
+                ui.set_current_page(p);
+                if let Ok(lock) = state_lock.lock() {
+                    if let Some(s) = lock.as_ref() {
+                        update_page_indicator(s, &ui);
+                    }
+                }
+                save_session();
+            }
+
+            let (drag_active, last_x, last_vy) = {
+                let drag = drag_state.borrow();
+                (drag.is_active, drag.last_local_x, drag.last_viewport_y)
+            };
+            if !drag_active || vh <= 100.0 {
                 return;
             }
             let clamped_vy = last_vy.clamp(0.0, vh);
@@ -4300,10 +4542,14 @@ fn setup_callbacks(
 
                     for (target_page, img) in highlight_updates {
                         let pages_model = ui.get_scroll_pages();
-                        let idx = target_page as usize;
-                        if let Some(mut item) = pages_model.row_data(idx) {
-                            item.image = img.clone();
-                            pages_model.set_row_data(idx, item);
+                        for i in 0..pages_model.row_count() {
+                            if let Some(mut item) = pages_model.row_data(i) {
+                                if item.page_index == target_page {
+                                    item.image = img.clone();
+                                    pages_model.set_row_data(i, item);
+                                    break;
+                                }
+                            }
                         }
                         if target_page == ui.get_current_page() {
                             ui.set_page_image(img.clone());
@@ -5051,7 +5297,16 @@ fn setup_callbacks(
                 ui.set_is_scroll_view(is_scroll);
                 if is_scroll {
                     ui.set_is_dual_page(false);
-                    ui.invoke_scroll_to_page(target_page);
+                    if let Ok(mut lock) = state_lock.lock() {
+                        if let Some(s) = lock.as_mut() {
+                            s.recalculate_page_offsets();
+                            ui.set_total_scroll_height(s.get_total_scroll_height());
+                            s.virtual_window = (-1, -1);
+                            scroll_to_page_in_ui(s, &ui, target_page);
+                            trigger_scroll_page_render(s, target_page, &ui);
+                            sync_links_to_ui(s, &ui);
+                        }
+                    }
                 } else {
                     update_view(&ui, &state_lock);
                 }
@@ -5249,6 +5504,9 @@ fn setup_callbacks(
                         if let Some(s) = lock.as_mut() {
                             ui.set_current_page(s.current_page);
                             update_page_indicator(s, &ui);
+                            let vh = ui.get_scroll_viewport_height();
+                            let scroll_y = -ui.get_scroll_content_y();
+                            update_virtual_scroll_pages(s, &ui, scroll_y, vh);
                             trigger_scroll_page_render(s, new_page, &ui);
                             sync_links_to_ui(s, &ui);
                         }
@@ -5298,9 +5556,9 @@ fn setup_callbacks(
                 if let Some(ui) = app_weak.upgrade() {
                     ui.set_current_page(new_page);
                     if is_scroll {
-                        ui.invoke_scroll_to_page(new_page);
                         if let Ok(mut lock) = state_lock.lock() {
                             if let Some(s) = lock.as_mut() {
+                                scroll_to_page_in_ui(s, &ui, new_page);
                                 update_page_indicator(s, &ui);
                                 trigger_scroll_page_render(s, new_page, &ui);
                                 sync_links_to_ui(s, &ui);
@@ -5354,9 +5612,9 @@ fn setup_callbacks(
                 if let Some(ui) = app_weak.upgrade() {
                     ui.set_current_page(new_page);
                     if is_scroll {
-                        ui.invoke_scroll_to_page(new_page);
                         if let Ok(mut lock) = state_lock.lock() {
                             if let Some(s) = lock.as_mut() {
+                                scroll_to_page_in_ui(s, &ui, new_page);
                                 update_page_indicator(s, &ui);
                                 trigger_scroll_page_render(s, new_page, &ui);
                                 sync_links_to_ui(s, &ui);
@@ -5864,6 +6122,8 @@ mod tests {
             doc_properties: pdf::DocumentProperties::default(),
             annotation_sort_mode: 0,
             nav_history: NavHistory::default(),
+            page_offsets: Vec::new(),
+            virtual_window: (-1, -1),
         };
 
         (state, test_pdf_path)
@@ -6768,6 +7028,8 @@ mod tests {
                     doc_properties: super::pdf::DocumentProperties::default(),
                     annotation_sort_mode: 0,
                     nav_history: super::NavHistory::default(),
+                    page_offsets: Vec::new(),
+                    virtual_window: (-1, -1),
                 },
                 saved_scroll_y: 0.0,
                 is_dirty: false,
@@ -6891,6 +7153,8 @@ mod tests {
                     doc_properties: super::pdf::DocumentProperties::default(),
                     annotation_sort_mode: 0,
                     nav_history: super::NavHistory::default(),
+                    page_offsets: Vec::new(),
+                    virtual_window: (-1, -1),
                 },
                 saved_scroll_y: 0.0,
                 is_dirty: false,
@@ -7002,6 +7266,8 @@ mod tests {
                     doc_properties: super::pdf::DocumentProperties::default(),
                     annotation_sort_mode: 0,
                     nav_history: super::NavHistory::default(),
+                    page_offsets: Vec::new(),
+                    virtual_window: (-1, -1),
                 },
                 saved_scroll_y: 0.0,
                 is_dirty: false,
@@ -7365,5 +7631,46 @@ mod tests {
 
         assert_eq!(compute_dual_page_prev(4, false, total), Some(2));
         assert_eq!(compute_dual_page_next(4, false, total), None);
+    }
+
+    #[test]
+    fn test_virtualized_scrolling_large_document() {
+        let (mut state, pdf_path) = setup_test_state();
+        state.is_scroll_view = true;
+        state.total_pages = 1743;
+        state.page_sizes = vec![(612.0, 792.0); 1743];
+        state.zoom_level = 1.0;
+        state.recalculate_page_offsets();
+
+        // Check total height calculation: each page is 792 + 24 gap = 816
+        // Page 0 offset: 0, Page 1: 816, Page 2: 1632, ...
+        assert_eq!(state.get_page_offset_y(0), 0.0);
+        assert_eq!(state.get_page_offset_y(1), 816.0);
+        assert_eq!(state.get_page_offset_y(100), 100.0 * 816.0);
+        assert_eq!(state.get_page_offset_y(1742), 1742.0 * 816.0);
+
+        let total_h = state.get_total_scroll_height();
+        assert_eq!(total_h, 1742.0 * 816.0 + 792.0 + 24.0 + 12.0);
+
+        // Binary search page lookup
+        assert_eq!(state.page_at_scroll_offset(0.0), 0);
+        assert_eq!(state.page_at_scroll_offset(400.0), 0);
+        assert_eq!(state.page_at_scroll_offset(815.0), 0);
+        assert_eq!(state.page_at_scroll_offset(816.0), 1);
+        assert_eq!(state.page_at_scroll_offset(100.0 * 816.0 + 50.0), 100);
+        assert_eq!(state.page_at_scroll_offset(1742.0 * 816.0), 1742);
+        assert_eq!(state.page_at_scroll_offset(5000000.0), 1742);
+
+        // Drag position resolution across huge document
+        let (p, x, y) = resolve_scroll_drag_position_from_global(&state, 200.0, 100.0 * 816.0 + 12.0 + 50.0);
+        assert_eq!(p, 100);
+        assert_eq!(x, 200.0);
+        assert!((y - 50.0).abs() < 0.01);
+
+        let (last_p, _, last_y) = resolve_scroll_drag_position_from_global(&state, 100.0, 9999999.0);
+        assert_eq!(last_p, 1742);
+        assert_eq!(last_y, 792.0);
+
+        let _ = std::fs::remove_file(pdf_path);
     }
 }
