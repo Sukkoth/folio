@@ -631,11 +631,12 @@ component DocPropRow inherits Rectangle {
     in property <string> label;
     in property <string> value;
     in property <bool> is-path: false;
+    in property <bool> can-copy: false;
     callback copy-value(string);
 
     height: 28px;
     border-radius: 6px;
-    background: row-ta.has-hover ? Theme.hover-bg : transparent;
+    background: (root.can-copy && row-ta.has-hover) ? Theme.hover-bg : transparent;
     animate background { duration: 80ms; }
 
     HorizontalLayout {
@@ -670,7 +671,7 @@ component DocPropRow inherits Rectangle {
                 horizontal-alignment: right;
             }
 
-            if row-ta.has-hover && root.value != "—" && root.value != "": Image {
+            if root.can-copy && row-ta.has-hover && root.value != "—" && root.value != "": Image {
                 source: @image-url("../assets/icons/copy.svg");
                 width: 14px;
                 height: 14px;
@@ -681,11 +682,103 @@ component DocPropRow inherits Rectangle {
     }
 
     row-ta := TouchArea {
-        mouse-cursor: (root.value != "—" && root.value != "") ? pointer : default;
+        enabled: root.can-copy;
+        mouse-cursor: (root.can-copy && root.value != "—" && root.value != "") ? pointer : default;
         clicked => {
-            if (root.value != "—" && root.value != "") {
+            if (root.can-copy && root.value != "—" && root.value != "") {
                 root.copy-value(root.value);
             }
+        }
+    }
+}
+
+component KeyBadge inherits Rectangle {
+    in property <string> text;
+
+    height: 20px;
+    width: Math.max(22px, key-label.preferred-width + 12px);
+    border-radius: 5px;
+    background: Theme.surface-subtle;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+
+    key-label := Text {
+        text: root.text;
+        font-family: "Inter";
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.text-primary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component ShortcutItem inherits Rectangle {
+    in property <string> label;
+    in property <string> shortcut;
+    in property <string> shortcut-alt: "";
+
+    height: 26px;
+    border-radius: 4px;
+
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        alignment: space-between;
+
+        Text {
+            text: root.label;
+            font-family: "Inter";
+            font-size: 12px;
+            font-weight: 500;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            alignment: end;
+
+            KeyBadge {
+                text: root.shortcut;
+                y: (parent.height - self.height) / 2;
+            }
+
+            if root.shortcut-alt != "": Text {
+                text: "/";
+                font-family: "Inter";
+                font-size: 11px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+
+            if root.shortcut-alt != "": KeyBadge {
+                text: root.shortcut-alt;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+    }
+}
+
+component ShortcutSectionHeader inherits Rectangle {
+    in property <string> title;
+
+    height: 24px;
+
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        alignment: start;
+
+        Text {
+            text: root.title;
+            font-family: "Inter";
+            font-size: 11px;
+            font-weight: 700;
+            color: Theme.text-accent;
+            letter-spacing: 0.5px;
+            vertical-alignment: center;
         }
     }
 }
@@ -750,6 +843,7 @@ export component AppWindow inherits Window {
     in-out property <bool> show-recent-books: false;
     callback open-recent-book(string);
     in-out property <bool> show-doc-info: false;
+    in-out property <bool> show-shortcuts-modal: false;
     in property <DocInfoData> doc-info;
     callback copy-to-clipboard(string);
     callback copy-all-doc-info();
@@ -987,6 +1081,21 @@ export component AppWindow inherits Window {
                 root.is-ctrl-pressed = true;
             }
 
+            // Shortcuts modal interactions: close on Esc/F1/Ctrl+/ or absorb input
+            if (root.show-shortcuts-modal) {
+                if (event.text == Key.Escape || event.text == Key.F1 || ((event.modifiers.control) && (event.text == "/" || event.text == "?" || event.text == "\u{1f}"))) {
+                    root.show-shortcuts-modal = false;
+                    return accept;
+                }
+                return accept;
+            }
+
+            // Toggle Shortcuts Modal: F1, Ctrl + /, Ctrl + ?, or ? (outside input fields)
+            if (event.text == Key.F1 || ((event.modifiers.control) && (event.text == "/" || event.text == "?" || event.text == "\u{1f}")) || (event.text == "?" && !root.show-search && !root.focus-page-input-flag && !root.show-password-modal)) {
+                root.show-shortcuts-modal = true;
+                return accept;
+            }
+
             if (event.text == Key.F11) {
                 root.toggle-zen-mode();
                 return accept;
@@ -1149,8 +1258,8 @@ export component AppWindow inherits Window {
                     } else if (event.text == "r" || event.text == "R" || (event.modifiers.control && event.text == "\u{12}")) {
                         root.rotate-clockwise();
                         return accept;
-                    // Ctrl + D: Document Properties (Doc Info Modal)
-                    } else if (event.text == "d" || event.text == "D" || (event.modifiers.control && event.text == "\u{4}")) {
+                    // Ctrl + D / Ctrl + I: Document Properties (Doc Info Modal)
+                    } else if (event.text == "d" || event.text == "D" || event.text == "i" || event.text == "I" || (event.modifiers.control && (event.text == "\u{4}" || event.text == "\u{9}"))) {
                         root.show-doc-info = !root.show-doc-info;
                         return accept;
                     // Ctrl + P: Print Document
@@ -1164,6 +1273,10 @@ export component AppWindow inherits Window {
                 }
             } else {
                 if (event.text == Key.Escape) {
+                    if (root.show-shortcuts-modal) {
+                        root.show-shortcuts-modal = false;
+                        return accept;
+                    }
                     if (root.show-unsaved-modal) {
                         root.cancel-unsaved-close();
                         return accept;
@@ -6116,22 +6229,28 @@ VerticalLayout {
                 }
 
                 DocPropRow {
+                    label: "File Name";
+                    value: root.doc-info.file-name != "" ? root.doc-info.file-name : "—";
+                    can-copy: true;
+                    copy-value(v) => { root.copy-to-clipboard(v); }
+                }
+
+                DocPropRow {
                     label: "Location";
                     value: root.doc-info.file-path;
                     is-path: true;
+                    can-copy: true;
                     copy-value(v) => { root.copy-to-clipboard(v); }
                 }
 
                 DocPropRow {
                     label: "File Size";
                     value: root.doc-info.file-size;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
 
                 DocPropRow {
                     label: "Modified";
                     value: root.doc-info.mod-date;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
             }
 
@@ -6156,25 +6275,21 @@ VerticalLayout {
                 DocPropRow {
                     label: "Title";
                     value: root.doc-info.title;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
 
                 DocPropRow {
                     label: "Author";
                     value: root.doc-info.author;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
 
                 DocPropRow {
                     label: "Subject";
                     value: root.doc-info.subject;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
 
                 DocPropRow {
                     label: "Keywords";
                     value: root.doc-info.keywords;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
             }
 
@@ -6199,43 +6314,36 @@ VerticalLayout {
                 DocPropRow {
                     label: "Page Count";
                     value: root.doc-info.page-count;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
 
                 DocPropRow {
                     label: "Page Dimensions";
                     value: root.doc-info.page-size;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
 
                 DocPropRow {
                     label: "Format / Version";
                     value: root.doc-info.pdf-version;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
 
                 DocPropRow {
                     label: "Security";
                     value: root.doc-info.encryption;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
 
                 DocPropRow {
                     label: "Created";
                     value: root.doc-info.creation-date;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
 
                 DocPropRow {
                     label: "Producer";
                     value: root.doc-info.producer;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
 
                 DocPropRow {
                     label: "Creator";
                     value: root.doc-info.creator;
-                    copy-value(v) => { root.copy-to-clipboard(v); }
                 }
             }
 
@@ -6252,6 +6360,48 @@ VerticalLayout {
                 HorizontalLayout {
                     spacing: 8px;
                     alignment: start;
+
+                    // Copy File Name Button
+                    Rectangle {
+                        height: 32px;
+                        border-radius: 16px;
+                        background: copy-name-ta.has-hover ? Theme.hover-bg : Theme.surface-subtle;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        animate background { duration: 80ms; }
+                        y: (parent.height - self.height) / 2;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 6px;
+                            alignment: center;
+
+                            Image {
+                                source: @image-url("../assets/icons/copy.svg");
+                                width: 15px;
+                                height: 15px;
+                                colorize: Theme.text-primary;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            Text {
+                                text: "Copy Name";
+                                font-family: "Inter";
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        copy-name-ta := TouchArea {
+                            clicked => {
+                                root.copy-to-clipboard(root.doc-info.file-name);
+                            }
+                            mouse-cursor: pointer;
+                        }
+                    }
 
                     // Copy Path Button
                     Rectangle {
@@ -6290,48 +6440,6 @@ VerticalLayout {
                         copy-path-ta := TouchArea {
                             clicked => {
                                 root.copy-to-clipboard(root.doc-info.file-path);
-                            }
-                            mouse-cursor: pointer;
-                        }
-                    }
-
-                    // Copy All Markdown Button
-                    Rectangle {
-                        height: 32px;
-                        border-radius: 16px;
-                        background: copy-all-ta.has-hover ? Theme.hover-bg : Theme.surface-subtle;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        animate background { duration: 80ms; }
-                        y: (parent.height - self.height) / 2;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 6px;
-                            alignment: center;
-
-                            Image {
-                                source: @image-url("../assets/icons/copy.svg");
-                                width: 15px;
-                                height: 15px;
-                                colorize: Theme.text-primary;
-                                y: (parent.height - self.height) / 2;
-                            }
-
-                            Text {
-                                text: "Copy All";
-                                font-family: "Inter";
-                                font-size: 12px;
-                                font-weight: 600;
-                                color: Theme.text-primary;
-                                vertical-alignment: center;
-                            }
-                        }
-
-                        copy-all-ta := TouchArea {
-                            clicked => {
-                                root.copy-all-doc-info();
                             }
                             mouse-cursor: pointer;
                         }
@@ -6409,6 +6517,267 @@ VerticalLayout {
                     done-ta := TouchArea {
                         clicked => {
                             root.show-doc-info = false;
+                        }
+                        mouse-cursor: pointer;
+                    }
+                }
+            }
+        }
+    }
+
+    // Backdrop click-to-dismiss for Shortcuts Modal
+    if root.show-shortcuts-modal: TouchArea {
+        width: 100%;
+        height: 100%;
+        z: 190;
+        clicked => {
+            root.show-shortcuts-modal = false;
+        }
+    }
+
+    // Modal Dim Backdrop
+    if root.show-shortcuts-modal: Rectangle {
+        width: 100%;
+        height: 100%;
+        z: 195;
+        background: Theme.dark ? #000000a6 : #00000045;
+        animate background { duration: 140ms; }
+    }
+
+    // Keyboard Shortcuts Modal Card
+    if root.show-shortcuts-modal: Rectangle {
+        width: root.width > 700px ? 660px : root.width - 32px;
+        height: root.height > 620px ? 560px : root.height - 40px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        z: 200;
+        background: Theme.card-elevated;
+        border-radius: 18px;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 32px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: Theme.dark ? #000000cc : #00000035;
+        clip: true;
+
+        VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+
+            // Modal Header
+            HorizontalLayout {
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+
+                    Rectangle {
+                        width: 34px;
+                        height: 34px;
+                        border-radius: 10px;
+                        background: Theme.surface-subtle;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        y: (parent.height - self.height) / 2;
+
+                        Image {
+                            source: @image-url("../assets/icons/keyboard.svg");
+                            width: 20px;
+                            height: 20px;
+                            colorize: Theme.text-primary;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        alignment: center;
+
+                        Text {
+                            text: "Keyboard Shortcuts";
+                            font-family: "Inter";
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                        }
+
+                        Text {
+                            text: "Quick reference for keyboard navigation and tools";
+                            font-family: "Inter";
+                            font-size: 12px;
+                            font-weight: 500;
+                            color: Theme.text-secondary;
+                        }
+                    }
+                }
+
+                IconButton {
+                    icon: @image-url("../assets/icons/x.svg");
+                    size: 30px;
+                    icon-size: 16px;
+                    border-radius: 15px;
+                    y: (parent.height - self.height) / 2;
+                    tooltip: "Close (Esc)";
+                    tooltip-align: "right";
+                    clicked => {
+                        root.show-shortcuts-modal = false;
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
+            // Scrollable Content
+            ScrollView {
+                vertical-stretch: 1;
+
+                HorizontalLayout {
+                    spacing: 20px;
+                    alignment: stretch;
+                    padding-right: 8px;
+
+                    // Left Column
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 16px;
+                        alignment: start;
+
+                        // General & Application
+                        VerticalLayout {
+                            spacing: 4px;
+                            ShortcutSectionHeader { title: "GENERAL & APPLICATION"; }
+                            ShortcutItem { label: "Open Document"; shortcut: "Ctrl + O"; }
+                            ShortcutItem { label: "Save Document"; shortcut: "Ctrl + S"; }
+                            ShortcutItem { label: "Save As Copy"; shortcut: "Ctrl + Shift + S"; }
+                            ShortcutItem { label: "Print Document"; shortcut: "Ctrl + P"; }
+                            ShortcutItem { label: "Document Properties"; shortcut: "Ctrl + D"; shortcut-alt: "Ctrl + I"; }
+                            ShortcutItem { label: "Toggle Sidebar"; shortcut: "Ctrl + B"; }
+                            ShortcutItem { label: "Zen / Fullscreen"; shortcut: "F11"; }
+                            ShortcutItem { label: "Keyboard Shortcuts"; shortcut: "Ctrl + /"; shortcut-alt: "F1"; }
+                            ShortcutItem { label: "Close / Dismiss"; shortcut: "Esc"; }
+                        }
+
+                        // Tabs
+                        VerticalLayout {
+                            spacing: 4px;
+                            ShortcutSectionHeader { title: "TABS"; }
+                            ShortcutItem { label: "New Tab"; shortcut: "Ctrl + T"; }
+                            ShortcutItem { label: "Close Tab"; shortcut: "Ctrl + W"; }
+                            ShortcutItem { label: "Next Tab"; shortcut: "Ctrl + Tab"; shortcut-alt: "Ctrl + PgDn"; }
+                            ShortcutItem { label: "Previous Tab"; shortcut: "Ctrl + Shift + Tab"; shortcut-alt: "Ctrl + PgUp"; }
+                            ShortcutItem { label: "Select Tab 1-9"; shortcut: "Ctrl + 1..9"; }
+                        }
+
+                        // Navigation & Search
+                        VerticalLayout {
+                            spacing: 4px;
+                            ShortcutSectionHeader { title: "NAVIGATION & SEARCH"; }
+                            ShortcutItem { label: "Next Page"; shortcut: "↓"; shortcut-alt: "PgDn"; }
+                            ShortcutItem { label: "Previous Page"; shortcut: "↑"; shortcut-alt: "PgUp"; }
+                            ShortcutItem { label: "Search Text"; shortcut: "Ctrl + F"; }
+                            ShortcutItem { label: "Go to Page"; shortcut: "Ctrl + G"; }
+                            ShortcutItem { label: "History Back"; shortcut: "Alt + ←"; }
+                            ShortcutItem { label: "History Forward"; shortcut: "Alt + →"; }
+                        }
+                    }
+
+                    // Right Column
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 16px;
+                        alignment: start;
+
+                        // View & Display
+                        VerticalLayout {
+                            spacing: 4px;
+                            ShortcutSectionHeader { title: "VIEW & DISPLAY"; }
+                            ShortcutItem { label: "Zoom In"; shortcut: "Ctrl + +"; }
+                            ShortcutItem { label: "Zoom Out"; shortcut: "Ctrl + -"; }
+                            ShortcutItem { label: "Reset Zoom (100%)"; shortcut: "Ctrl + 0"; }
+                            ShortcutItem { label: "Fit to Width"; shortcut: "Ctrl + Shift + W"; shortcut-alt: "W"; }
+                            ShortcutItem { label: "Fit to Page"; shortcut: "Ctrl + Shift + F"; }
+                            ShortcutItem { label: "Continuous Scroll"; shortcut: "Ctrl + M"; }
+                            ShortcutItem { label: "Dual Page Spread"; shortcut: "Ctrl + Alt + D"; }
+                            ShortcutItem { label: "Cover Page Alone"; shortcut: "Ctrl + Alt + C"; }
+                            ShortcutItem { label: "Rotate Clockwise"; shortcut: "Ctrl + R"; }
+                            ShortcutItem { label: "Cycle Theme"; shortcut: "T"; shortcut-alt: "P"; }
+                        }
+
+                        // Annotations & Editing
+                        VerticalLayout {
+                            spacing: 4px;
+                            ShortcutSectionHeader { title: "ANNOTATIONS & EDITING"; }
+                            ShortcutItem { label: "Copy Selection"; shortcut: "Ctrl + C"; }
+                            ShortcutItem { label: "Highlight Text"; shortcut: "Ctrl + H"; }
+                            ShortcutItem { label: "Underline Text"; shortcut: "Ctrl + U"; }
+                            ShortcutItem { label: "Strikethrough"; shortcut: "Ctrl + Alt + S"; }
+                            ShortcutItem { label: "Add Sticky Note"; shortcut: "Ctrl + Alt + N"; }
+                            ShortcutItem { label: "Color Palette"; shortcut: "1 .. 6"; }
+                            ShortcutItem { label: "Delete Annotation"; shortcut: "Del"; shortcut-alt: "Backspace"; }
+                            ShortcutItem { label: "Undo"; shortcut: "Ctrl + Z"; }
+                            ShortcutItem { label: "Redo"; shortcut: "Ctrl + Y"; shortcut-alt: "Ctrl+Shift+Z"; }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.border-subtle;
+            }
+
+            // Modal Footer
+            HorizontalLayout {
+                padding-top: 2px;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+
+                    Text {
+                        text: "Press Esc or Ctrl+/ to close";
+                        font-family: "Inter";
+                        font-size: 12px;
+                        font-weight: 500;
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Done Close Button
+                Rectangle {
+                    height: 32px;
+                    border-radius: 16px;
+                    background: shortcuts-done-ta.has-hover ? Theme.cta-hover : Theme.cta-bg;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    animate background { duration: 80ms; }
+                    y: (parent.height - self.height) / 2;
+
+                    HorizontalLayout {
+                        padding-left: 18px;
+                        padding-right: 18px;
+                        alignment: center;
+
+                        Text {
+                            text: "Done";
+                            font-family: "Inter";
+                            font-size: 13px;
+                            font-weight: 600;
+                            color: Theme.on-cta;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    shortcuts-done-ta := TouchArea {
+                        clicked => {
+                            root.show-shortcuts-modal = false;
                         }
                         mouse-cursor: pointer;
                     }

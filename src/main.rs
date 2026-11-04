@@ -7673,4 +7673,29 @@ mod tests {
 
         let _ = std::fs::remove_file(pdf_path);
     }
+
+    #[test]
+    fn test_doc_info_file_name_and_path_copy() {
+        let props = pdf::DocumentProperties {
+            file_name: "test_doc.pdf".to_string(),
+            file_path: "/home/user/Documents/test_doc.pdf".to_string(),
+            file_size: "1.2 MB".to_string(),
+            page_count: 42,
+            page_size: "612 x 792 pt".to_string(),
+            title: "Test Title".to_string(),
+            author: "Author Name".to_string(),
+            subject: "Testing".to_string(),
+            keywords: "rust, pdf".to_string(),
+            creator: "Folio Engine".to_string(),
+            producer: "mupdf".to_string(),
+            creation_date: "2026-11-04".to_string(),
+            mod_date: "2026-11-04".to_string(),
+            pdf_version: "PDF 1.7".to_string(),
+            encryption: "None".to_string(),
+        };
+
+        let slint_info = to_slint_doc_info(&props);
+        assert_eq!(slint_info.file_name.as_str(), "test_doc.pdf");
+        assert_eq!(slint_info.file_path.as_str(), "/home/user/Documents/test_doc.pdf");
+    }
 }
