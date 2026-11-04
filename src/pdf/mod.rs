@@ -710,19 +710,239 @@ pub fn extract_page_text_data(file_path: &str, page_no: i32, password: Option<&s
         }
     }
 
-    // Sort lines in natural reading order: top-to-bottom, left-to-right
-    lines.sort_by(|a, b| {
-        let a_mid = (a.y0 + a.y1) / 2.0;
-        let b_mid = (b.y0 + b.y1) / 2.0;
-        let v_overlap = a.y0.max(b.y0) < a.y1.min(b.y1);
-        if v_overlap {
-            a.x0.partial_cmp(&b.x0).unwrap_or(std::cmp::Ordering::Equal)
-        } else {
-            a_mid.partial_cmp(&b_mid).unwrap_or(std::cmp::Ordering::Equal)
-        }
-    });
+    // Sort lines in natural reading order using Recursive XY-Cut
+    let lines = sort_lines_reading_order(lines);
 
     PageTextData { lines }
+}
+
+fn find_vertical_gutter(lines: &[PageLine]) -> Option<(f32, f32)> {
+    if lines.is_empty() {
+        return None;
+    }
+    let min_x = lines.iter().map(|l| l.x0).fold(f32::INFINITY, f32::min);
+    let max_x = lines.iter().map(|l| l.x1).fold(f32::NEG_INFINITY, f32::max);
+    if !min_x.is_finite() || !max_x.is_finite() {
+        return None;
+    }
+    let start_bin = (min_x.floor() as i32).max(0);
+    let end_bin = (max_x.ceil() as i32).min(5000);
+
+    if end_bin <= start_bin + 30 {
+        return None;
+    }
+
+    let span = (end_bin - start_bin + 1) as usize;
+    let mut occupied = vec![false; span];
+    for l in lines {
+        let l_s = (l.x0.floor() as i32).max(start_bin) - start_bin;
+        let l_e = (l.x1.ceil() as i32).min(end_bin) - start_bin;
+        for i in l_s..=l_e {
+            if (i as usize) < span {
+                occupied[i as usize] = true;
+            }
+        }
+    }
+
+    let mut best_gutter: Option<(f32, f32)> = None;
+    let mut max_gutter_w = 0.0f32;
+    let mut in_gap = false;
+    let mut gap_start = 0;
+
+    for (i, &occ) in occupied.iter().enumerate() {
+        if !occ && !in_gap {
+            in_gap = true;
+            gap_start = i;
+        } else if occ && in_gap {
+            in_gap = false;
+            let gap_len = i - gap_start;
+            let g0 = (start_bin + gap_start as i32) as f32;
+            let g1 = (start_bin + i as i32) as f32;
+
+            let left_count = lines.iter().filter(|l| l.x1 <= g0).count();
+            let right_count = lines.iter().filter(|l| l.x0 >= g1).count();
+
+            if gap_len >= 10 && left_count >= 1 && right_count >= 1 && (left_count + right_count == lines.len()) {
+                if (gap_len as f32) > max_gutter_w {
+                    max_gutter_w = gap_len as f32;
+                    best_gutter = Some((g0, g1));
+                }
+            }
+        }
+    }
+
+    best_gutter
+}
+
+fn find_horizontal_gutter(lines: &[PageLine]) -> Option<(f32, f32)> {
+    if lines.is_empty() {
+        return None;
+    }
+    let min_y = lines.iter().map(|l| l.y0).fold(f32::INFINITY, f32::min);
+    let max_y = lines.iter().map(|l| l.y1).fold(f32::NEG_INFINITY, f32::max);
+    if !min_y.is_finite() || !max_y.is_finite() {
+        return None;
+    }
+    let start_bin = (min_y.floor() as i32).max(0);
+    let end_bin = (max_y.ceil() as i32).min(10000);
+
+    if end_bin <= start_bin + 30 {
+        return None;
+    }
+
+    let span = (end_bin - start_bin + 1) as usize;
+    let mut occupied = vec![false; span];
+    for l in lines {
+        let l_s = (l.y0.floor() as i32).max(start_bin) - start_bin;
+        let l_e = (l.y1.ceil() as i32).min(end_bin) - start_bin;
+        for i in l_s..=l_e {
+            if (i as usize) < span {
+                occupied[i as usize] = true;
+            }
+        }
+    }
+
+    let mut best_gap: Option<(f32, f32)> = None;
+    let mut max_gap_h = 0.0f32;
+    let mut in_gap = false;
+    let mut gap_start = 0;
+
+    for (i, &occ) in occupied.iter().enumerate() {
+        if !occ && !in_gap {
+            in_gap = true;
+            gap_start = i;
+        } else if occ && in_gap {
+            in_gap = false;
+            let gap_len = i - gap_start;
+            let y0 = (start_bin + gap_start as i32) as f32;
+            let y1 = (start_bin + i as i32) as f32;
+
+            let top_count = lines.iter().filter(|l| l.y1 <= y0).count();
+            let bottom_count = lines.iter().filter(|l| l.y0 >= y1).count();
+
+            if gap_len >= 10 && top_count >= 1 && bottom_count >= 1 && (top_count + bottom_count == lines.len()) {
+                if (gap_len as f32) > max_gap_h {
+                    max_gap_h = gap_len as f32;
+                    best_gap = Some((y0, y1));
+                }
+            }
+        }
+    }
+
+    best_gap
+}
+
+/// Recursively sorts lines into natural reading stream order using the XY-Cut algorithm.
+/// Handles multi-column layouts, sidebars, headers, footers, and complex documents.
+pub fn sort_lines_reading_order(lines: Vec<PageLine>) -> Vec<PageLine> {
+    if lines.len() <= 1 {
+        return lines;
+    }
+
+    // 1. Check if vertical cut cleanly separates columns across this block
+    if let Some((g0, _g1)) = find_vertical_gutter(&lines) {
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for l in lines {
+            if l.x1 <= g0 {
+                left.push(l);
+            } else {
+                right.push(l);
+            }
+        }
+        let mut res = sort_lines_reading_order(left);
+        res.extend(sort_lines_reading_order(right));
+        return res;
+    }
+
+    // 2. Check if horizontal cut separates header/body/footer blocks
+    if let Some((y0, _y1)) = find_horizontal_gutter(&lines) {
+        let mut top = Vec::new();
+        let mut bottom = Vec::new();
+        for l in lines {
+            if l.y1 <= y0 {
+                top.push(l);
+            } else {
+                bottom.push(l);
+            }
+        }
+        let mut res = sort_lines_reading_order(top);
+        res.extend(sort_lines_reading_order(bottom));
+        return res;
+    }
+
+    // 3. Base case: single block / column. Sort top-to-bottom, left-to-right for same baseline.
+    let mut sorted = lines;
+    sorted.sort_by(|a, b| {
+        let y_diff = (a.y0 - b.y0).abs();
+        if y_diff < 3.0 {
+            a.x0.partial_cmp(&b.x0).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            a.y0.partial_cmp(&b.y0).unwrap_or(std::cmp::Ordering::Equal)
+        }
+    });
+    sorted
+}
+
+fn find_char_in_line(line: &PageLine, px: f32) -> usize {
+    if line.chars.is_empty() || px <= line.chars[0].x0 {
+        return 0;
+    }
+    if px >= line.chars.last().unwrap().x1 {
+        return line.chars.len();
+    }
+    for (j, ch) in line.chars.iter().enumerate() {
+        let mid_x = (ch.x0 + ch.x1) / 2.0;
+        if px <= mid_x {
+            return j;
+        }
+    }
+    line.chars.len()
+}
+
+fn find_line_and_char(lines: &[PageLine], px: f32, py: f32) -> (usize, usize) {
+    if lines.is_empty() {
+        return (0, 0);
+    }
+
+    // Direct hit check first
+    for (i, l) in lines.iter().enumerate() {
+        if px >= l.x0 - 5.0 && px <= l.x1 + 10.0 && py >= l.y0 - 2.0 && py <= l.y1 + 2.0 {
+            return (i, find_char_in_line(l, px));
+        }
+    }
+
+    // If no direct hit, find line that minimizes column-weighted distance.
+    // Horizontal distance outside column is penalized heavily so clicks in one column
+    // don't snap to a line in an adjacent column.
+    let mut best_line = 0;
+    let mut min_score = f32::MAX;
+
+    for (i, l) in lines.iter().enumerate() {
+        let dist_y = if py < l.y0 {
+            l.y0 - py
+        } else if py > l.y1 {
+            py - l.y1
+        } else {
+            0.0
+        };
+
+        let dist_x = if px < l.x0 {
+            l.x0 - px
+        } else if px > l.x1 {
+            px - l.x1
+        } else {
+            0.0
+        };
+
+        let score = dist_y + dist_x * 4.0;
+        if score < min_score {
+            min_score = score;
+            best_line = i;
+        }
+    }
+
+    (best_line, find_char_in_line(&lines[best_line], px))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -745,74 +965,13 @@ pub fn compute_page_selection(
 
     let lines = &text_data.lines;
 
-    // Helper to map any (x, y) point to (line_idx, char_idx) in text stream
-    let find_line_and_char = |px: f32, py: f32| -> (usize, usize) {
-        if py < lines[0].y0 {
-            return (0, 0);
-        }
-        if py > lines.last().unwrap().y1 {
-            let last_idx = lines.len() - 1;
-            return (last_idx, lines[last_idx].chars.len());
-        }
-
-        // Find line with minimum vertical distance
-        let mut best_line = 0;
-        let mut min_dist_y = f32::MAX;
-        let mut min_dist_x = f32::MAX;
-
-        for (i, l) in lines.iter().enumerate() {
-            let dist_y = if py < l.y0 {
-                l.y0 - py
-            } else if py > l.y1 {
-                py - l.y1
-            } else {
-                0.0
-            };
-
-            let dist_x = if px < l.x0 {
-                l.x0 - px
-            } else if px > l.x1 {
-                px - l.x1
-            } else {
-                0.0
-            };
-
-            if dist_y < min_dist_y - 0.5 {
-                min_dist_y = dist_y;
-                min_dist_x = dist_x;
-                best_line = i;
-            } else if (dist_y - min_dist_y).abs() <= 0.5 && dist_x < min_dist_x {
-                min_dist_x = dist_x;
-                best_line = i;
-            }
-        }
-
-        // Now find char on best_line
-        let line = &lines[best_line];
-        if line.chars.is_empty() || px <= line.chars[0].x0 {
-            return (best_line, 0);
-        }
-        if px >= line.chars.last().unwrap().x1 {
-            return (best_line, line.chars.len());
-        }
-
-        for (j, ch) in line.chars.iter().enumerate() {
-            let mid_x = (ch.x0 + ch.x1) / 2.0;
-            if px <= mid_x {
-                return (best_line, j);
-            }
-        }
-
-        (best_line, line.chars.len())
-    };
-
     let (l_s, c_s) = match from {
         PageBoundary::StartOfPage => (0, 0),
         PageBoundary::EndOfPage => {
             let last_idx = lines.len() - 1;
             (last_idx, lines[last_idx].chars.len())
         }
-        PageBoundary::Point(x, y) => find_line_and_char(x, y),
+        PageBoundary::Point(x, y) => find_line_and_char(lines, x, y),
     };
 
     let (l_e, c_e) = match to {
@@ -821,7 +980,7 @@ pub fn compute_page_selection(
             let last_idx = lines.len() - 1;
             (last_idx, lines[last_idx].chars.len())
         }
-        PageBoundary::Point(x, y) => find_line_and_char(x, y),
+        PageBoundary::Point(x, y) => find_line_and_char(lines, x, y),
     };
 
     // Determine stream direction
@@ -2281,5 +2440,70 @@ mod tests {
         assert!(md.contains("A4"));
 
         let _ = std::fs::remove_file(path_str);
+    }
+
+    #[test]
+    fn test_multicolumn_reading_order_and_selection() {
+        // Create synthetic 2-column layout:
+        // Header: (50..550, y=20..35) "Document Title"
+        // Col 1: (50..250, y=60..75) "Col 1 Line 1", (50..250, y=85..100) "Col 1 Line 2"
+        // Col 2: (300..550, y=60..75) "Col 2 Line 1", (300..550, y=85..100) "Col 2 Line 2"
+        // Footer: (50..550, y=140..155) "Footer Note"
+        fn make_line(text: &str, x0: f32, x1: f32, y0: f32, y1: f32) -> PageLine {
+            let mut chars = Vec::new();
+            let char_w = (x1 - x0) / text.len().max(1) as f32;
+            for (i, c) in text.chars().enumerate() {
+                let cx0 = x0 + i as f32 * char_w;
+                let cx1 = cx0 + char_w;
+                chars.push(PageChar {
+                    ch: c,
+                    x0: cx0,
+                    x1: cx1,
+                    y0,
+                    y1,
+                    baseline_y: y1 - 2.0,
+                });
+            }
+            PageLine {
+                x0,
+                x1,
+                y0,
+                y1,
+                baseline_y: y1 - 2.0,
+                chars,
+            }
+        }
+
+        let header = make_line("Document Title", 50.0, 550.0, 20.0, 35.0);
+        let c1_1 = make_line("Col 1 Line 1", 50.0, 250.0, 60.0, 75.0);
+        let c1_2 = make_line("Col 1 Line 2", 50.0, 250.0, 85.0, 100.0);
+        let c2_1 = make_line("Col 2 Line 1", 300.0, 550.0, 60.0, 75.0);
+        let c2_2 = make_line("Col 2 Line 2", 300.0, 550.0, 85.0, 100.0);
+        let footer = make_line("Footer Note", 50.0, 550.0, 140.0, 155.0);
+
+        // Feed them in scrambled / vertically interleaved order
+        let scrambled = vec![footer.clone(), c2_1.clone(), c1_1.clone(), header.clone(), c2_2.clone(), c1_2.clone()];
+        let sorted = sort_lines_reading_order(scrambled);
+
+        let texts: Vec<String> = sorted.iter().map(|l| l.chars.iter().map(|c| c.ch).collect()).collect();
+        assert_eq!(texts, vec![
+            "Document Title",
+            "Col 1 Line 1",
+            "Col 1 Line 2",
+            "Col 2 Line 1",
+            "Col 2 Line 2",
+            "Footer Note",
+        ]);
+
+        let text_data = PageTextData { lines: sorted };
+
+        // Select within Column 2 only: from "Col 2 Line 1" to "Col 2 Line 2"
+        let (snippet, rects) = compute_text_selection(&text_data, 300.0, 65.0, 550.0, 95.0);
+        assert!(snippet.contains("Col 2 Line 1"));
+        assert!(snippet.contains("Col 2 Line 2"));
+        assert!(!snippet.contains("Col 1"));
+        assert!(!snippet.contains("Document Title"));
+        assert!(!snippet.contains("Footer Note"));
+        assert_eq!(rects.len(), 2);
     }
 }

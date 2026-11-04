@@ -7698,4 +7698,32 @@ mod tests {
         assert_eq!(slint_info.file_name.as_str(), "test_doc.pdf");
         assert_eq!(slint_info.file_path.as_str(), "/home/user/Documents/test_doc.pdf");
     }
+
+    #[test]
+    fn test_multicolumn_selection_isolation() {
+        let cv_path = "/home/twof/Documents/CV.pdf";
+        if !std::path::Path::new(cv_path).exists() {
+            return;
+        }
+        let text_data = pdf::extract_page_text_data(cv_path, 0, None);
+
+        // Dragging down the 4 bullet points in the right column
+        // From "Developed" (x=260.0, y=278.0) to "scalability." (x=450.0, y=375.0)
+        let (snip, rects) = pdf::compute_text_selection(&text_data, 260.0, 278.0, 450.0, 375.0);
+
+        // Verify that right column content is selected
+        assert!(snip.contains("Developed RESTful APIs"));
+        assert!(snip.contains("Created custom web applications"));
+        assert!(snip.contains("Implemented secure authentication"));
+        assert!(snip.contains("Utilized Laravel's powerful Eloquent ORM"));
+
+        // Verify that left column content ("Expertise", "Portfolio") is NOT included
+        assert!(!snip.contains("Expertise"), "Snippet should not contain left column 'Expertise'");
+        assert!(!snip.contains("Portfolio"), "Snippet should not contain left column 'Portfolio'");
+
+        // Verify all selection rectangles belong exclusively to the right column (x >= 250)
+        for (i, r) in rects.iter().enumerate() {
+            assert!(r.0 >= 250.0, "Rect {} x0 ({:.1}) should be in right column (>= 250)", i, r.0);
+        }
+    }
 }
