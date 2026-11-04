@@ -695,8 +695,8 @@ component DocPropRow inherits Rectangle {
 component KeyBadge inherits Rectangle {
     in property <string> text;
 
-    height: 20px;
-    width: Math.max(22px, key-label.preferred-width + 12px);
+    height: 22px;
+    width: Math.max(24px, round((key-label.preferred-width + 14px) / 2px) * 2px);
     border-radius: 5px;
     background: Theme.surface-subtle;
     border-width: 1px;
@@ -718,7 +718,7 @@ component ShortcutItem inherits Rectangle {
     in property <string> shortcut;
     in property <string> shortcut-alt: "";
 
-    height: 26px;
+    height: 28px;
     border-radius: 4px;
 
     HorizontalLayout {
@@ -729,7 +729,7 @@ component ShortcutItem inherits Rectangle {
         Text {
             text: root.label;
             font-family: "Inter";
-            font-size: 12px;
+            font-size: 13px;
             font-weight: 500;
             color: Theme.text-secondary;
             vertical-alignment: center;
@@ -749,6 +749,7 @@ component ShortcutItem inherits Rectangle {
                 text: "/";
                 font-family: "Inter";
                 font-size: 11px;
+                font-weight: 600;
                 color: Theme.text-muted;
                 vertical-alignment: center;
             }
@@ -764,7 +765,7 @@ component ShortcutItem inherits Rectangle {
 component ShortcutSectionHeader inherits Rectangle {
     in property <string> title;
 
-    height: 24px;
+    height: 26px;
 
     HorizontalLayout {
         padding-left: 4px;
@@ -6126,19 +6127,17 @@ VerticalLayout {
 
     // Document Properties Modal Card
     if root.show-doc-info: Rectangle {
-        width: root.width > 600px ? 560px : root.width - 32px;
+        width: root.width > 600px ? 560px : round((root.width - 32px) / 2px) * 2px;
         height: doc-info-vl.preferred-height;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        x: round((parent.width - self.width) / 2px) * 1px;
+        y: round((parent.height - self.height) / 2px) * 1px;
         z: 200;
         background: Theme.card-elevated;
         border-radius: 18px;
         border-width: 1px;
         border-color: Theme.border-strong;
         drop-shadow-blur: 32px;
-        drop-shadow-offset-y: 8px;
-        drop-shadow-color: Theme.dark ? #000000cc : #00000035;
-        clip: true;
+        drop-shadow-color: Theme.dark ? #000000bb : #00000028;
 
         doc-info-vl := VerticalLayout {
             padding: 20px;
@@ -6379,8 +6378,8 @@ VerticalLayout {
 
                             Image {
                                 source: @image-url("../assets/icons/copy.svg");
-                                width: 15px;
-                                height: 15px;
+                                width: 14px;
+                                height: 14px;
                                 colorize: Theme.text-primary;
                                 y: (parent.height - self.height) / 2;
                             }
@@ -6421,8 +6420,8 @@ VerticalLayout {
 
                             Image {
                                 source: @image-url("../assets/icons/copy.svg");
-                                width: 15px;
-                                height: 15px;
+                                width: 14px;
+                                height: 14px;
                                 colorize: Theme.text-primary;
                                 y: (parent.height - self.height) / 2;
                             }
@@ -6463,8 +6462,8 @@ VerticalLayout {
 
                             Image {
                                 source: @image-url("../assets/icons/printer.svg");
-                                width: 15px;
-                                height: 15px;
+                                width: 14px;
+                                height: 14px;
                                 colorize: Theme.text-primary;
                                 y: (parent.height - self.height) / 2;
                             }
@@ -6546,19 +6545,17 @@ VerticalLayout {
 
     // Keyboard Shortcuts Modal Card
     if root.show-shortcuts-modal: Rectangle {
-        width: root.width > 700px ? 660px : root.width - 32px;
-        height: root.height > 620px ? 560px : root.height - 40px;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        width: root.width > 700px ? 660px : round((root.width - 32px) / 2px) * 2px;
+        height: root.height > 620px ? 560px : round((root.height - 40px) / 2px) * 2px;
+        x: round((parent.width - self.width) / 2px) * 1px;
+        y: round((parent.height - self.height) / 2px) * 1px;
         z: 200;
         background: Theme.card-elevated;
         border-radius: 18px;
         border-width: 1px;
         border-color: Theme.border-strong;
         drop-shadow-blur: 32px;
-        drop-shadow-offset-y: 8px;
-        drop-shadow-color: Theme.dark ? #000000cc : #00000035;
-        clip: true;
+        drop-shadow-color: Theme.dark ? #000000bb : #00000028;
 
         VerticalLayout {
             padding: 20px;
@@ -6805,10 +6802,10 @@ VerticalLayout {
 
     // Password Modal Card
     if root.show-password-modal: Rectangle {
-        width: root.width > 500px ? 440px : root.width - 32px;
+        width: root.width > 500px ? 440px : round((root.width - 32px) / 2px) * 2px;
         height: pwd-modal-vl.preferred-height;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        x: round((parent.width - self.width) / 2px) * 1px;
+        y: round((parent.height - self.height) / 2px) * 1px;
         z: 215;
         background: Theme.card-elevated;
         border-radius: 18px;
@@ -7001,10 +6998,10 @@ VerticalLayout {
 
     // Print Modal Card
     if root.show-print-modal: Rectangle {
-        width: root.width > 540px ? 480px : root.width - 32px;
+        width: root.width > 540px ? 480px : round((root.width - 32px) / 2px) * 2px;
         height: print-modal-vl.preferred-height;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        x: round((parent.width - self.width) / 2px) * 1px;
+        y: round((parent.height - self.height) / 2px) * 1px;
         z: 215;
         background: Theme.card-elevated;
         border-radius: 18px;
@@ -7402,10 +7399,10 @@ VerticalLayout {
 
     // Unsaved Changes Modal Card
     if root.show-unsaved-modal: Rectangle {
-        width: root.width > 520px ? 460px : root.width - 32px;
+        width: root.width > 520px ? 460px : round((root.width - 32px) / 2px) * 2px;
         height: unsaved-modal-vl.preferred-height;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        x: round((parent.width - self.width) / 2px) * 1px;
+        y: round((parent.height - self.height) / 2px) * 1px;
         z: 225;
         background: Theme.card-elevated;
         border-radius: 18px;
