@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/Sukkoth/folio/main/install.sh | sud
 ### Debian / Ubuntu (.deb)
 Download the latest `.deb` package from [Releases](https://github.com/Sukkoth/folio/releases):
 ```bash
-sudo dpkg -i folio_0.0.2_amd64.deb
+sudo dpkg -i folio_0.0.3_amd64.deb
 ```
 
 ---
