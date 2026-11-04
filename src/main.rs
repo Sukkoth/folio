@@ -7679,9 +7679,9 @@ mod tests {
         let props = pdf::DocumentProperties {
             file_name: "test_doc.pdf".to_string(),
             file_path: "/home/user/Documents/test_doc.pdf".to_string(),
-            file_size: "1.2 MB".to_string(),
-            page_count: 42,
-            page_size: "612 x 792 pt".to_string(),
+            file_size_display: "1.2 MB".to_string(),
+            page_count_display: "42".to_string(),
+            page_dimensions_display: "612 x 792 pt".to_string(),
             title: "Test Title".to_string(),
             author: "Author Name".to_string(),
             subject: "Testing".to_string(),
